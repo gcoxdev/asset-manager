@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/am-crypto"]
+members = ["crates/am-crypto", "crates/am-storage"]
 resolver = "2"
 
 [workspace.package]
@@ -14,6 +14,14 @@ chacha20poly1305 = { version = "0.10", features = ["std"] }
 data-encoding = "2"
 hkdf = "0.12"
 rand = "0.8.6"
+# bundled-sqlcipher-vendored-openssl, NOT bundled-sqlcipher: the latter still
+# links a *system* libcrypto, which would make the AppImage depend on whatever
+# OpenSSL the host happens to have. Vendoring is what makes the bundle
+# self-contained across distros.
+rusqlite = { version = "0.37", features = [
+    "bundled-sqlcipher-vendored-openssl",
+    "backup", # SQLCipher-aware online backup; a plain file copy is not crash-safe
+] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

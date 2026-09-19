@@ -1,0 +1,15 @@
+[package]
+name = "am-storage"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+am-crypto = { path = "../am-crypto" }
+anyhow.workspace = true
+rusqlite = { workspace = true }
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
