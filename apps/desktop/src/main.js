@@ -1,0 +1,206 @@
+import { invoke } from "@tauri-apps/api/core";
+import QRCode from "qrcode";
+
+const VAULT_ROOT = "";  // resolved by the backend's app-data path in a later pass
+const el = (id) => document.getElementById(id);
+const show = (id) => {
+  for (const s of document.querySelectorAll("main > section")) s.hidden = true;
+  el(id).hidden = false;
+};
+const status = (msg) => { el("status").textContent = msg ?? ""; };
+
+const ASSET_TYPES = [
+  ["generic", "Generic Item"],
+  ["gold_bullion", "Gold Bullion"],
+  ["silver_bullion", "Silver Bullion"],
+  ["platinum_bullion", "Platinum Bullion"],
+  ["junk_silver", "Junk / Constitutional Silver"],
+  ["sovereign_coin", "Sovereign Coin"],
+];
+
+let pendingRecovery = null;
+
+async function boot() {
+  try {
+    const state = await invoke("vault_status", { root: VAULT_ROOT });
+    if (state.unlocked) return openCatalog();
+    show(state.exists ? "vault-unlock" : "vault-setup");
+  } catch (e) {
+    status(describe(e));
+  }
+}
+
+el("create-vault").addEventListener("click", async () => {
+  const passphrase = el("new-passphrase").value;
+  if (passphrase.length < 12) {
+    return status("Use at least 12 characters. A longer passphrase is the only thing protecting the vault.");
+  }
+  if (passphrase !== el("confirm-passphrase").value) {
+    return status("Passphrases do not match.");
+  }
+
+  try {
+    status("Creating vault… this takes a moment while the key is derived.");
+    const result = await invoke("create_vault", { root: VAULT_ROOT, passphrase });
+    await beginRecoveryCeremony(result);
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
+el("unlock").addEventListener("click", async () => {
+  try {
+    status("Unlocking…");
+    await invoke("unlock_vault", {
+      root: VAULT_ROOT,
+      secret: el("passphrase").value,
+      useRecoveryKey: el("use-recovery").checked,
+    });
+    await openCatalog();
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
+/**
+ * The ceremony deliberately refuses to continue until the key is acknowledged
+ * AND its last 6 characters are retyped. Without that, people click through
+ * and discover years later that they never saved it.
+ */
+async function beginRecoveryCeremony({ recovery_key, fingerprint }) {
+  pendingRecovery = recovery_key;
+  el("recovery-key").textContent = recovery_key;
+  el("recovery-fingerprint").textContent = fingerprint;
+
+  await QRCode.toCanvas(el("recovery-qr"), recovery_key, {
+    errorCorrectionLevel: "Q",  // survives ~25% damage; these sit in safes for years
+    margin: 2,
+    width: 220,
+  });
+
+  el("recovery-ack").checked = false;
+  el("recovery-verify").value = "";
+  el("finish-recovery").disabled = true;
+  show("recovery-ceremony");
+  status("");
+}
+
+const checkCeremony = () => {
+  const expected = pendingRecovery?.replace(/-/g, "").slice(-6).toUpperCase();
+  const typed = el("recovery-verify").value.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  el("finish-recovery").disabled = !(el("recovery-ack").checked && typed === expected);
+};
+el("recovery-ack").addEventListener("change", checkCeremony);
+el("recovery-verify").addEventListener("input", checkCeremony);
+
+el("print-recovery").addEventListener("click", () => window.print());
+
+el("finish-recovery").addEventListener("click", async () => {
+  pendingRecovery = null;
+  el("recovery-key").textContent = "";
+  await openCatalog();
+});
+
+el("lock").addEventListener("click", async () => {
+  await invoke("lock_vault");
+  el("passphrase").value = "";
+  show("vault-unlock");
+});
+
+el("new-asset").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    await invoke("create_asset", {
+      asset: {
+        type_id: el("asset-type").value,
+        name: el("asset-name").value,
+        quantity: el("asset-quantity").value || "1",
+        quantity_unit: "item",
+        storage_location: el("asset-location").value || null,
+        notes: null,
+      },
+    });
+    el("asset-name").value = "";
+    el("asset-location").value = "";
+    await refresh();
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
+let searchTimer;
+el("search").addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(refresh, 150);
+});
+
+async function openCatalog() {
+  const select = el("asset-type");
+  select.innerHTML = "";
+  for (const [value, label] of ASSET_TYPES) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    select.append(option);
+  }
+  show("catalog");
+  await refresh();
+}
+
+async function refresh() {
+  try {
+    const query = el("search").value.trim();
+    const rows = query
+      ? await invoke("search_assets", { query })
+      : await invoke("list_assets");
+
+    const tbody = el("assets").querySelector("tbody");
+    tbody.innerHTML = "";
+    for (const row of rows) {
+      const tr = document.createElement("tr");
+      for (const cell of [
+        row.name,
+        row.type_id,
+        `${row.quantity} ${row.quantity_unit}`,
+        row.storage_location ?? "",
+        formatMoney(row.current_amount_minor, row.current_currency),
+      ]) {
+        const td = document.createElement("td");
+        td.textContent = cell;   // textContent, never innerHTML: names are user data
+        tr.append(td);
+      }
+      tbody.append(tr);
+    }
+    status("");
+  } catch (e) {
+    status(describe(e));
+  }
+}
+
+/**
+ * Money arrives as a string of minor units. Parsing it into a JS number would
+ * be wrong for large values, so format by string manipulation.
+ */
+function formatMoney(amountMinor, currency) {
+  if (amountMinor == null || currency == null) return "—";
+  const negative = amountMinor.startsWith("-");
+  const digits = (negative ? amountMinor.slice(1) : amountMinor).padStart(3, "0");
+  const major = digits.slice(0, -2);
+  const minor = digits.slice(-2);
+  return `${negative ? "-" : ""}${major}.${minor} ${currency}`;
+}
+
+function describe(error) {
+  if (error && typeof error === "object" && "message" in error) {
+    if (error.kind === "another_instance") {
+      return "Another Asset Manager window already has this vault open.";
+    }
+    if (error.kind === "pairing_mismatch") {
+      return error.message;  // already explains the partial-restore cause
+    }
+    return error.message;
+  }
+  return String(error);
+}
+
+boot();

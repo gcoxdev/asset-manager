@@ -1,0 +1,15 @@
+{
+  "name": "asset-manager",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix apps/desktop run desktop:dev",
+    "build:native": "npm --prefix apps/desktop run build:native --",
+    "build:binary": "npm --prefix apps/desktop run build:binary --",
+    "build:linux": "npm --prefix apps/desktop run build:linux --",
+    "build:linux-appimage": "npm --prefix apps/desktop run build:linux-appimage --",
+    "build:linux-deb": "npm --prefix apps/desktop run build:linux-deb --",
+    "build:windows": "npm --prefix apps/desktop run build:windows --",
+    "build:macos": "npm --prefix apps/desktop run build:macos --",
+    "build:macos-universal": "npm --prefix apps/desktop run build:macos-universal --"
+  }
+}

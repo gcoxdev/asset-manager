@@ -1,0 +1,15 @@
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0; padding: 2rem; max-width: 60rem; }
+h1 { font-size: 1.4rem; }
+label { display: block; margin: 0.5rem 0; }
+input[type="password"], input[type="text"], input[type="search"] { padding: 0.4rem; min-width: 18rem; }
+button { padding: 0.45rem 0.9rem; cursor: pointer; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+.warn { border-left: 3px solid #c47; padding-left: 0.75rem; }
+pre#recovery-key { font-size: 1.1rem; letter-spacing: 0.05em; padding: 0.75rem; background: rgba(128,128,128,0.12); }
+table { width: 100%; border-collapse: collapse; margin-top: 1rem; }
+th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid rgba(128,128,128,0.3); }
+header { display: flex; gap: 1rem; align-items: center; }
+#new-asset { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
+#status { margin-top: 1rem; min-height: 1.2em; color: #a44; }
+@media print { body > * { display: none; } #recovery-ceremony { display: block !important; } }

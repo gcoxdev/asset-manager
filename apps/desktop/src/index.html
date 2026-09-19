@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Asset Manager</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main id="app">
+      <section id="vault-setup" hidden>
+        <h1>Create your vault</h1>
+        <p class="warn">
+          There is no password reset. If you lose both your passphrase and your
+          recovery key, your catalog cannot be recovered.
+        </p>
+        <label>Passphrase <input type="password" id="new-passphrase" autocomplete="new-password" /></label>
+        <label>Confirm <input type="password" id="confirm-passphrase" autocomplete="new-password" /></label>
+        <button id="create-vault">Create vault</button>
+      </section>
+
+      <section id="vault-unlock" hidden>
+        <h1>Unlock</h1>
+        <label>Passphrase <input type="password" id="passphrase" autocomplete="current-password" /></label>
+        <label><input type="checkbox" id="use-recovery" /> Use recovery key instead</label>
+        <button id="unlock">Unlock</button>
+      </section>
+
+      <section id="recovery-ceremony" hidden>
+        <h1>Save your recovery key</h1>
+        <p class="warn">
+          This is shown once. Store it somewhere safe and offline — it is the
+          only way back in if you forget your passphrase.
+        </p>
+        <pre id="recovery-key"></pre>
+        <p>Fingerprint: <code id="recovery-fingerprint"></code></p>
+        <canvas id="recovery-qr"></canvas>
+        <button id="print-recovery">Print</button>
+        <hr />
+        <label><input type="checkbox" id="recovery-ack" /> I have saved this recovery key</label>
+        <label>Confirm the last 6 characters <input type="text" id="recovery-verify" /></label>
+        <button id="finish-recovery" disabled>Continue</button>
+      </section>
+
+      <section id="catalog" hidden>
+        <header>
+          <h1>Catalog</h1>
+          <input type="search" id="search" placeholder="Search…" />
+          <button id="lock">Lock</button>
+        </header>
+        <form id="new-asset">
+          <input type="text" id="asset-name" placeholder="Name" required />
+          <select id="asset-type"></select>
+          <input type="text" id="asset-quantity" value="1" />
+          <input type="text" id="asset-location" placeholder="Storage location" />
+          <button type="submit">Add</button>
+        </form>
+        <table id="assets">
+          <thead>
+            <tr><th>Name</th><th>Type</th><th>Qty</th><th>Location</th><th>Value</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <p id="status" role="status"></p>
+    </main>
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

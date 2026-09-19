@@ -1,0 +1,32 @@
+[package]
+name = "asset-manager-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "asset_manager_desktop_lib"
+crate-type = ["cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+am-crypto = { path = "../../../crates/am-crypto" }
+am-storage = { path = "../../../crates/am-storage" }
+anyhow.workspace = true
+rusqlite = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+thiserror.workspace = true
+uuid = { version = "1", features = ["v4"] }
+zeroize.workspace = true
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+tempfile = "3"

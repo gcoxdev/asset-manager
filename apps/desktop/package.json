@@ -1,0 +1,31 @@
+{
+  "name": "asset-manager-desktop-ui",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
+    "build": "vite build",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "build:native": "node scripts/build.mjs native",
+    "build:binary": "node scripts/build.mjs binary",
+    "build:linux": "node scripts/build.mjs linux",
+    "build:linux-appimage": "node scripts/build.mjs appimage",
+    "build:linux-deb": "node scripts/build.mjs deb",
+    "build:windows": "node scripts/build.mjs msi",
+    "build:macos": "node scripts/build.mjs dmg",
+    "build:macos-universal": "node scripts/build.mjs dmg-universal"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "vite": "^7"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}
