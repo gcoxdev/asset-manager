@@ -5,6 +5,7 @@
 //! `tests` are the gate — if one fails, the storage plan is wrong, not the
 //! test.
 
+pub mod csv;
 pub mod header;
 pub mod migrate;
 pub mod objects;

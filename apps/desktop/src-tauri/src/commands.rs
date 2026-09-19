@@ -396,3 +396,99 @@ pub fn remove_photo<R: Runtime>(
         })
         .map_err(IpcError::from)
 }
+
+#[derive(Serialize)]
+pub struct ExportedCsv {
+    pub csv: String,
+    pub row_count: usize,
+    /// Shown verbatim in the UI before the file is saved. An export leaves the
+    /// vault's protection entirely, and users will not infer that.
+    pub warning: String,
+}
+
+#[tauri::command]
+pub fn export_csv(session: State<'_, Session>) -> IpcResult<ExportedCsv> {
+    session.touch();
+    let timestamp = now();
+    session
+        .with_vault(|vault| {
+            let result = am_storage::csv::export_assets(vault, &timestamp)
+                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
+            Ok(ExportedCsv {
+                csv: result.csv,
+                row_count: result.row_count,
+                warning: "This file is not encrypted and is not a backup. It excludes \
+                          photos, documents and valuation history. Anyone who can read \
+                          the file can read your catalog."
+                    .to_string(),
+            })
+        })
+        .map_err(IpcError::from)
+}
+
+#[derive(Serialize)]
+pub struct ImportSummary {
+    pub creates: usize,
+    pub updates: usize,
+    pub errors: Vec<String>,
+}
+
+/// Preview or apply a CSV import.
+///
+/// Always call with `apply = false` first: the preview reports every row-level
+/// problem at once, so the spreadsheet can be fixed in one pass.
+#[tauri::command]
+pub fn import_csv(
+    session: State<'_, Session>,
+    contents: String,
+    apply: bool,
+) -> IpcResult<ImportSummary> {
+    session.touch();
+    let timestamp = now();
+    let mode = if apply {
+        am_storage::csv::ImportMode::Apply
+    } else {
+        am_storage::csv::ImportMode::Preview
+    };
+
+    session
+        .with_vault(|vault| {
+            let preview = am_storage::csv::import_assets(vault, &contents, mode, &timestamp)
+                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
+            Ok(ImportSummary {
+                creates: preview.creates,
+                updates: preview.updates,
+                errors: preview.errors,
+            })
+        })
+        .map_err(IpcError::from)
+}
+
+/// Read a user-chosen text file.
+///
+/// Deliberately narrow rather than granting the filesystem plugin: this reads
+/// one path the user picked in a dialog, with a size bound, and nothing else.
+/// A general fs permission would widen the attack surface for no benefit.
+#[tauri::command]
+pub fn read_text_file(path: String) -> IpcResult<String> {
+    let meta = std::fs::metadata(&path)
+        .map_err(|e| IpcError { kind: "unreadable_file".into(), message: e.to_string() })?;
+    if meta.len() as usize > am_storage::csv::MAX_FILE_BYTES {
+        return Err(IpcError {
+            kind: "too_large".into(),
+            message: "file is too large to import".into(),
+        });
+    }
+    std::fs::read_to_string(&path)
+        .map_err(|e| IpcError { kind: "unreadable_file".into(), message: e.to_string() })
+}
+
+/// Write a user-chosen text file.
+///
+/// The caller has already warned that the contents leave the vault's
+/// protection; this only performs the write.
+#[tauri::command]
+pub fn write_text_file(path: String, contents: String) -> IpcResult<()> {
+    std::fs::write(&path, contents)
+        .map_err(|e| IpcError { kind: "unwritable_file".into(), message: e.to_string() })
+}

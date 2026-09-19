@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog, message, confirm } from "@tauri-apps/plugin-dialog";
 import QRCode from "qrcode";
 
 // The vault path is resolved in the backend, never sent from here: accepting
@@ -102,6 +102,61 @@ el("finish-recovery").addEventListener("click", async () => {
   pendingRecovery = null;
   el("recovery-key").textContent = "";
   await openCatalog();
+});
+
+el("export-csv").addEventListener("click", async () => {
+  try {
+    const result = await invoke("export_csv");
+    // Warn before writing, not after: once the file exists the catalog is
+    // outside the vault's protection.
+    const proceed = await confirm(`${result.warning}\n\nExport ${result.row_count} assets anyway?`, {
+      title: "Export is not encrypted",
+      kind: "warning",
+    });
+    if (!proceed) return;
+
+    const path = await saveDialog({
+      defaultPath: "asset-manager-export.csv",
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    if (!path) return;
+
+    await invoke("write_text_file", { path, contents: result.csv });
+    status(`Exported ${result.row_count} assets.`);
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
+el("import-csv").addEventListener("click", async () => {
+  try {
+    const path = await openDialog({ filters: [{ name: "CSV", extensions: ["csv"] }] });
+    if (!path) return;
+
+    const contents = await invoke("read_text_file", { path });
+
+    // Preview first, always: it reports every row problem at once.
+    const preview = await invoke("import_csv", { contents, apply: false });
+    if (preview.errors.length) {
+      await message(preview.errors.slice(0, 20).join("\n"), {
+        title: `${preview.errors.length} problem(s) — nothing was imported`,
+        kind: "error",
+      });
+      return;
+    }
+
+    const proceed = await confirm(
+      `Create ${preview.creates} and update ${preview.updates} asset(s)?`,
+      { title: "Confirm import" }
+    );
+    if (!proceed) return;
+
+    const applied = await invoke("import_csv", { contents, apply: true });
+    await refresh();
+    status(`Imported: ${applied.creates} created, ${applied.updates} updated.`);
+  } catch (e) {
+    status(describe(e));
+  }
 });
 
 el("lock").addEventListener("click", lockUi);

@@ -33,6 +33,10 @@ pub fn run() {
             commands::import_photo,
             commands::list_photos,
             commands::remove_photo,
+            commands::export_csv,
+            commands::import_csv,
+            commands::read_text_file,
+            commands::write_text_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Asset Manager");
