@@ -65,6 +65,21 @@ npm run build:macos             # must run on macOS
 Native bundles must be built on their own OS. Set `AM_OUTPUT_NAME` to override
 the artifact filename.
 
+### Linux / Wayland note
+
+WebKitGTK's DMA-BUF renderer negotiates explicit GPU sync and then commits a
+buffer without an acquire point. Strict compositors (KWin, among others)
+reject this as a protocol violation and the app exits before its window
+appears:
+
+```
+Gdk-Message: Error 71 (Protocol error) dispatching to Wayland display.
+```
+
+The app sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` for itself at startup, so no
+launcher script or environment setup is needed. This is an upstream
+WebKitGTK/Mesa issue, not a configuration problem.
+
 ## Layout
 
 | Path | Purpose |

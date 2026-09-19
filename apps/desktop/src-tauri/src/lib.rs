@@ -12,7 +12,46 @@ use tauri::{Emitter, Manager};
 use session::{Session, AUTO_LOCK_IDLE};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Work around a WebKitGTK/Mesa explicit-sync bug on Wayland.
+///
+/// WebKitGTK's DMA-BUF renderer negotiates `wp_linux_drm_syncobj` (explicit
+/// GPU sync) and then commits a buffer without setting an acquire point.
+/// Strict compositors — KWin among them — correctly reject that as a protocol
+/// violation, and the app dies before its window appears:
+///
+/// ```text
+/// wl_display#1.error(wp_linux_drm_syncobj_surface_v1#52, 4,
+///                    "explicit sync is used, but no acquire point is set")
+/// Gdk-Message: Error 71 (Protocol error) dispatching to Wayland display.
+/// ```
+///
+/// Disabling the DMA-BUF renderer avoids that path. The cost is a slower
+/// composite path for the WebView; the benefit is that the app starts at all.
+///
+/// Set from inside the process so a user running the binary directly gets a
+/// working app without needing a launcher script.
+///
+/// An already-set value is left alone. Note that WebKit treats the variable's
+/// *presence* as the switch rather than parsing its contents — setting it to
+/// `0` or to an empty string does not re-enable the renderer. To test whether
+/// upstream has fixed this, the variable has to be removed from the
+/// environment entirely and this function short-circuited; there is no
+/// value that turns it back on.
+#[cfg(target_os = "linux")]
+fn apply_wayland_workarounds() {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        // SAFETY: called before any window or thread that reads the
+        // environment exists, so there is no concurrent getenv to race.
+        unsafe { std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1") };
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_wayland_workarounds() {}
+
 pub fn run() {
+    apply_wayland_workarounds();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .register_uri_scheme_protocol("asset", protocol::handle)
