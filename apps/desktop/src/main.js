@@ -1,7 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import QRCode from "qrcode";
 
-const VAULT_ROOT = "";  // resolved by the backend's app-data path in a later pass
+// The vault path is resolved in the backend, never sent from here: accepting
+// a path over IPC would let the UI point vault operations anywhere.
 const el = (id) => document.getElementById(id);
 const show = (id) => {
   for (const s of document.querySelectorAll("main > section")) s.hidden = true;
@@ -22,7 +24,7 @@ let pendingRecovery = null;
 
 async function boot() {
   try {
-    const state = await invoke("vault_status", { root: VAULT_ROOT });
+    const state = await invoke("vault_status");
     if (state.unlocked) return openCatalog();
     show(state.exists ? "vault-unlock" : "vault-setup");
   } catch (e) {
@@ -32,8 +34,9 @@ async function boot() {
 
 el("create-vault").addEventListener("click", async () => {
   const passphrase = el("new-passphrase").value;
-  if (passphrase.length < 12) {
-    return status("Use at least 12 characters. A longer passphrase is the only thing protecting the vault.");
+  // Mirrors the backend check for a faster response; the backend enforces it.
+  if ([...passphrase].length < 12) {
+    return status("Use at least 12 characters — this is the only thing protecting the vault.");
   }
   if (passphrase !== el("confirm-passphrase").value) {
     return status("Passphrases do not match.");
@@ -41,7 +44,7 @@ el("create-vault").addEventListener("click", async () => {
 
   try {
     status("Creating vault… this takes a moment while the key is derived.");
-    const result = await invoke("create_vault", { root: VAULT_ROOT, passphrase });
+    const result = await invoke("create_vault", { passphrase });
     await beginRecoveryCeremony(result);
   } catch (e) {
     status(describe(e));
@@ -52,7 +55,6 @@ el("unlock").addEventListener("click", async () => {
   try {
     status("Unlocking…");
     await invoke("unlock_vault", {
-      root: VAULT_ROOT,
       secret: el("passphrase").value,
       useRecoveryKey: el("use-recovery").checked,
     });
@@ -101,10 +103,25 @@ el("finish-recovery").addEventListener("click", async () => {
   await openCatalog();
 });
 
-el("lock").addEventListener("click", async () => {
+el("lock").addEventListener("click", lockUi);
+
+async function lockUi() {
   await invoke("lock_vault");
+  toUnlockScreen();
+}
+
+function toUnlockScreen() {
   el("passphrase").value = "";
+  el("search").value = "";
+  el("assets").querySelector("tbody").innerHTML = "";  // don't leave data on screen
   show("vault-unlock");
+}
+
+// The backend locks on idle whether or not the UI reacts; this just moves the
+// user off the catalog screen and says why.
+listen("vault-auto-locked", () => {
+  toUnlockScreen();
+  status("Locked after inactivity.");
 });
 
 el("new-asset").addEventListener("submit", async (event) => {

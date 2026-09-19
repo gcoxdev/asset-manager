@@ -10,6 +10,7 @@
 //! no way to read the vault around it.
 
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use am_storage::header::Credential;
 use am_storage::vault::{Vault, VaultError};
@@ -56,9 +57,18 @@ impl From<SessionError> for IpcError {
     }
 }
 
+/// Idle timeout before the vault locks itself.
+///
+/// The realistic attack is not a stolen disk — it is an unlocked laptop with
+/// the app open. Without this, encryption at rest protects nothing once the
+/// vault has been opened once.
+pub const AUTO_LOCK_IDLE: Duration = Duration::from_secs(15 * 60);
+
 #[derive(Default)]
 pub struct Session {
     vault: Mutex<Option<Vault>>,
+    /// Last time a command touched the vault. `None` while locked.
+    last_activity: Mutex<Option<Instant>>,
 }
 
 impl Session {
@@ -68,6 +78,44 @@ impl Session {
 
     pub fn is_unlocked(&self) -> bool {
         self.vault.lock().expect("session mutex poisoned").is_some()
+    }
+
+    /// Lock if the vault has been idle past [`AUTO_LOCK_IDLE`].
+    ///
+    /// Driven by a timer in the app rather than checked lazily on access: a
+    /// vault that only locks when someone tries to use it has not really
+    /// locked, since the key stays in memory indefinitely while idle.
+    ///
+    /// Returns true if this call locked the vault.
+    pub fn lock_if_idle(&self, idle_limit: Duration) -> bool {
+        let should_lock = {
+            let last = self.last_activity.lock().expect("session mutex poisoned");
+            match *last {
+                Some(at) => at.elapsed() >= idle_limit,
+                None => false,
+            }
+        };
+        if should_lock {
+            self.lock();
+        }
+        should_lock
+    }
+
+    /// Reset the idle countdown. Called on user-driven activity, not on
+    /// background work — otherwise a price refresh would hold the vault open
+    /// forever.
+    pub fn touch(&self) {
+        let mut last = self.last_activity.lock().expect("session mutex poisoned");
+        if last.is_some() {
+            *last = Some(Instant::now());
+        }
+    }
+
+    pub fn idle_for(&self) -> Option<Duration> {
+        self.last_activity
+            .lock()
+            .expect("session mutex poisoned")
+            .map(|at| at.elapsed())
     }
 
     pub fn create(
@@ -83,6 +131,7 @@ impl Session {
         }
         let (vault, recovery_key) = Vault::create(root, passphrase, params, now)?;
         *guard = Some(vault);
+        *self.last_activity.lock().expect("session mutex poisoned") = Some(Instant::now());
         Ok(recovery_key)
     }
 
@@ -97,6 +146,7 @@ impl Session {
             return Err(SessionError::AlreadyOpen);
         }
         *guard = Some(Vault::unlock(root, credential, secret)?);
+        *self.last_activity.lock().expect("session mutex poisoned") = Some(Instant::now());
         Ok(())
     }
 
@@ -111,6 +161,7 @@ impl Session {
     pub fn lock(&self) {
         let mut guard = self.vault.lock().expect("session mutex poisoned");
         *guard = None;
+        *self.last_activity.lock().expect("session mutex poisoned") = None;
     }
 
     /// The only path to vault data. Fails when locked.
@@ -221,6 +272,68 @@ mod tests {
         let s = Session::new();
         s.create(&a, PASS, &fast_params(), NOW).unwrap();
         assert!(matches!(s.create(&b, PASS, &fast_params(), NOW), Err(SessionError::AlreadyOpen)));
+    }
+
+    #[test]
+    fn auto_lock_fires_after_idle_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+
+        let s = Session::new();
+        s.create(&root, PASS, &fast_params(), NOW).unwrap();
+
+        // Not yet idle.
+        assert!(!s.lock_if_idle(Duration::from_secs(3600)));
+        assert!(s.is_unlocked());
+
+        // A zero limit means "any idle time at all qualifies".
+        assert!(s.lock_if_idle(Duration::ZERO));
+        assert!(!s.is_unlocked(), "auto-lock must actually drop the vault");
+    }
+
+    #[test]
+    fn auto_lock_on_a_locked_vault_is_a_no_op() {
+        let s = Session::new();
+        assert!(!s.lock_if_idle(Duration::ZERO), "must not report locking an already-locked vault");
+    }
+
+    #[test]
+    fn activity_defers_auto_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+
+        let s = Session::new();
+        s.create(&root, PASS, &fast_params(), NOW).unwrap();
+
+        std::thread::sleep(Duration::from_millis(30));
+        let before = s.idle_for().unwrap();
+        s.touch();
+        let after = s.idle_for().unwrap();
+
+        assert!(after < before, "touch must reset the idle countdown");
+        assert!(!s.lock_if_idle(Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn touch_does_not_resurrect_a_locked_vault() {
+        // Guards against a background task keeping a locked session "alive".
+        let s = Session::new();
+        s.touch();
+        assert!(s.idle_for().is_none());
+        assert!(!s.is_unlocked());
+    }
+
+    #[test]
+    fn locking_clears_idle_tracking() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+
+        let s = Session::new();
+        s.create(&root, PASS, &fast_params(), NOW).unwrap();
+        assert!(s.idle_for().is_some());
+
+        s.lock();
+        assert!(s.idle_for().is_none(), "a locked vault has no idle clock");
     }
 
     #[test]

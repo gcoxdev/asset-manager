@@ -5,16 +5,21 @@
 
 use am_storage::header::Credential;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Runtime, State};
 
+use crate::paths::vault_root;
 use crate::session::{default_params, IpcError, Session, SessionError};
 
 type IpcResult<T> = Result<T, IpcError>;
 
+/// Argon2id slows guessing; it cannot compensate for a short passphrase.
+/// QiRing settled on the same floor.
+pub const MIN_PASSPHRASE_CHARS: usize = 12;
+
+/// ISO-8601 UTC. Stored as text so the format is unambiguous across
+/// platforms and readable in a CSV export.
 fn now() -> String {
-    // Placeholder until a time source is wired in; ISO-8601 UTC.
-    // TODO: replace with `chrono` when the domain layer lands.
-    "1970-01-01T00:00:00Z".to_string()
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
 #[derive(Serialize)]
@@ -56,34 +61,51 @@ pub struct NewAsset {
 }
 
 #[tauri::command]
-pub fn vault_status(session: State<'_, Session>, root: String) -> VaultStatus {
-    let exists = std::path::Path::new(&root).join(am_storage::vault::HEADER_FILE).exists();
-    VaultStatus { unlocked: session.is_unlocked(), exists }
+pub fn vault_status<R: Runtime>(
+    app: AppHandle<R>,
+    session: State<'_, Session>,
+) -> IpcResult<VaultStatus> {
+    let root = vault_root(&app).map_err(other)?;
+    let exists = root.join(am_storage::vault::HEADER_FILE).exists();
+    Ok(VaultStatus { unlocked: session.is_unlocked(), exists })
 }
 
 #[tauri::command]
-pub fn create_vault(
+pub fn create_vault<R: Runtime>(
+    app: AppHandle<R>,
     session: State<'_, Session>,
-    root: String,
     passphrase: String,
 ) -> IpcResult<CreatedVault> {
+    // Enforced in the backend: the UI can be bypassed, this cannot.
+    if passphrase.chars().count() < MIN_PASSPHRASE_CHARS {
+        return Err(IpcError {
+            kind: "weak_passphrase".into(),
+            message: format!(
+                "Use at least {MIN_PASSPHRASE_CHARS} characters. \
+                 Argon2id slows guessing but cannot rescue a short passphrase."
+            ),
+        });
+    }
+
+    let root = vault_root(&app).map_err(other)?;
     let recovery_key = session
-        .create(std::path::Path::new(&root), &passphrase, &default_params(), &now())
+        .create(&root, &passphrase, &default_params(), &now())
         .map_err(IpcError::from)?;
     let fingerprint = am_crypto::recovery_fingerprint(&recovery_key);
     Ok(CreatedVault { recovery_key, fingerprint })
 }
 
 #[tauri::command]
-pub fn unlock_vault(
+pub fn unlock_vault<R: Runtime>(
+    app: AppHandle<R>,
     session: State<'_, Session>,
-    root: String,
     secret: String,
     use_recovery_key: bool,
 ) -> IpcResult<()> {
+    let root = vault_root(&app).map_err(other)?;
     let credential =
         if use_recovery_key { Credential::RecoveryKey } else { Credential::Passphrase };
-    session.unlock(std::path::Path::new(&root), credential, &secret).map_err(IpcError::from)
+    session.unlock(&root, credential, &secret).map_err(IpcError::from)
 }
 
 #[tauri::command]
@@ -93,6 +115,7 @@ pub fn lock_vault(session: State<'_, Session>) {
 
 #[tauri::command]
 pub fn list_assets(session: State<'_, Session>) -> IpcResult<Vec<AssetSummary>> {
+    session.touch();
     session
         .with_vault(|vault| {
             let mut stmt = vault
@@ -132,6 +155,7 @@ pub fn list_assets(session: State<'_, Session>) -> IpcResult<Vec<AssetSummary>> 
 
 #[tauri::command]
 pub fn create_asset(session: State<'_, Session>, asset: NewAsset) -> IpcResult<String> {
+    session.touch();
     let asset_id = uuid::Uuid::new_v4().to_string();
     let timestamp = now();
 
@@ -185,6 +209,7 @@ pub fn create_asset(session: State<'_, Session>, asset: NewAsset) -> IpcResult<S
 
 #[tauri::command]
 pub fn search_assets(session: State<'_, Session>, query: String) -> IpcResult<Vec<AssetSummary>> {
+    session.touch();
     session
         .with_vault(|vault| {
             let mut stmt = vault
@@ -224,6 +249,29 @@ pub fn search_assets(session: State<'_, Session>, query: String) -> IpcResult<Ve
         .map_err(IpcError::from)
 }
 
+fn other(message: String) -> IpcError {
+    IpcError { kind: "error".into(), message }
+}
+
 fn sqlite(e: rusqlite::Error) -> SessionError {
     SessionError::Vault(am_storage::vault::VaultError::Sqlite(e))
+}
+
+/// Whether the vault is unlocked, and how long it has been idle. The frontend
+/// polls this so it can warn before an auto-lock rather than dropping the user
+/// out mid-edit.
+#[derive(Serialize)]
+pub struct SessionState {
+    pub unlocked: bool,
+    pub idle_seconds: Option<u64>,
+    pub auto_lock_seconds: u64,
+}
+
+#[tauri::command]
+pub fn session_state(session: State<'_, Session>) -> SessionState {
+    SessionState {
+        unlocked: session.is_unlocked(),
+        idle_seconds: session.idle_for().map(|d| d.as_secs()),
+        auto_lock_seconds: crate::session::AUTO_LOCK_IDLE.as_secs(),
+    }
 }
