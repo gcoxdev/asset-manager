@@ -43,24 +43,38 @@ model documenting this properly is part of the first release.
 
 ## Building
 
-Requires Rust 1.93.1 (pinned in `rust-toolchain.toml`).
+Requires Rust 1.93.1 (pinned in `rust-toolchain.toml`), Node.js, and the
+[Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for your
+platform.
 
 ```bash
-cargo test --workspace
+npm --prefix apps/desktop install
+cargo test --workspace          # Rust tests
+npm run dev                     # run the app
 ```
 
-Primary distribution target is a Linux AppImage; macOS and Windows bundles
-follow the same Tauri build matrix.
+One script per bundle target, each forwarding extra arguments to Tauri:
+
+```bash
+npm run build:linux-appimage    # primary target
+npm run build:linux-deb
+npm run build:windows           # must run on Windows
+npm run build:macos             # must run on macOS
+```
+
+Native bundles must be built on their own OS. Set `AM_OUTPUT_NAME` to override
+the artifact filename.
 
 ## Layout
 
 | Path | Purpose |
 |---|---|
 | `crates/am-crypto` | Key hierarchy, key wrapping, encrypted object format |
-| `crates/am-storage` | Vault header, SQLCipher database |
+| `crates/am-storage` | Vault header, schema, lifecycle, backup/restore |
+| `apps/desktop` | Tauri shell and frontend |
 | `docs/vault-format.md` | Normative on-disk format specification |
 
-More crates land as the domain and UI layers are built.
+Encrypted photo storage, valuation, and price providers are not built yet.
 
 ## License
 
