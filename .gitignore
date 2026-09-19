@@ -1,0 +1,33 @@
+# Internal working notes, plans, scratch — not for the repo
+internal/
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# Rust / Tauri
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# Env & secrets
+.env
+.env.*
+!.env.example
+
+# Local app data / test vaults
+*.db
+*.db-shm
+*.db-wal
+vault/
+test-vault/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
