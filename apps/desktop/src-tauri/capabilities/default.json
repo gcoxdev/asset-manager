@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimal permissions: the file-open dialog used to pick photos, and nothing else. No filesystem, shell, or network plugin permissions are granted — the vault is the only data path.",
+  "description": "Minimal permissions: file dialogs for picking photos and choosing CSV paths, plus message/confirm for the export warning. No filesystem, shell, or network plugin permissions — file IO goes through two narrow commands that take a user-chosen path, so the vault stays the only data path.",
   "windows": ["main"],
   "permissions": [
     "core:default",
