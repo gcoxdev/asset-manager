@@ -7,7 +7,10 @@ license.workspace = true
 [dependencies]
 am-crypto = { path = "../am-crypto" }
 anyhow.workspace = true
+rand.workspace = true
 rusqlite = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 

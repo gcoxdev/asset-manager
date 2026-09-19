@@ -5,6 +5,8 @@
 //! `tests` are the gate — if one fails, the storage plan is wrong, not the
 //! test.
 
+pub mod header;
+
 use rusqlite::Connection;
 use zeroize::Zeroizing;
 

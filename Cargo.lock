@@ -36,7 +36,10 @@ version = "0.0.1"
 dependencies = [
  "am-crypto",
  "anyhow",
+ "rand",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "zeroize",

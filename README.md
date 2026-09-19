@@ -56,9 +56,11 @@ follow the same Tauri build matrix.
 
 | Path | Purpose |
 |---|---|
-| `crates/am-crypto` | Key hierarchy and encrypted object format |
+| `crates/am-crypto` | Key hierarchy, key wrapping, encrypted object format |
+| `crates/am-storage` | Vault header, SQLCipher database |
+| `docs/vault-format.md` | Normative on-disk format specification |
 
-More crates land as the storage and domain layers are built.
+More crates land as the domain and UI layers are built.
 
 ## License
 

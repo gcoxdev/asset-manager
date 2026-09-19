@@ -18,9 +18,11 @@
 
 pub mod kdf;
 pub mod stream;
+pub mod wrap;
 
 pub use kdf::{
     derive_kek, derive_subkey, generate_recovery_key, normalize_recovery_key, random_bytes,
     random_key, random_salt, recovery_fingerprint, KdfParams, Purpose, KEY_LEN, SALT_LEN,
 };
 pub use stream::{open, seal, ObjectContext, StreamError, CHUNK_SIZE, MAX_OBJECT_BYTES};
+pub use wrap::{unwrap_data_key, wrap_data_key, WrapError, WrappedKey};
