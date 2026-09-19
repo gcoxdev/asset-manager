@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import QRCode from "qrcode";
 
 // The vault path is resolved in the backend, never sent from here: accepting
@@ -114,6 +115,9 @@ function toUnlockScreen() {
   el("passphrase").value = "";
   el("search").value = "";
   el("assets").querySelector("tbody").innerHTML = "";  // don't leave data on screen
+  currentAsset = null;
+  el("photos").innerHTML = "";  // decrypted images must not survive a lock
+  el("detail").hidden = true;
   show("vault-unlock");
 }
 
@@ -175,6 +179,7 @@ async function refresh() {
     tbody.innerHTML = "";
     for (const row of rows) {
       const tr = document.createElement("tr");
+      tr.addEventListener("click", () => showDetail(row));
       for (const cell of [
         row.name,
         row.type_id,
@@ -189,6 +194,100 @@ async function refresh() {
       tbody.append(tr);
     }
     status("");
+  } catch (e) {
+    status(describe(e));
+  }
+}
+
+let currentAsset = null;
+
+async function showDetail(row) {
+  currentAsset = row;
+  el("detail-name").textContent = row.name;
+  el("detail").hidden = false;
+  await refreshPhotos();
+}
+
+el("close-detail").addEventListener("click", () => {
+  currentAsset = null;
+  el("detail").hidden = true;
+  el("photos").innerHTML = "";
+});
+
+el("add-photo").addEventListener("click", async () => {
+  if (!currentAsset) return;
+  try {
+    const selected = await openDialog({
+      multiple: true,
+      filters: [{ name: "Images and PDFs", extensions: ["jpg", "jpeg", "png", "webp", "pdf"] }],
+    });
+    if (!selected) return;
+
+    const paths = Array.isArray(selected) ? selected : [selected];
+    let deduped = 0;
+    for (const path of paths) {
+      const result = await invoke("import_photo", { assetId: currentAsset.asset_id, path });
+      if (result.deduplicated) deduped += 1;
+    }
+    await refreshPhotos();
+    status(deduped ? `Added ${paths.length} file(s); ${deduped} already in the vault.` : "");
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
+async function refreshPhotos() {
+  if (!currentAsset) return;
+  try {
+    const photos = await invoke("list_photos", { assetId: currentAsset.asset_id });
+    const container = el("photos");
+    container.innerHTML = "";
+
+    for (const photo of photos) {
+      const wrap = document.createElement("div");
+      wrap.className = "photo";
+
+      if (photo.media_type.startsWith("image/")) {
+        const img = document.createElement("img");
+        // Served by the asset:// handler, which decrypts in-process. The
+        // variant query asks for a thumbnail; the handler falls back to the
+        // original if that variant has not been generated.
+        img.src = `asset://localhost/media/${photo.object_id}?variant=256`;
+        img.alt = "";
+        img.loading = "lazy";
+        wrap.append(img);
+      } else {
+        const placeholder = document.createElement("div");
+        placeholder.className = "photo-placeholder";
+        placeholder.textContent = photo.media_type;
+        wrap.append(placeholder);
+      }
+
+      if (photo.is_primary) {
+        const badge = document.createElement("span");
+        badge.className = "primary-badge";
+        badge.textContent = "Primary";
+        wrap.append(badge);
+      }
+
+      const remove = document.createElement("button");
+      remove.textContent = "Remove";
+      remove.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        try {
+          await invoke("remove_photo", {
+            assetId: currentAsset.asset_id,
+            objectId: photo.object_id,
+          });
+          await refreshPhotos();
+        } catch (e) {
+          status(describe(e));
+        }
+      });
+      wrap.append(remove);
+
+      container.append(wrap);
+    }
   } catch (e) {
     status(describe(e));
   }

@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 am-crypto = { path = "../am-crypto" }
 anyhow.workspace = true
+image.workspace = true
 rand.workspace = true
 sha2.workspace = true
 rusqlite = { workspace = true }
@@ -16,4 +17,5 @@ thiserror.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+image.workspace = true
 tempfile = "3"

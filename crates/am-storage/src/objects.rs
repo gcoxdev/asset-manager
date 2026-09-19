@@ -144,7 +144,7 @@ pub fn import_object(
 
     // File first, then the database row. See the module note on ordering.
     let path = object_path(&root.join(OBJECTS_DIR), &object_id);
-    write_object_atomic(&path, &ciphertext)?;
+    write_bytes_atomic(&path, &ciphertext)?;
 
     vault.conn().execute(
         "INSERT INTO objects
@@ -267,6 +267,11 @@ pub fn sweep_deleted(vault: &Vault, root: &Path) -> Result<usize, ObjectError> {
 
     let mut swept = 0;
     for object_id in pending {
+        // Variants first: an original swept while its thumbnails remain would
+        // leave decryptable images of a photo the user deleted.
+        crate::thumbs::purge_variants(vault, root, &object_id)
+            .map_err(|e| ObjectError::Io(std::io::Error::other(e.to_string())))?;
+
         let path = object_path(&root.join(OBJECTS_DIR), &object_id);
         match fs::remove_file(&path) {
             Ok(()) => {}
@@ -281,7 +286,8 @@ pub fn sweep_deleted(vault: &Vault, root: &Path) -> Result<usize, ObjectError> {
     Ok(swept)
 }
 
-fn write_object_atomic(path: &Path, bytes: &[u8]) -> Result<(), ObjectError> {
+/// Write, fsync, rename — shared with the thumbnail store.
+pub fn write_bytes_atomic(path: &Path, bytes: &[u8]) -> Result<(), ObjectError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -520,6 +526,58 @@ mod tests {
 
         let path = object_path(&root.join(OBJECTS_DIR), &stored.object_id);
         assert!(!path.exists(), "swept object file must be gone");
+    }
+
+    #[test]
+    fn sweeping_an_object_also_removes_its_thumbnails() {
+        // A deleted photo whose thumbnails survive is still a readable photo.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        let vault = open_vault(&root);
+
+        let png = {
+            let img = image::RgbImage::from_fn(300, 300, |x, _| {
+                image::Rgb([(x % 256) as u8, 40, 90])
+            });
+            let mut out = Vec::new();
+            image::DynamicImage::ImageRgb8(img)
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .unwrap();
+            out
+        };
+
+        let stored = import_object(&vault, &root, &png, NOW).unwrap();
+        crate::thumbs::generate_variants(&vault, &root, &stored.object_id, NOW).unwrap();
+
+        let variant_ids: Vec<String> = {
+            let mut stmt = vault
+                .conn()
+                .prepare("SELECT variant_object_id FROM media_variants WHERE object_id = ?1")
+                .unwrap();
+            let v = stmt
+                .query_map([&stored.object_id], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            v
+        };
+        assert_eq!(variant_ids.len(), 2);
+
+        vault
+            .conn()
+            .execute(
+                "UPDATE objects SET gc_state = 'pending_delete' WHERE object_id = ?1",
+                [&stored.object_id],
+            )
+            .unwrap();
+        sweep_deleted(&vault, &root).unwrap();
+
+        for id in &variant_ids {
+            assert!(
+                !crate::thumbs::variant_path(&root, id).exists(),
+                "thumbnail outlived the photo it came from"
+            );
+        }
     }
 
     #[test]

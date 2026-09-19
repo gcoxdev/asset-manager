@@ -13,3 +13,12 @@ header { display: flex; gap: 1rem; align-items: center; }
 #new-asset { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
 #status { margin-top: 1rem; min-height: 1.2em; color: #a44; }
 @media print { body > * { display: none; } #recovery-ceremony { display: block !important; } }
+
+#detail { margin-top: 1.5rem; border-top: 1px solid rgba(128,128,128,0.4); padding-top: 1rem; }
+#photos { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1rem; }
+.photo { position: relative; }
+.photo img { width: 160px; height: 160px; object-fit: cover; border-radius: 4px; background: rgba(128,128,128,0.15); }
+.photo button { position: absolute; top: 4px; right: 4px; padding: 0.15rem 0.4rem; font-size: 0.75rem; }
+.photo .primary-badge { position: absolute; bottom: 4px; left: 4px; background: rgba(0,0,0,0.65); color: #fff; font-size: 0.7rem; padding: 0.1rem 0.35rem; border-radius: 3px; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: rgba(128,128,128,0.12); }

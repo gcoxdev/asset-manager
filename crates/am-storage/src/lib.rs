@@ -8,6 +8,7 @@
 pub mod header;
 pub mod migrate;
 pub mod objects;
+pub mod thumbs;
 pub mod vault;
 
 use rusqlite::Connection;

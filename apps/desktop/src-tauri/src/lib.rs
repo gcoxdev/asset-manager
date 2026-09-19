@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod paths;
+pub mod protocol;
 pub mod session;
 
 use std::time::Duration;
@@ -14,6 +15,7 @@ use session::{Session, AUTO_LOCK_IDLE};
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .register_uri_scheme_protocol("asset", protocol::handle)
         .manage(Session::new())
         .setup(|app| {
             spawn_auto_lock(app.handle().clone(), AUTO_LOCK_IDLE);
@@ -28,6 +30,9 @@ pub fn run() {
             commands::create_asset,
             commands::search_assets,
             commands::session_state,
+            commands::import_photo,
+            commands::list_photos,
+            commands::remove_photo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Asset Manager");

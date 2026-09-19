@@ -14,6 +14,9 @@ chacha20poly1305 = { version = "0.10", features = ["std"] }
 chrono = { version = "0.4", features = ["serde"] }
 data-encoding = "2"
 hkdf = "0.12"
+# default-features off: we want no image formats we do not explicitly allow,
+# and none of the codec surface we are not serving.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 rand = "0.8.6"
 # bundled-sqlcipher-vendored-openssl, NOT bundled-sqlcipher: the latter still
 # links a *system* libcrypto, which would make the AppImage depend on whatever

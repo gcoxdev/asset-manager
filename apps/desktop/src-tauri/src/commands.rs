@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime, State};
 
 use crate::paths::vault_root;
+use am_storage::vault::VaultError;
+
 use crate::session::{default_params, IpcError, Session, SessionError};
 
 type IpcResult<T> = Result<T, IpcError>;
@@ -274,4 +276,123 @@ pub fn session_state(session: State<'_, Session>) -> SessionState {
         idle_seconds: session.idle_for().map(|d| d.as_secs()),
         auto_lock_seconds: crate::session::AUTO_LOCK_IDLE.as_secs(),
     }
+}
+
+#[derive(Serialize)]
+pub struct ImportedPhoto {
+    pub object_id: String,
+    pub media_type: String,
+    /// True when identical bytes were already stored and nothing was written.
+    pub deduplicated: bool,
+}
+
+/// Import a photo from a path the user chose in a file dialog.
+///
+/// The path comes from the frontend, so it is read as the user — this imports
+/// a file they picked, it does not grant the vault arbitrary filesystem reach
+/// beyond what the user already has.
+#[tauri::command]
+pub fn import_photo<R: Runtime>(
+    app: AppHandle<R>,
+    session: State<'_, Session>,
+    asset_id: String,
+    path: String,
+) -> IpcResult<ImportedPhoto> {
+    session.touch();
+    let root = vault_root(&app).map_err(other)?;
+    let timestamp = now();
+
+    // Read before taking the vault lock: file I/O should not hold it.
+    let bytes = std::fs::read(&path)
+        .map_err(|e| IpcError { kind: "unreadable_file".into(), message: e.to_string() })?;
+
+    let stored = session
+        .with_vault(|vault| {
+            let stored = am_storage::objects::import_object(vault, &root, &bytes, &timestamp)
+                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
+            am_storage::objects::attach_to_asset(vault, &asset_id, &stored.object_id, &timestamp)
+                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
+
+            // Thumbnails are generated inline for now. When this moves to a
+            // background worker it must be cancellable on lock, or a late
+            // result could write into a vault that has since closed.
+            let _ = am_storage::thumbs::generate_variants(
+                vault,
+                &root,
+                &stored.object_id,
+                &timestamp,
+            );
+            Ok(stored)
+        })
+        .map_err(IpcError::from)?;
+
+    Ok(ImportedPhoto {
+        object_id: stored.object_id,
+        media_type: stored.media_type,
+        deduplicated: stored.deduplicated,
+    })
+}
+
+#[derive(Serialize)]
+pub struct PhotoRef {
+    pub object_id: String,
+    pub media_type: String,
+    pub is_primary: bool,
+}
+
+#[tauri::command]
+pub fn list_photos(
+    session: State<'_, Session>,
+    asset_id: String,
+) -> IpcResult<Vec<PhotoRef>> {
+    session.touch();
+    session
+        .with_vault(|vault| {
+            let mut stmt = vault
+                .conn()
+                .prepare(
+                    "SELECT m.object_id, o.media_type, m.is_primary
+                     FROM asset_media m
+                     JOIN objects o ON o.object_id = m.object_id
+                     WHERE m.asset_id = ?1 AND o.gc_state = 'live'
+                     ORDER BY m.is_primary DESC, m.sort_order, m.created_at",
+                )
+                .map_err(sqlite)?;
+
+            let rows = stmt
+                .query_map([&asset_id], |r| {
+                    Ok(PhotoRef {
+                        object_id: r.get(0)?,
+                        media_type: r.get(1)?,
+                        is_primary: r.get::<_, i64>(2)? == 1,
+                    })
+                })
+                .map_err(sqlite)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sqlite)?;
+            Ok(rows)
+        })
+        .map_err(IpcError::from)
+}
+
+/// Detach a photo and sweep it if nothing else references it.
+#[tauri::command]
+pub fn remove_photo<R: Runtime>(
+    app: AppHandle<R>,
+    session: State<'_, Session>,
+    asset_id: String,
+    object_id: String,
+) -> IpcResult<()> {
+    session.touch();
+    let root = vault_root(&app).map_err(other)?;
+
+    session
+        .with_vault(|vault| {
+            am_storage::objects::detach_from_asset(vault, &asset_id, &object_id)
+                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
+            am_storage::objects::sweep_deleted(vault, &root)
+                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
+            Ok(())
+        })
+        .map_err(IpcError::from)
 }
