@@ -73,6 +73,7 @@
           <input type="search" id="search" placeholder="Search…" />
           <button id="export-csv">Export CSV</button>
           <button id="import-csv">Import CSV</button>
+          <button id="insurance-report">Insurance report</button>
           <button id="lock">Lock</button>
         </header>
         <form id="new-asset">
@@ -263,6 +264,14 @@
           </table>
           <div id="photos"></div>
         </section>
+      </section>
+
+      <section id="report-view" hidden>
+        <div class="no-print">
+          <button id="print-report">Print / Save as PDF</button>
+          <button id="close-report">Back to catalog</button>
+        </div>
+        <div id="report-body"></div>
       </section>
 
       <p id="status" role="status"></p>

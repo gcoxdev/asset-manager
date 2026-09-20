@@ -8,6 +8,7 @@ pub mod metals_commands;
 pub mod metals_provider;
 pub mod paths;
 pub mod protocol;
+pub mod report_commands;
 pub mod session;
 pub mod valuation_commands;
 
@@ -105,6 +106,7 @@ pub fn run() {
             collectible_commands::graders,
             collectible_commands::validate_collectible,
             collectible_commands::create_collectible,
+            report_commands::insurance_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Asset Manager");

@@ -105,11 +105,13 @@ el("print-recovery").addEventListener("click", () => {
   document.title = `Asset-Manager-Recovery-Key-${stamp}`;
 
   el("print-date").textContent = new Date().toLocaleString();
+  document.body.classList.add("printing-recovery");
 
   // Restore afterwards so the window title is not left changed. Printing is
   // synchronous in the WebView, but afterprint is the documented hook.
   const restore = () => {
     document.title = previousTitle;
+    document.body.classList.remove("printing-recovery");
     window.removeEventListener("afterprint", restore);
   };
   window.addEventListener("afterprint", restore);
@@ -180,6 +182,122 @@ el("import-csv").addEventListener("click", async () => {
   }
 });
 
+el("insurance-report").addEventListener("click", async () => {
+  try {
+    status("Building report…");
+    const report = await invoke("insurance_report");
+    renderReport(report);
+    show("catalog");
+    el("report-view").hidden = false;
+    // Scroll so the report is what you see, not the catalog above it.
+    el("report-view").scrollIntoView({ behavior: "smooth" });
+    status("");
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
+el("close-report").addEventListener("click", () => {
+  el("report-view").hidden = true;
+  el("report-body").innerHTML = "";   // do not leave it rendered
+});
+
+el("print-report").addEventListener("click", () => {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const previous = document.title;
+  document.title = `Asset-Manager-Insurance-Report-${stamp}`;
+  document.body.classList.add("printing-report");
+  const restore = () => {
+    document.title = previous;
+    document.body.classList.remove("printing-report");
+    window.removeEventListener("afterprint", restore);
+  };
+  window.addEventListener("afterprint", restore);
+  window.print();
+  setTimeout(restore, 1000);
+});
+
+/**
+ * Render the report.
+ *
+ * Photos are embedded from the asset:// handler so the printed page is
+ * self-contained. Provenance is shown next to every figure — an insurer
+ * should be able to tell a hand-entered value from a market price.
+ */
+function renderReport(report) {
+  const body = el("report-body");
+  body.innerHTML = "";
+
+  const heading = document.createElement("h1");
+  heading.textContent = "Asset inventory";
+  body.append(heading);
+
+  const meta = document.createElement("p");
+  meta.className = "meta";
+  const coverage =
+    report.unvalued > 0
+      ? ` — ${report.valued} of ${report.valued + report.unvalued} items have a recorded value`
+      : "";
+  meta.textContent = `Generated ${report.generated_at}. Total ${report.total}${coverage}.`;
+  body.append(meta);
+
+  if (report.unvalued > 0) {
+    const note = document.createElement("p");
+    note.className = "meta";
+    note.textContent =
+      "Items without a recorded value are listed but contribute nothing to the total.";
+    body.append(note);
+  }
+
+  const warning = document.createElement("p");
+  warning.className = "warning";
+  warning.textContent = report.warning;
+  body.append(warning);
+
+  for (const item of report.items) {
+    const section = document.createElement("div");
+    section.className = "report-item";
+
+    const name = document.createElement("h2");
+    name.textContent = item.name;
+    section.append(name);
+
+    const list = document.createElement("dl");
+    const rows = [
+      ["Quantity", item.quantity],
+      ["Location", item.storage_location ?? "not recorded"],
+      ["Acquired", [item.acquired_date, item.acquired].filter(Boolean).join(" — ") || "not recorded"],
+      ["Current value", item.current ?? "not recorded"],
+    ];
+    if (item.current) {
+      // "manual" vs "api" matters to a claims assessor.
+      rows.push(["Value source", `${item.value_source ?? "unknown"}${item.value_asof ? `, as of ${item.value_asof}` : ""}`]);
+    }
+    for (const [label, value] of rows) {
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.textContent = value;
+      list.append(dt, dd);
+    }
+    section.append(list);
+
+    if (item.photo_ids.length) {
+      const photos = document.createElement("div");
+      photos.className = "report-photos";
+      for (const objectId of item.photo_ids.slice(0, 4)) {
+        const img = document.createElement("img");
+        img.src = `asset://localhost/media/${objectId}?variant=1024`;
+        img.alt = "";
+        photos.append(img);
+      }
+      section.append(photos);
+    }
+
+    body.append(section);
+  }
+}
+
 el("lock").addEventListener("click", lockUi);
 
 async function lockUi() {
@@ -193,6 +311,8 @@ function toUnlockScreen() {
   el("assets").querySelector("tbody").innerHTML = "";  // don't leave data on screen
   currentAsset = null;
   el("photos").innerHTML = "";  // decrypted images must not survive a lock
+  el("report-body").innerHTML = "";
+  el("report-view").hidden = true;
   el("detail").hidden = true;
   show("vault-unlock");
 }
