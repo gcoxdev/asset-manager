@@ -11,6 +11,7 @@ pub mod header;
 pub mod migrate;
 pub mod objects;
 pub mod series;
+pub mod spot;
 pub mod thumbs;
 pub mod valuations;
 pub mod vault;
