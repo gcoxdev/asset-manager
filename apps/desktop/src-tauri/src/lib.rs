@@ -1,6 +1,8 @@
 //! Asset Manager desktop shell.
 
 pub mod commands;
+pub mod crypto_commands;
+pub mod crypto_provider;
 pub mod metals_commands;
 pub mod metals_provider;
 pub mod paths;
@@ -14,7 +16,6 @@ use tauri::{Emitter, Manager};
 
 use session::{Session, AUTO_LOCK_IDLE};
 
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Work around a WebKitGTK/Mesa explicit-sync bug on Wayland.
 ///
 /// WebKitGTK's DMA-BUF renderer negotiates `wp_linux_drm_syncobj` (explicit
@@ -52,6 +53,7 @@ fn apply_wayland_workarounds() {
 #[cfg(not(target_os = "linux"))]
 fn apply_wayland_workarounds() {}
 
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     apply_wayland_workarounds();
 
@@ -93,6 +95,11 @@ pub fn run() {
             metals_commands::metals_provider_status,
             metals_commands::set_metals_api_key,
             metals_commands::refresh_spot_prices,
+            crypto_commands::common_coins,
+            crypto_commands::crypto_provider_status,
+            crypto_commands::set_crypto_api_key,
+            crypto_commands::value_crypto_holding,
+            crypto_commands::refresh_crypto_prices,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Asset Manager");
