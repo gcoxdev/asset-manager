@@ -100,6 +100,24 @@
           <div id="spot-prices"></div>
           <p id="quota-note" class="coverage"></p>
 
+          <div id="provider-controls">
+            <button id="refresh-spot">Update prices</button>
+            <details id="provider-settings">
+              <summary>Price feed settings</summary>
+              <p class="coverage">
+                Optional. metals.dev's free tier allows 100 requests a month.
+                The key is stored in your system keyring, never in the vault
+                or a file. Leave this blank to enter prices by hand.
+              </p>
+              <label>
+                API key
+                <input type="password" id="metals-key" autocomplete="off" />
+              </label>
+              <button id="save-metals-key">Save</button>
+              <button id="clear-metals-key">Remove</button>
+            </details>
+          </div>
+
           <fieldset id="metal-calculator">
             <legend>Value a holding</legend>
             <label>

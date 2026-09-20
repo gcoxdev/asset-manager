@@ -106,3 +106,8 @@ td.value-cell input { width: 8rem; font: inherit; }
 #metal-result dt { opacity: 0.75; }
 #metal-result dd { margin: 0; font-variant-numeric: tabular-nums; }
 #metal-result .caveat { margin-top: 0.4rem; font-size: 0.8rem; }
+
+#provider-controls { margin-top: 0.5rem; }
+#provider-settings { margin-top: 0.5rem; }
+#provider-settings summary { cursor: pointer; font-size: 0.85rem; opacity: 0.85; }
+#provider-settings input { width: 18rem; }

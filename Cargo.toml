@@ -17,7 +17,11 @@ hkdf = "0.12"
 # default-features off: we want no image formats we do not explicitly allow,
 # and none of the codec surface we are not serving.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+keyring = { version = "3", default-features = false, features = ["linux-native", "apple-native", "windows-native"] }
 rand = "0.8.6"
+# rustls rather than native-tls: keeps the AppImage self-contained, matching
+# the vendored-OpenSSL decision for SQLCipher.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # 28-29 significant digits, exact decimal arithmetic. NOT arbitrary
 # precision: overflow is a real case and must be handled, not assumed away.
 rust_decimal = { version = "1", default-features = false, features = ["serde", "std"] }

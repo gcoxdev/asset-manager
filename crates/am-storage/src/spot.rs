@@ -92,6 +92,13 @@ pub enum SpotOrigin {
     /// Fetched from a metered provider. Charges one request against the
     /// monthly budget.
     Api,
+    /// Also from the provider, but on a request already charged.
+    ///
+    /// One metals.dev call returns all four metals. Charging each stored
+    /// price would spend the budget four times faster than requests are
+    /// actually made, so only the first is charged — while all four keep
+    /// API provenance, because that is where they came from.
+    ApiSameRequest,
     /// Typed in by the owner. Free, and always available even with the quota
     /// exhausted or the provider down.
     Manual,
@@ -100,6 +107,10 @@ pub enum SpotOrigin {
 impl SpotOrigin {
     fn charges_quota(self) -> bool {
         matches!(self, SpotOrigin::Api)
+    }
+
+    fn is_from_provider(self) -> bool {
+        matches!(self, SpotOrigin::Api | SpotOrigin::ApiSameRequest)
     }
 }
 
@@ -130,9 +141,10 @@ pub fn record_spot(
             currency: currency.clone(),
             quote_unit: "troy_oz".into(),
             source: source.to_string(),
-            match_quality: match origin {
-                SpotOrigin::Api => MatchQuality::Exact,
-                SpotOrigin::Manual => MatchQuality::Manual,
+            match_quality: if origin.is_from_provider() {
+                MatchQuality::Exact
+            } else {
+                MatchQuality::Manual
             },
             source_asof: source_asof.to_string(),
         },
@@ -569,6 +581,44 @@ mod tests {
             "30"
         );
         assert!(latest_spot(&v, Metal::Palladium, NOW).unwrap().is_none());
+    }
+
+    #[test]
+    fn one_request_returning_four_metals_charges_once() {
+        // The budget counts requests, not prices. Charging per metal would
+        // exhaust a 100-request month in 25 actual calls.
+        let (_d, v) = setup();
+        for (i, metal) in
+            [Metal::Gold, Metal::Silver, Metal::Platinum, Metal::Palladium].iter().enumerate()
+        {
+            record_spot(
+                &v,
+                SpotReading {
+                    metal: *metal,
+                    price_per_troy_oz: d("100"),
+                    currency: &usd(),
+                    source: "metals.dev",
+                    source_asof: "2026-09-19T11:00:00Z",
+                    origin: if i == 0 { SpotOrigin::Api } else { SpotOrigin::ApiSameRequest },
+                },
+                NOW,
+            )
+            .unwrap();
+        }
+
+        let status = quota_status(&v, "metals.dev", NOW).unwrap();
+        assert_eq!(status.used_this_month, 1, "four prices, one request");
+
+        // All four keep provider provenance despite only one being charged.
+        let stored: i64 = v
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM quotes WHERE match_quality = 'exact'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, 4, "every fetched price is API-sourced");
     }
 
     #[test]

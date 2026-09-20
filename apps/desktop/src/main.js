@@ -523,14 +523,65 @@ async function refreshSpotPrices() {
       container.append(card);
     }
 
-    const quota = await invoke("metals_quota");
-    el("quota-note").textContent =
-      `API budget: ${quota.used_this_month} of ${quota.monthly_limit} used this month. ` +
-      `Typing a price by hand costs nothing.`;
+    const provider = await invoke("metals_provider_status");
+    const quota = provider.quota;
+    el("quota-note").textContent = provider.configured
+      ? `Price feed: ${quota.used_this_month} of ${quota.monthly_limit} requests used this month. ` +
+        `Typing a price by hand costs nothing.`
+      : "No price feed configured — enter prices by hand, or add a key below.";
+
+    // The button stays enabled without a key so the error explains what to
+    // do; a disabled control with no explanation is its own dead end.
+    el("refresh-spot").textContent = provider.configured
+      ? "Update prices"
+      : "Update prices (needs a key)";
   } catch (e) {
     // A locked vault is the usual reason; nothing to report.
   }
 }
+
+el("refresh-spot").addEventListener("click", async () => {
+  const button = el("refresh-spot");
+  button.disabled = true;
+  status("Fetching prices…");
+  try {
+    const result = await invoke("refresh_spot_prices", { automatic: false });
+    await refreshSpotPrices();
+    status(
+      result.updated.length
+        ? `Updated ${result.updated.join(", ")}. ` +
+          `${result.quota.remaining} of ${result.quota.monthly_limit} requests left this month.`
+        : "The feed returned no usable prices."
+    );
+  } catch (e) {
+    status(describe(e));
+  } finally {
+    button.disabled = false;
+  }
+});
+
+el("save-metals-key").addEventListener("click", async () => {
+  const input = el("metals-key");
+  try {
+    await invoke("set_metals_api_key", { key: input.value });
+    input.value = "";   // never leave a key sitting in the DOM
+    await refreshSpotPrices();
+    status("Price feed key saved to your system keyring.");
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
+el("clear-metals-key").addEventListener("click", async () => {
+  try {
+    await invoke("set_metals_api_key", { key: "" });
+    el("metals-key").value = "";
+    await refreshSpotPrices();
+    status("Price feed key removed.");
+  } catch (e) {
+    status(describe(e));
+  }
+});
 
 async function loadPresets() {
   try {

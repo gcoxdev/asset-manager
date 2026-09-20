@@ -17,6 +17,8 @@ am-core = { path = "../../../crates/am-core" }
 am-storage = { path = "../../../crates/am-storage" }
 anyhow.workspace = true
 chrono.workspace = true
+keyring.workspace = true
+reqwest.workspace = true
 rusqlite = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true

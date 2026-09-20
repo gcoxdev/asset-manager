@@ -364,3 +364,151 @@ mod tests {
         }
     }
 }
+
+// ---------------------------------------------------------------- provider
+
+use crate::metals_provider;
+
+#[derive(Serialize)]
+pub struct ProviderStatus {
+    pub configured: bool,
+    pub quota: am_storage::spot::QuotaStatus,
+}
+
+#[tauri::command]
+pub fn metals_provider_status(session: State<'_, Session>) -> IpcResult<ProviderStatus> {
+    session.touch();
+    let timestamp = now();
+    session
+        .with_vault(|vault| {
+            Ok(ProviderStatus {
+                configured: metals_provider::has_api_key(),
+                quota: spot::quota_status(vault, METALS_PROVIDER, &timestamp)
+                    .map_err(storage)?,
+            })
+        })
+        .map_err(IpcError::from)
+}
+
+/// Store the metals.dev API key in the OS keyring.
+///
+/// Requires an unlocked vault — not because the key is stored there, but
+/// because configuring a provider is an owner action, and the lock is what
+/// establishes the owner is present.
+#[tauri::command]
+pub fn set_metals_api_key(session: State<'_, Session>, key: String) -> IpcResult<()> {
+    session.touch();
+    session.with_vault(|_| Ok(())).map_err(IpcError::from)?;
+
+    if key.trim().is_empty() {
+        metals_provider::clear_api_key()
+            .map_err(|e| IpcError { kind: "keyring".into(), message: e.to_string() })
+    } else {
+        metals_provider::store_api_key(&key)
+            .map_err(|e| IpcError { kind: "keyring".into(), message: e.to_string() })
+    }
+}
+
+#[derive(Serialize)]
+pub struct RefreshResult {
+    pub updated: Vec<String>,
+    pub source_asof: Option<String>,
+    pub quota: am_storage::spot::QuotaStatus,
+}
+
+/// Fetch fresh spot prices.
+///
+/// `automatic` distinguishes a background poll from a user asking. Both count
+/// against the monthly budget, but automatic polling stops at its smaller
+/// allowance so a background task cannot spend the requests the owner needs
+/// on demand.
+#[tauri::command]
+pub fn refresh_spot_prices(
+    session: State<'_, Session>,
+    automatic: Option<bool>,
+) -> IpcResult<RefreshResult> {
+    session.touch();
+    let timestamp = now();
+    let automatic = automatic.unwrap_or(false);
+
+    // Budget check before the network call, so a refused request costs
+    // nothing.
+    let allowed = session
+        .with_vault(|vault| {
+            let status =
+                spot::quota_status(vault, METALS_PROVIDER, &timestamp).map_err(storage)?;
+            Ok(if automatic {
+                status.may_poll_automatically
+            } else {
+                status.may_refresh_manually
+            })
+        })
+        .map_err(IpcError::from)?;
+
+    if !allowed {
+        return Err(IpcError {
+            kind: "quota_exhausted".into(),
+            message: if automatic {
+                "automatic updates have used their share of this month's budget".into()
+            } else {
+                "this month's request budget is spent — enter a price by hand instead".into()
+            },
+        });
+    }
+
+    // The network call happens outside the vault lock: a slow response must
+    // not hold the database for its duration.
+    let prices = metals_provider::fetch_spot_prices("USD").map_err(|e| IpcError {
+        kind: match e {
+            metals_provider::ProviderError::NoKey => "no_api_key",
+            metals_provider::ProviderError::QuotaExhausted => "quota_exhausted",
+            _ => "provider_error",
+        }
+        .into(),
+        message: e.to_string(),
+    })?;
+
+    let source_asof = prices.first().map(|p| p.source_asof.clone());
+
+    session
+        .with_vault(|vault| {
+            let mut updated = Vec::new();
+            for price in &prices {
+                let Some(metal) = Metal::parse(&price.metal) else { continue };
+                let value = parse_decimal(&price.price_per_troy_oz)
+                    .map_err(|_| storage("provider returned an unparseable price"))?;
+                let currency =
+                    Currency::new(&price.currency).map_err(|e| storage(e.to_string()))?;
+
+                spot::record_spot(
+                    vault,
+                    SpotReading {
+                        metal,
+                        price_per_troy_oz: value,
+                        currency: &currency,
+                        source: METALS_PROVIDER,
+                        source_asof: &price.source_asof,
+                        // One HTTP request fetched all four metals, so only
+                        // the first charges the budget — but every price
+                        // keeps API provenance, since that is its source.
+                        origin: if updated.is_empty() {
+                            SpotOrigin::Api
+                        } else {
+                            SpotOrigin::ApiSameRequest
+                        },
+                    },
+                    &timestamp,
+                )
+                .map_err(storage)?;
+                updated.push(metal.display_name().to_string());
+            }
+
+            Ok(RefreshResult {
+                updated,
+                source_asof: source_asof.clone(),
+                quota: spot::quota_status(vault, METALS_PROVIDER, &timestamp)
+                    .map_err(storage)?,
+            })
+        })
+        .map_err(IpcError::from)
+}

@@ -2,6 +2,7 @@
 
 pub mod commands;
 pub mod metals_commands;
+pub mod metals_provider;
 pub mod paths;
 pub mod protocol;
 pub mod session;
@@ -89,6 +90,9 @@ pub fn run() {
             metals_commands::set_spot_price,
             metals_commands::metals_quota,
             metals_commands::value_metal_holding,
+            metals_commands::metals_provider_status,
+            metals_commands::set_metals_api_key,
+            metals_commands::refresh_spot_prices,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Asset Manager");
