@@ -1,6 +1,7 @@
 //! Asset Manager desktop shell.
 
 pub mod commands;
+pub mod metals_commands;
 pub mod paths;
 pub mod protocol;
 pub mod session;
@@ -83,6 +84,11 @@ pub fn run() {
             valuation_commands::change_quantity,
             valuation_commands::quantity_on,
             valuation_commands::portfolio_series,
+            metals_commands::bullion_presets,
+            metals_commands::spot_prices,
+            metals_commands::set_spot_price,
+            metals_commands::metals_quota,
+            metals_commands::value_metal_holding,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Asset Manager");

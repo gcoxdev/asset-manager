@@ -241,6 +241,8 @@ async function openCatalog() {
     select.append(option);
   }
   show("catalog");
+  if (!presetCache.length) await loadPresets();
+  await refreshSpotPrices();
   await refresh();
 }
 
@@ -455,6 +457,162 @@ function beginPriceEdit(cell, row) {
 function stripCurrency(text) {
   const match = text.match(/^-?[\d.]+/);
   return match ? match[0] : "";
+}
+
+let presetCache = [];
+
+/**
+ * Spot prices, each with its own entry field.
+ *
+ * Staleness is shown as words, not colour alone: a coloured dot means nothing
+ * to a colour-blind user and nothing at all when printed.
+ */
+async function refreshSpotPrices() {
+  try {
+    const prices = await invoke("spot_prices");
+    const container = el("spot-prices");
+    container.innerHTML = "";
+
+    for (const price of prices) {
+      const card = document.createElement("div");
+      card.className = "spot";
+
+      const heading = document.createElement("h4");
+      heading.textContent = price.metal_name;
+      card.append(heading);
+
+      const value = document.createElement("div");
+      value.className = "price";
+      value.textContent = price.price_per_troy_oz
+        ? `${price.price_per_troy_oz} ${price.currency}/oz`
+        : "not set";
+      card.append(value);
+
+      const freshness = document.createElement("div");
+      freshness.className = price.needs_caveat ? "freshness warn" : "freshness";
+      if (price.freshness) {
+        const days = Math.floor((price.age_hours ?? 0) / 24);
+        const age = days >= 1 ? `${days}d old` : "today";
+        freshness.textContent = `${price.freshness} — ${age}, from ${price.source}`;
+      } else {
+        freshness.textContent = "enter a price to value holdings";
+      }
+      card.append(freshness);
+
+      // Manual entry is always available: it never spends API quota and works
+      // with the provider down.
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = "price/oz";
+      input.setAttribute("aria-label", `${price.metal_name} spot price per troy ounce`);
+      input.addEventListener("keydown", async (event) => {
+        if (event.key !== "Enter") return;
+        const typed = input.value.trim();
+        if (!typed) return;
+        try {
+          await invoke("set_spot_price", { metal: price.metal, price: typed });
+          input.value = "";
+          await refreshSpotPrices();
+          status("");
+        } catch (e) {
+          status(describe(e));
+        }
+      });
+      card.append(input);
+
+      container.append(card);
+    }
+
+    const quota = await invoke("metals_quota");
+    el("quota-note").textContent =
+      `API budget: ${quota.used_this_month} of ${quota.monthly_limit} used this month. ` +
+      `Typing a price by hand costs nothing.`;
+  } catch (e) {
+    // A locked vault is the usual reason; nothing to report.
+  }
+}
+
+async function loadPresets() {
+  try {
+    presetCache = await invoke("bullion_presets");
+    const select = el("metal-preset");
+    for (const preset of presetCache) {
+      const option = document.createElement("option");
+      option.value = preset.id;
+      option.textContent = preset.label;
+      select.append(option);
+    }
+  } catch (e) {
+    // Presets are static; a failure here just leaves the custom path.
+  }
+}
+
+el("metal-preset").addEventListener("change", () => {
+  const preset = presetCache.find((p) => p.id === el("metal-preset").value);
+  if (!preset) return;
+  el("metal-which").value = preset.metal;
+  el("metal-weight").value = preset.weight;
+  el("metal-unit").value = preset.unit;
+  el("metal-basis").value = preset.basis;
+  el("metal-purity").value = preset.purity;
+});
+
+el("metal-calc").addEventListener("click", async () => {
+  try {
+    const result = await invoke("value_metal_holding", {
+      request: {
+        metal: el("metal-which").value,
+        quantity: el("metal-qty").value || "1",
+        weight_per_item: el("metal-weight").value,
+        unit: el("metal-unit").value,
+        basis: el("metal-basis").value,
+        purity: el("metal-purity").value,
+        premium_pct: el("metal-premium").value || null,
+      },
+    });
+    renderMetalResult(result);
+    status("");
+  } catch (e) {
+    el("metal-result").textContent = "";
+    status(describe(e));
+  }
+});
+
+/**
+ * Melt and market are shown as separate lines.
+ *
+ * A graded coin's premium can dwarf its metal content, so collapsing them
+ * into one number would hide which part is metal and which is collectibility.
+ */
+function renderMetalResult(result) {
+  const container = el("metal-result");
+  container.innerHTML = "";
+
+  const list = document.createElement("dl");
+  const rows = [
+    ["Fine metal", `${result.fine_troy_oz} troy oz`],
+    ["Melt value", result.melt],
+    ["Premium", result.premium_amount],
+    ["Market value", result.market],
+    ["Spot used", `${result.spot_used} ${result.currency}/oz`],
+  ];
+  for (const [label, value] of rows) {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    list.append(dt, dd);
+  }
+  container.append(list);
+
+  if (result.needs_caveat) {
+    const caveat = document.createElement("p");
+    caveat.className = "caveat";
+    caveat.textContent =
+      `Based on a ${result.freshness} spot price from ${result.source_asof}. ` +
+      `Enter a current price for an up-to-date figure.`;
+    container.append(caveat);
+  }
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";

@@ -94,6 +94,52 @@
           <p id="chart-note" class="coverage"></p>
         </figure>
 
+        <details id="metals-panel">
+          <summary>Precious metals</summary>
+
+          <div id="spot-prices"></div>
+          <p id="quota-note" class="coverage"></p>
+
+          <fieldset id="metal-calculator">
+            <legend>Value a holding</legend>
+            <label>
+              Product
+              <select id="metal-preset"><option value="">Custom…</option></select>
+            </label>
+            <label>
+              Metal
+              <select id="metal-which">
+                <option value="XAU">Gold</option>
+                <option value="XAG">Silver</option>
+                <option value="XPT">Platinum</option>
+                <option value="XPD">Palladium</option>
+              </select>
+            </label>
+            <label>Quantity <input type="text" id="metal-qty" value="1" size="5" /></label>
+            <label>Weight each <input type="text" id="metal-weight" size="8" /></label>
+            <label>
+              Unit
+              <select id="metal-unit">
+                <option value="troy_oz">troy oz</option>
+                <option value="gram">grams</option>
+                <option value="pennyweight">pennyweight</option>
+                <option value="ounce">ounces (avoirdupois)</option>
+              </select>
+            </label>
+            <label>
+              Weight is
+              <select id="metal-basis">
+                <option value="gross">gross (alloy included)</option>
+                <option value="fine">fine (metal content)</option>
+              </select>
+            </label>
+            <label>Purity <input type="text" id="metal-purity" value="0.999" size="7" /></label>
+            <label>Premium % <input type="text" id="metal-premium" placeholder="0" size="5" /></label>
+            <button id="metal-calc">Calculate</button>
+            <div id="metal-result"></div>
+          </fieldset>
+        </details>
+
         <table id="assets">
           <thead>
             <tr>
