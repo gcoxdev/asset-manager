@@ -347,3 +347,67 @@ mod tests {
         assert_eq!(basis_from(Some("nonsense")), Basis::EstimatedResale);
     }
 }
+
+#[derive(Serialize)]
+pub struct ChartSeries {
+    pub points: Vec<am_storage::series::SeriesPoint>,
+    pub currency: String,
+    pub skipped_currencies: Vec<String>,
+    /// False when any point had an unpriced holding. The chart must show a
+    /// caveat rather than presenting a partial total as complete.
+    pub complete: bool,
+}
+
+/// Portfolio value over time.
+///
+/// Semantics are specified in `docs/chart-semantics.md` and asserted in
+/// `am-storage::series`. In particular this is a **value** series, not a
+/// return series: decision 2 excludes the per-flow data needed to separate
+/// "bought more" from "gained value", so the caller must not label it as
+/// performance.
+#[tauri::command]
+pub fn portfolio_series(
+    session: State<'_, Session>,
+    from: Option<String>,
+    to: Option<String>,
+    currency: Option<String>,
+    max_points: Option<usize>,
+) -> IpcResult<ChartSeries> {
+    session.touch();
+    let code = currency.unwrap_or_else(|| "USD".into());
+    let currency = Currency::new(&code).map_err(|e| bad_input(e.to_string()))?;
+    let today = now()[..10].to_string();
+
+    session
+        .with_vault(|vault| {
+            // Default range starts at the first event, so a period when
+            // assets were held but unpriced shows as low coverage rather than
+            // being hidden.
+            let start = match from.clone() {
+                Some(value) => value,
+                None => am_storage::series::earliest_activity(vault)
+                    .map_err(storage)?
+                    .unwrap_or_else(|| today.clone()),
+            };
+            let end = to.clone().unwrap_or_else(|| today.clone());
+
+            let series = am_storage::series::portfolio_series(
+                vault,
+                am_storage::series::SeriesRequest {
+                    from: &start,
+                    to: &end,
+                    max_points: max_points.unwrap_or(180),
+                },
+                &currency,
+            )
+            .map_err(storage)?;
+
+            Ok(ChartSeries {
+                points: series.points,
+                currency: series.currency,
+                skipped_currencies: series.skipped_currencies,
+                complete: series.complete,
+            })
+        })
+        .map_err(IpcError::from)
+}

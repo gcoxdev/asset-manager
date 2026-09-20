@@ -10,6 +10,7 @@ pub mod events;
 pub mod header;
 pub mod migrate;
 pub mod objects;
+pub mod series;
 pub mod thumbs;
 pub mod valuations;
 pub mod vault;

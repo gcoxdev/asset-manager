@@ -76,3 +76,14 @@ td.value-cell input { width: 8rem; font: inherit; }
 #valuation-history { margin-top: 1rem; font-size: 0.9rem; }
 #valuation-history:empty { display: none; }
 .stale { color: #b5651d; }
+
+#chart-figure { margin: 0 0 1.25rem; }
+#chart-figure figcaption { font-size: 0.85rem; opacity: 0.8; margin-bottom: 0.25rem; }
+#chart { width: 100%; height: auto; max-height: 200px; overflow: visible; }
+#chart .line { fill: none; stroke: currentColor; stroke-width: 2; }
+/* Dashed where coverage is partial, so an incomplete total is visible. */
+#chart .line-partial { stroke-dasharray: 5 4; opacity: 0.75; }
+#chart .event-marker { fill: currentColor; opacity: 0.55; }
+#chart .axis { stroke: currentColor; opacity: 0.25; stroke-width: 1; }
+#chart .axis-label { font-size: 10px; fill: currentColor; opacity: 0.7; }
+#chart-note { margin: 0.25rem 0 0; }

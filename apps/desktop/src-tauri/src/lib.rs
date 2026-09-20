@@ -82,6 +82,7 @@ pub fn run() {
             valuation_commands::valuation_history,
             valuation_commands::change_quantity,
             valuation_commands::quantity_on,
+            valuation_commands::portfolio_series,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Asset Manager");

@@ -293,6 +293,7 @@ async function refresh() {
       tbody.append(tr);
     }
     await refreshPortfolio();
+    await refreshChart();
     status("");
   } catch (e) {
     status(describe(e));
@@ -454,6 +455,133 @@ function beginPriceEdit(cell, row) {
 function stripCurrency(text) {
   const match = text.match(/^-?[\d.]+/);
   return match ? match[0] : "";
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svg(tag, attrs = {}) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, value);
+  return node;
+}
+
+/**
+ * Draw the portfolio value series.
+ *
+ * Semantics live in docs/chart-semantics.md. Two rules are visible here:
+ * segments where any holding was unpriced are dashed, so a partial total
+ * never looks complete; and dates carrying a quantity event are marked, so a
+ * step can be attributed to a purchase rather than read as appreciation.
+ *
+ * Deliberately labelled "value", never "return" — the app does not keep the
+ * per-flow data needed to separate buying more from gaining value.
+ */
+async function refreshChart() {
+  const figure = el("chart-figure");
+  try {
+    const series = await invoke("portfolio_series", { maxPoints: 120 });
+    const points = series.points ?? [];
+
+    if (points.length < 2) {
+      figure.hidden = true;   // a single point is not a trend
+      return;
+    }
+
+    const chart = el("chart");
+    chart.innerHTML = "";
+    const width = 640;
+    const height = 180;
+    const pad = { top: 12, right: 12, bottom: 22, left: 12 };
+
+    // Minor units are integers-as-strings; Number() is safe for plotting
+    // (pixels), never for arithmetic on the stored amount.
+    const values = points.map((p) => Number(p.total_minor));
+    const maxValue = Math.max(...values, 1);
+    const plotWidth = width - pad.left - pad.right;
+    const plotHeight = height - pad.top - pad.bottom;
+
+    const x = (i) => pad.left + (i / (points.length - 1)) * plotWidth;
+    const y = (v) => pad.top + plotHeight - (v / maxValue) * plotHeight;
+
+    // Baseline.
+    chart.append(svg("line", {
+      class: "axis",
+      x1: pad.left, y1: pad.top + plotHeight,
+      x2: pad.left + plotWidth, y2: pad.top + plotHeight,
+    }));
+
+    // Split into runs of equal coverage so partial stretches can be dashed.
+    let run = [];
+    let runPartial = points[0].unvalued > 0;
+
+    const flush = () => {
+      if (run.length < 2) return;
+      chart.append(svg("polyline", {
+        class: runPartial ? "line line-partial" : "line",
+        points: run.join(" "),
+      }));
+    };
+
+    points.forEach((point, i) => {
+      const partial = point.unvalued > 0;
+      const coord = `${x(i)},${y(values[i])}`;
+
+      if (partial !== runPartial && run.length) {
+        run.push(coord);       // bridge the join so there is no gap
+        flush();
+        run = [coord];
+        runPartial = partial;
+      } else {
+        run.push(coord);
+      }
+    });
+    flush();
+
+    // Mark dates where a quantity event took effect.
+    points.forEach((point, i) => {
+      if (!point.quantity_event) return;
+      const marker = svg("circle", {
+        class: "event-marker", cx: x(i), cy: y(values[i]), r: 3.5,
+      });
+      const title = document.createElementNS(SVG_NS, "title");
+      title.textContent = `${point.date}: holding changed`;
+      marker.append(title);
+      chart.append(marker);
+    });
+
+    // End labels only: a dense axis on a 180px-tall chart is noise.
+    const first = svg("text", {
+      class: "axis-label", x: pad.left, y: height - 6,
+    });
+    first.textContent = points[0].date;
+    const last = svg("text", {
+      class: "axis-label", x: pad.left + plotWidth, y: height - 6, "text-anchor": "end",
+    });
+    last.textContent = points[points.length - 1].date;
+    chart.append(first, last);
+
+    const peak = svg("text", { class: "axis-label", x: pad.left, y: pad.top - 2 });
+    peak.textContent = points.reduce(
+      (best, p) => (Number(p.total_minor) >= Number(best.total_minor) ? p : best),
+      points[0]
+    ).total;
+    chart.append(peak);
+
+    // State the caveat rather than letting a dashed line speak for itself.
+    const notes = [];
+    if (!series.complete) {
+      notes.push("Dashed where some holdings had no price on that date.");
+    }
+    if (series.skipped_currencies.length) {
+      notes.push(`Excludes ${series.skipped_currencies.join(", ")} — no conversion yet.`);
+    }
+    notes.push("Dots mark dates when a holding changed; a step there is a purchase or sale, not a gain.");
+    el("chart-note").textContent = notes.join(" ");
+
+    figure.hidden = false;
+  } catch (e) {
+    figure.hidden = true;   // a broken chart is worse than none
+  }
 }
 
 async function refreshPortfolio() {
