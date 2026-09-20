@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/am-crypto", "crates/am-storage", "apps/desktop/src-tauri"]
+members = ["crates/am-core", "crates/am-crypto", "crates/am-storage", "apps/desktop/src-tauri"]
 resolver = "2"
 
 [workspace.package]
@@ -18,6 +18,9 @@ hkdf = "0.12"
 # and none of the codec surface we are not serving.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 rand = "0.8.6"
+# 28-29 significant digits, exact decimal arithmetic. NOT arbitrary
+# precision: overflow is a real case and must be handled, not assumed away.
+rust_decimal = { version = "1", default-features = false, features = ["serde", "std"] }
 # bundled-sqlcipher-vendored-openssl, NOT bundled-sqlcipher: the latter still
 # links a *system* libcrypto, which would make the AppImage depend on whatever
 # OpenSSL the host happens to have. Vendoring is what makes the bundle
