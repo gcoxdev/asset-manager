@@ -111,3 +111,17 @@ td.value-cell input { width: 8rem; font: inherit; }
 #provider-settings { margin-top: 0.5rem; }
 #provider-settings summary { cursor: pointer; font-size: 0.85rem; opacity: 0.85; }
 #provider-settings input { width: 18rem; }
+
+#crypto-panel { margin: 1rem 0; border: 1px solid rgba(128,128,128,0.35); border-radius: 4px; padding: 0.5rem 0.75rem; }
+#crypto-panel summary { cursor: pointer; font-weight: 600; }
+#crypto-controls { display: flex; align-items: center; gap: 0.75rem; margin: 0.6rem 0; }
+#crypto-calculator { border: 1px solid rgba(128,128,128,0.3); border-radius: 4px; }
+#crypto-calculator label { display: inline-block; margin-right: 0.75rem; }
+#crypto-settings { margin-top: 0.6rem; }
+#crypto-settings summary { font-size: 0.85rem; font-weight: normal; opacity: 0.85; }
+#crypto-settings input { width: 18rem; }
+#crypto-result { margin-top: 0.75rem; }
+#crypto-result dl { display: grid; grid-template-columns: auto auto; gap: 0.15rem 1rem; margin: 0; }
+#crypto-result dt { opacity: 0.75; }
+#crypto-result dd { margin: 0; font-variant-numeric: tabular-nums; }
+#crypto-result .unpriced { font-size: 0.85rem; }

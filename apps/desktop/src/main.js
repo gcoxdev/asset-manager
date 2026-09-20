@@ -242,7 +242,9 @@ async function openCatalog() {
   }
   show("catalog");
   if (!presetCache.length) await loadPresets();
+  if (!coinCache.length) await loadCoins();
   await refreshSpotPrices();
+  await refreshCryptoStatus();
   await refresh();
 }
 
@@ -577,6 +579,160 @@ el("clear-metals-key").addEventListener("click", async () => {
     await invoke("set_metals_api_key", { key: "" });
     el("metals-key").value = "";
     await refreshSpotPrices();
+    status("Price feed key removed.");
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
+let coinCache = [];
+
+async function loadCoins() {
+  try {
+    coinCache = await invoke("common_coins");
+    const select = el("crypto-coin");
+    for (const coin of coinCache) {
+      const option = document.createElement("option");
+      option.value = coin.coin_id;
+      option.textContent = `${coin.name} (${coin.symbol})`;
+      select.append(option);
+    }
+  } catch (e) {
+    // The bundled list is static; a failure just leaves manual entry.
+  }
+}
+
+// Picking a coin fills the ID field, which stays visible and editable: the
+// bundled list is short by design, and anything not on it needs a real coin
+// ID rather than a guessed symbol.
+el("crypto-coin").addEventListener("change", () => {
+  const chosen = el("crypto-coin").value;
+  el("crypto-coin-id").value = chosen;
+});
+
+async function refreshCryptoStatus() {
+  try {
+    const status = await invoke("crypto_provider_status");
+    // Attribution is required by CoinGecko's branding guidelines wherever
+    // their data appears.
+    el("crypto-attribution").textContent = status.configured
+      ? status.attribution
+      : "No price feed configured — add a key below, or enter values by hand.";
+    el("refresh-crypto").textContent = status.configured
+      ? "Update prices"
+      : "Update prices (needs a key)";
+  } catch (e) {
+    // Locked vault; nothing to show.
+  }
+}
+
+el("refresh-crypto").addEventListener("click", async () => {
+  const button = el("refresh-crypto");
+
+  // Only ask for what is actually held: every id costs credits, and asking
+  // for the whole bundled list would spend them on coins nobody owns.
+  const wanted = [...new Set(
+    [el("crypto-coin-id").value.trim().toLowerCase()].filter(Boolean)
+  )];
+  if (!wanted.length) {
+    return status("Enter a coin ID first, so we only fetch what you hold.");
+  }
+
+  button.disabled = true;
+  status("Fetching prices…");
+  try {
+    const result = await invoke("refresh_crypto_prices", { coinIds: wanted });
+    const parts = [];
+    if (result.updated.length) parts.push(`Updated ${result.updated.join(", ")}.`);
+    // Naming what came back empty distinguishes a wrong ID from an outage.
+    if (result.missing.length) {
+      parts.push(`No price for ${result.missing.join(", ")} — check the coin ID.`);
+    }
+    status(parts.join(" ") || "Nothing to update.");
+    await refreshCryptoStatus();
+  } catch (e) {
+    status(describe(e));
+  } finally {
+    button.disabled = false;
+  }
+});
+
+el("crypto-calc").addEventListener("click", async () => {
+  const coinId = el("crypto-coin-id").value.trim();
+  if (!coinId) return status("Enter a coin ID.");
+
+  const known = coinCache.find((c) => c.coin_id === coinId);
+  try {
+    const result = await invoke("value_crypto_holding", {
+      holding: {
+        coin_id: coinId,
+        symbol: known ? known.symbol : coinId.toUpperCase(),
+        quantity: el("crypto-qty").value || "0",
+        custody: el("crypto-custody").value,
+        location: el("crypto-where").value || null,
+        chain: null,
+        contract: null,
+      },
+    });
+    renderCryptoResult(result);
+    status("");
+  } catch (e) {
+    el("crypto-result").textContent = "";
+    status(describe(e));
+  }
+});
+
+function renderCryptoResult(result) {
+  const container = el("crypto-result");
+  container.innerHTML = "";
+
+  if (result.unpriced_reason) {
+    // Say why there is no number rather than showing a blank.
+    const note = document.createElement("p");
+    note.className = "unpriced";
+    note.textContent = `${result.label}: ${result.unpriced_reason}`;
+    container.append(note);
+    return;
+  }
+
+  const list = document.createElement("dl");
+  for (const [label, value] of [
+    ["Holding", `${result.quantity} ${result.label}`],
+    ["Unit price", `${result.unit_price} ${result.currency}`],
+    ["Value", result.value],
+    ["Priced at", result.source_asof ?? "unknown"],
+  ]) {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = value;
+    list.append(dt, dd);
+  }
+  container.append(list);
+
+  const credit = document.createElement("p");
+  credit.className = "coverage";
+  credit.textContent = result.attribution;
+  container.append(credit);
+}
+
+el("save-crypto-key").addEventListener("click", async () => {
+  const input = el("crypto-key");
+  try {
+    await invoke("set_crypto_api_key", { key: input.value });
+    input.value = "";   // never leave a key in the DOM
+    await refreshCryptoStatus();
+    status("Price feed key saved to your system keyring.");
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
+el("clear-crypto-key").addEventListener("click", async () => {
+  try {
+    await invoke("set_crypto_api_key", { key: "" });
+    el("crypto-key").value = "";
+    await refreshCryptoStatus();
     status("Price feed key removed.");
   } catch (e) {
     status(describe(e));

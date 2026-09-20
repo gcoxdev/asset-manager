@@ -158,6 +158,58 @@
           </fieldset>
         </details>
 
+        <details id="crypto-panel">
+          <summary>Cryptocurrency</summary>
+
+          <div id="crypto-controls">
+            <button id="refresh-crypto">Update prices</button>
+            <span id="crypto-attribution" class="coverage"></span>
+          </div>
+
+          <fieldset id="crypto-calculator">
+            <legend>Value a holding</legend>
+            <label>
+              Coin
+              <select id="crypto-coin"><option value="">Other…</option></select>
+            </label>
+            <label>
+              Coin ID
+              <input type="text" id="crypto-coin-id" placeholder="e.g. bitcoin" size="14" />
+            </label>
+            <label>Quantity <input type="text" id="crypto-qty" value="1" size="14" /></label>
+            <label>
+              Held
+              <select id="crypto-custody">
+                <option value="self_custody">Own wallet</option>
+                <option value="exchange">Exchange</option>
+                <option value="locked">Staked / locked</option>
+              </select>
+            </label>
+            <label>Where <input type="text" id="crypto-where" placeholder="optional" size="12" /></label>
+            <button id="crypto-calc">Calculate</button>
+            <p class="hint-inline">
+              Prices are looked up by coin ID, not ticker symbol — several
+              different tokens can share a symbol.
+            </p>
+            <div id="crypto-result"></div>
+          </fieldset>
+
+          <details id="crypto-settings">
+            <summary>Price feed settings</summary>
+            <p class="coverage">
+              Optional. CoinGecko's free Demo plan allows 10,000 calls a
+              month. The key is stored in your system keyring, never in the
+              vault or a file.
+            </p>
+            <label>
+              API key
+              <input type="password" id="crypto-key" autocomplete="off" />
+            </label>
+            <button id="save-crypto-key">Save</button>
+            <button id="clear-crypto-key">Remove</button>
+          </details>
+        </details>
+
         <table id="assets">
           <thead>
             <tr>
