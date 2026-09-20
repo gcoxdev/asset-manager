@@ -1,5 +1,6 @@
 //! Asset Manager desktop shell.
 
+pub mod collectible_commands;
 pub mod commands;
 pub mod crypto_commands;
 pub mod crypto_provider;
@@ -100,6 +101,10 @@ pub fn run() {
             crypto_commands::set_crypto_api_key,
             crypto_commands::value_crypto_holding,
             crypto_commands::refresh_crypto_prices,
+            collectible_commands::collectible_types,
+            collectible_commands::graders,
+            collectible_commands::validate_collectible,
+            collectible_commands::create_collectible,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Asset Manager");
