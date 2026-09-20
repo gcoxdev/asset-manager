@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Asset Manager icon.
+
+  A padlock shackle over a stack of ledger bars: a catalogue that is kept
+  locked.
+
+  A first attempt drew a vault door with a spoked handle. At 32px the spokes
+  and the ledger rules merged and it read as a crosshair — badly wrong for an
+  app about owning things. The lesson applied here: at the smallest target
+  only two or three shapes survive, so this uses exactly two, with the light
+  form sitting on a dark field for maximum contrast rather than a mid-tone
+  face inside a mid-tone body.
+
+  Original work for this project. Nothing here is derived from another
+  product's marks.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2f4858"/>
+      <stop offset="1" stop-color="#18262f"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="16" y="16" width="480" height="480" rx="92" fill="url(#body)"/>
+
+  <!-- Shackle. Drawn as a thick open arc so it stays a distinct silhouette
+       rather than filling in at small sizes. -->
+  <path d="M 176 232 V 176 a 80 80 0 0 1 160 0 v 56"
+        fill="none" stroke="#e8c14f" stroke-width="40" stroke-linecap="round"/>
+
+  <!-- Lock body. One solid block: the largest single shape, so the icon has
+       an unambiguous centre of mass at every size. -->
+  <rect x="136" y="232" width="240" height="180" rx="28" fill="#e8c14f"/>
+
+  <!-- Two ledger bars cut out of the body. Subtractive rather than additive,
+       so they read as slots in a solid form instead of extra lines competing
+       with the outline. The shorter second bar gives a reading direction. -->
+  <g fill="#18262f">
+    <rect x="176" y="286" width="160" height="26" rx="13"/>
+    <rect x="176" y="336" width="104" height="26" rx="13"/>
+  </g>
+</svg>
