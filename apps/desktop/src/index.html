@@ -32,9 +32,34 @@
           This is shown once. Store it somewhere safe and offline — it is the
           only way back in if you forget your passphrase.
         </p>
+        <div class="print-only" id="print-header">
+          <h1>Asset Manager — Recovery Key</h1>
+          <p>
+            This key unlocks an Asset Manager vault without its passphrase.
+            Anyone holding this sheet can open that vault. Store it somewhere
+            private and offline.
+          </p>
+        </div>
+
         <pre id="recovery-key"></pre>
-        <p>Fingerprint: <code id="recovery-fingerprint"></code></p>
+        <p>
+          Key fingerprint: <code id="recovery-fingerprint"></code>
+          <span class="print-only hint">
+            — identifies <em>this key</em>, so you can tell two printed sheets
+            apart. It is not a vault name and reveals nothing about the key.
+          </span>
+        </p>
         <canvas id="recovery-qr"></canvas>
+
+        <div class="print-only" id="print-footer">
+          <p>
+            <strong>There is no password reset.</strong> If both the passphrase
+            and this key are lost, the catalog cannot be recovered by anyone,
+            including the software's author.
+          </p>
+          <p>Generated <span id="print-date"></span>.</p>
+        </div>
+
         <button id="print-recovery">Print</button>
         <hr />
         <label><input type="checkbox" id="recovery-ack" /> I have saved this recovery key</label>

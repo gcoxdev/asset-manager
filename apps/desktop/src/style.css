@@ -12,7 +12,50 @@ th, td { text-align: left; padding: 0.4rem; border-bottom: 1px solid rgba(128,12
 header { display: flex; gap: 1rem; align-items: center; }
 #new-asset { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: 1rem; }
 #status { margin-top: 1rem; min-height: 1.2em; color: #a44; }
-@media print { body > * { display: none; } #recovery-ceremony { display: block !important; } }
+/* Print: show only the recovery sheet.
+ *
+ * Hiding `body > *` alone produced a blank page — #recovery-ceremony is a
+ * descendant of <main>, and un-hiding a child cannot undo `display: none` on
+ * its ancestor. So walk the chain: hide siblings at each level, keep the
+ * ancestors visible, then show the sheet itself. The [hidden] override is
+ * needed too, since the section carries the hidden attribute in normal use. */
+@media print {
+  @page { margin: 18mm; }
+
+  body > *,
+  main > * { display: none !important; }
+
+  html, body, main { display: block !important; background: #fff; color: #000; }
+
+  #recovery-ceremony,
+  #recovery-ceremony[hidden] { display: block !important; }
+
+  /* Interactive controls mean nothing on paper. */
+  #recovery-ceremony button,
+  #recovery-ceremony input,
+  #recovery-ceremony label,
+  #recovery-ceremony hr,
+  #status { display: none !important; }
+
+  #recovery-key {
+    font-size: 15pt;
+    letter-spacing: 0.08em;
+    background: none;
+    border: 1px solid #000;
+    padding: 8pt;
+    /* A long key must wrap rather than run off the page edge. */
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+
+  #recovery-qr { display: block; margin: 12pt 0; }
+
+  /* Print-only guidance; hidden on screen where it would be noise. */
+  .print-only { display: block !important; }
+}
+
+.print-only { display: none; }
+.hint { font-size: 9pt; }
 
 #detail { margin-top: 1.5rem; border-top: 1px solid rgba(128,128,128,0.4); padding-top: 1rem; }
 #photos { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 1rem; }

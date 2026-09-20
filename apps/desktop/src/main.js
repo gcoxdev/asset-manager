@@ -96,7 +96,28 @@ const checkCeremony = () => {
 el("recovery-ack").addEventListener("change", checkCeremony);
 el("recovery-verify").addEventListener("input", checkCeremony);
 
-el("print-recovery").addEventListener("click", () => window.print());
+el("print-recovery").addEventListener("click", () => {
+  // The PDF filename comes from document.title, so "Asset Manager" produced
+  // output.pdf. A dated, descriptive name is what a user needs to find this
+  // again in a folder of saved files.
+  const stamp = new Date().toISOString().slice(0, 10);
+  const previousTitle = document.title;
+  document.title = `Asset-Manager-Recovery-Key-${stamp}`;
+
+  el("print-date").textContent = new Date().toLocaleString();
+
+  // Restore afterwards so the window title is not left changed. Printing is
+  // synchronous in the WebView, but afterprint is the documented hook.
+  const restore = () => {
+    document.title = previousTitle;
+    window.removeEventListener("afterprint", restore);
+  };
+  window.addEventListener("afterprint", restore);
+
+  window.print();
+  // Belt and braces: if afterprint never fires, do not strand the title.
+  setTimeout(restore, 1000);
+});
 
 el("finish-recovery").addEventListener("click", async () => {
   pendingRecovery = null;
