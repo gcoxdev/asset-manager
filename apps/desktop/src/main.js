@@ -243,6 +243,7 @@ async function openCatalog() {
   show("catalog");
   if (!presetCache.length) await loadPresets();
   if (!coinCache.length) await loadCoins();
+  if (!collectibleTypes.length) await loadCollectibleTypes();
   await refreshSpotPrices();
   await refreshCryptoStatus();
   await refresh();
@@ -580,6 +581,150 @@ el("clear-metals-key").addEventListener("click", async () => {
     el("metals-key").value = "";
     await refreshSpotPrices();
     status("Price feed key removed.");
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
+let collectibleTypes = [];
+let graderCache = [];
+
+/** Human label for a field key: "player_or_character" -> "Player or character". */
+function fieldLabel(key) {
+  const words = key.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+async function loadCollectibleTypes() {
+  try {
+    collectibleTypes = await invoke("collectible_types");
+    graderCache = await invoke("graders");
+
+    const select = el("collectible-type");
+    select.innerHTML = "";
+    for (const type of collectibleTypes) {
+      const option = document.createElement("option");
+      option.value = type.id;
+      option.textContent = type.label;
+      select.append(option);
+    }
+    renderCollectibleFields();
+  } catch (e) {
+    // Static data; a failure just leaves the panel empty.
+  }
+}
+
+/**
+ * Build the form for the chosen type.
+ *
+ * Required fields come first and are marked. Grader is a select rather than
+ * free text, and choosing one constrains the grade input to that grader's own
+ * scale — PSA has no 65, PCGS has no 9.8.
+ */
+function renderCollectibleFields() {
+  const type = collectibleTypes.find((t) => t.id === el("collectible-type").value);
+  const container = el("collectible-fields");
+  container.innerHTML = "";
+  if (!type) return;
+
+  for (const key of [...type.required, ...type.optional]) {
+    const label = document.createElement("label");
+    if (type.required.includes(key)) label.className = "required";
+
+    const caption = document.createElement("span");
+    caption.textContent = fieldLabel(key);
+    label.append(caption);
+
+    let input;
+    if (key === "grader") {
+      input = document.createElement("select");
+      for (const grader of graderCache) {
+        const option = document.createElement("option");
+        option.value = grader.id;
+        option.textContent = grader.label;
+        input.append(option);
+      }
+      input.value = "raw";
+      input.addEventListener("change", applyGradeConstraints);
+    } else {
+      input = document.createElement("input");
+      input.type = "text";
+    }
+
+    input.id = `cf-${key}`;
+    input.dataset.field = key;
+    input.addEventListener("input", previewCollectible);
+    input.addEventListener("change", previewCollectible);
+    label.append(input);
+    container.append(label);
+  }
+
+  applyGradeConstraints();
+  previewCollectible();
+}
+
+/** Show the chosen grader's scale on the grade field, before entry not after. */
+function applyGradeConstraints() {
+  const graderInput = el("cf-grader");
+  const gradeInput = el("cf-grade");
+  if (!graderInput || !gradeInput) return;
+
+  const grader = graderCache.find((g) => g.id === graderInput.value);
+  if (!grader || !grader.numeric) {
+    gradeInput.value = "";
+    gradeInput.disabled = true;
+    gradeInput.placeholder = "ungraded";
+    return;
+  }
+  gradeInput.disabled = false;
+  gradeInput.placeholder = `${grader.min}–${grader.max} by ${grader.step}`;
+}
+
+function collectAttrs() {
+  const attrs = {};
+  for (const input of el("collectible-fields").querySelectorAll("[data-field]")) {
+    const value = input.value.trim();
+    // A disabled grade field means ungraded; sending "" would be noise.
+    if (value && !input.disabled) attrs[input.dataset.field] = value;
+  }
+  return attrs;
+}
+
+let previewTimer;
+function previewCollectible() {
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(async () => {
+    const note = el("collectible-preview");
+    try {
+      const result = await invoke("validate_collectible", {
+        input: { type_id: el("collectible-type").value, attrs: collectAttrs() },
+      });
+      // The same validation that runs on save, so the form cannot promise
+      // something the backend will refuse.
+      note.textContent = result.ok ? `Will be saved as: ${result.label}` : result.error;
+      note.className = result.ok ? "coverage" : "coverage invalid";
+    } catch (e) {
+      note.textContent = "";
+    }
+  }, 120);
+}
+
+el("collectible-type").addEventListener("change", renderCollectibleFields);
+
+el("collectible-save").addEventListener("click", async () => {
+  try {
+    await invoke("create_collectible", {
+      input: {
+        type_id: el("collectible-type").value,
+        attrs: collectAttrs(),
+        quantity: "1",
+        storage_location: null,
+        notes: null,
+      },
+    });
+    renderCollectibleFields();   // clear for the next entry
+    await refresh();
+    status("Added to catalog.");
   } catch (e) {
     status(describe(e));
   }

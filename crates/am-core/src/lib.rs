@@ -8,6 +8,7 @@ pub mod crypto_assets;
 pub mod metals;
 pub mod money;
 pub mod valuation;
+pub mod watch_only;
 
 pub use collectibles::{collectible_type, describe, validate, Attributes, CollectibleError, CollectibleType, Grader, COLLECTIBLE_TYPES};
 pub use crypto_assets::{coins_by_symbol, CoinIdentity, CryptoError, CryptoHolding, Custody, COMMON_COINS};
@@ -18,3 +19,4 @@ pub use valuation::{
     WeightUnit,
 };
 pub use rust_decimal::Decimal;
+pub use watch_only::{parse_address, Chain, WatchAddress, WatchOnlyError};
