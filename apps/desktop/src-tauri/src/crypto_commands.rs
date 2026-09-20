@@ -291,3 +291,112 @@ mod tests {
         }
     }
 }
+
+// ------------------------------------------------- watch-only balances
+
+use am_core::{parse_address, Chain};
+
+/// Where the balance-lookup opt-in is recorded.
+///
+/// In the vault rather than a config file, so it travels with the data it
+/// governs and cannot be flipped on by editing a dotfile.
+const BALANCE_OPT_IN_KEY: &str = "watch_only_balance_lookup";
+
+fn balance_lookup_enabled(vault: &am_storage::vault::Vault) -> Result<bool, SessionError> {
+    let value: Option<String> = vault
+        .conn()
+        .query_row("SELECT value FROM app_settings WHERE key = ?1", [BALANCE_OPT_IN_KEY], |r| {
+            r.get(0)
+        })
+        .ok();
+    Ok(value.as_deref() == Some("true"))
+}
+
+#[derive(Serialize)]
+pub struct BalanceLookupStatus {
+    pub enabled: bool,
+    /// Shown next to the toggle. The disclosure is the point of the opt-in,
+    /// so it is not hidden behind a help link.
+    pub disclosure: String,
+}
+
+#[tauri::command]
+pub fn balance_lookup_status(session: State<'_, Session>) -> IpcResult<BalanceLookupStatus> {
+    session.touch();
+    session
+        .with_vault(|vault| {
+            Ok(BalanceLookupStatus {
+                enabled: balance_lookup_enabled(vault)?,
+                disclosure: "Looking up a balance sends the address to a public block \
+                             explorer, which learns that someone at your IP is \
+                             interested in it. The balance itself is already public; \
+                             the link to you is not. This is separate from price \
+                             fetching and off by default."
+                    .to_string(),
+            })
+        })
+        .map_err(IpcError::from)
+}
+
+#[tauri::command]
+pub fn set_balance_lookup(session: State<'_, Session>, enabled: bool) -> IpcResult<()> {
+    session.touch();
+    session
+        .with_vault(|vault| {
+            vault
+                .conn()
+                .execute(
+                    "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    rusqlite::params![
+                        BALANCE_OPT_IN_KEY,
+                        if enabled { "true" } else { "false" }
+                    ],
+                )
+                .map_err(storage)?;
+            Ok(())
+        })
+        .map_err(IpcError::from)
+}
+
+/// Look up a watch-only balance.
+///
+/// Validates the address first, which refuses anything resembling a key or
+/// seed phrase before it could reach the network.
+#[tauri::command]
+pub fn lookup_balance(
+    session: State<'_, Session>,
+    chain: String,
+    address: String,
+    label: Option<String>,
+) -> IpcResult<crate::balance_provider::AddressBalance> {
+    session.touch();
+
+    let chain =
+        Chain::parse(&chain).ok_or_else(|| bad_input(format!("unknown chain: {chain}")))?;
+    let parsed = parse_address(chain, &address, label.as_deref().unwrap_or(""))
+        .map_err(|e| bad_input(e.to_string()))?;
+
+    let enabled = session.with_vault(balance_lookup_enabled).map_err(IpcError::from)?;
+
+    // Checked here as well as in the provider: the opt-in is the whole
+    // control, so it gets two guards rather than one.
+    if !enabled {
+        return Err(IpcError {
+            kind: "not_enabled".into(),
+            message: "balance lookup is off — turn it on in settings, noting that it \
+                      discloses the address to a public explorer"
+                .into(),
+        });
+    }
+
+    crate::balance_provider::fetch_balance(&parsed, enabled).map_err(|e| IpcError {
+        kind: match e {
+            crate::balance_provider::BalanceError::NotEnabled => "not_enabled",
+            crate::balance_provider::BalanceError::UnsupportedChain(_) => "unsupported_chain",
+            _ => "lookup_failed",
+        }
+        .into(),
+        message: e.to_string(),
+    })
+}

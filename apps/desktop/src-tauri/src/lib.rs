@@ -1,5 +1,6 @@
 //! Asset Manager desktop shell.
 
+pub mod balance_provider;
 pub mod collectible_commands;
 pub mod commands;
 pub mod crypto_commands;
@@ -108,6 +109,9 @@ pub fn run() {
             collectible_commands::create_collectible,
             report_commands::insurance_report,
             collectible_commands::scan_slab_label,
+            crypto_commands::balance_lookup_status,
+            crypto_commands::set_balance_lookup,
+            crypto_commands::lookup_balance,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Asset Manager");

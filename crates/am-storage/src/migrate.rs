@@ -7,15 +7,17 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 struct Migration {
     version: i64,
     sql: &'static str,
 }
 
-const MIGRATIONS: &[Migration] =
-    &[Migration { version: 1, sql: include_str!("../migrations/001_initial.sql") }];
+const MIGRATIONS: &[Migration] = &[
+    Migration { version: 1, sql: include_str!("../migrations/001_initial.sql") },
+    Migration { version: 2, sql: include_str!("../migrations/002_app_settings.sql") },
+];
 
 #[derive(Debug, thiserror::Error)]
 pub enum MigrateError {
@@ -82,6 +84,7 @@ mod tests {
             "quotes",
             "valuations",
             "provider_quota",
+            "app_settings",
         ] {
             let n: i64 = conn
                 .query_row(
@@ -102,6 +105,40 @@ mod tests {
         let n: i64 =
             conn.query_row("SELECT count(*) FROM asset_types", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 6, "seed rows must not be duplicated");
+    }
+
+    #[test]
+    fn an_existing_vault_migrates_forward() {
+        // The case a versioned schema exists for: a vault created at v1 must
+        // open at v2 without losing what it already holds.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        let conn = open_encrypted(path.to_str().unwrap(), &key()).unwrap();
+
+        // Apply only the first migration, as an older build would have.
+        let tx = conn.unchecked_transaction().unwrap();
+        tx.execute_batch(MIGRATIONS[0].sql).unwrap();
+        tx.execute_batch("PRAGMA user_version = 1").unwrap();
+        tx.commit().unwrap();
+
+        conn.execute(
+            "INSERT INTO assets (asset_id, type_id, name, created_at, updated_at)
+             VALUES ('a1','generic','Pre-existing','2026-01-01','2026-01-01')",
+            [],
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, 2);
+
+        let name: String = conn
+            .query_row("SELECT name FROM assets WHERE asset_id='a1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(name, "Pre-existing", "existing data must survive the migration");
+
+        conn.execute("INSERT INTO app_settings (key, value) VALUES ('k','v')", []).unwrap();
     }
 
     #[test]
