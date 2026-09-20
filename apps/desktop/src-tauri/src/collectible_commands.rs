@@ -248,3 +248,32 @@ mod tests {
         assert!(result.error.unwrap().contains("issue"));
     }
 }
+
+/// Read a barcode from a photo of a slab label.
+///
+/// A decoded barcode is a **claim printed on a label**, not proof of
+/// anything: it says which certificate to look up, not that the item matches
+/// it. The result is offered as a suggestion for the form, never applied
+/// silently.
+#[tauri::command]
+pub fn scan_slab_label(
+    session: State<'_, Session>,
+    path: String,
+) -> IpcResult<am_storage::scanning::ScanResult> {
+    session.touch();
+    // An unlocked vault is required: scanning is part of cataloguing, and a
+    // locked app should do nothing with your data.
+    session.with_vault(|_| Ok(())).map_err(IpcError::from)?;
+
+    let bytes = std::fs::read(&path)
+        .map_err(|e| IpcError { kind: "unreadable_file".into(), message: e.to_string() })?;
+
+    am_storage::scanning::scan_image(&bytes).map_err(|e| IpcError {
+        kind: match e {
+            am_storage::scanning::ScanError::NotFound => "no_barcode",
+            _ => "scan_failed",
+        }
+        .into(),
+        message: e.to_string(),
+    })
+}

@@ -19,6 +19,20 @@ hkdf = "0.12"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 keyring = { version = "3", default-features = false, features = ["linux-native", "apple-native", "windows-native"] }
 rand = "0.8.6"
+# zxing port. default-features off drops the image-writing/encoding side —
+# this only ever decodes.
+rxing = { version = "0.9", default-features = false, features = [
+    "image",
+    # Decode only; the encoding side is never used here.
+    "decoders",
+    # Encoders are used only to generate barcodes in tests.
+    "encoders",
+    # 1D symbologies: what slab labels actually use.
+    "oned",
+    # Cert and card barcodes are ASCII digits, so the character-set tables are
+    # dead weight here.
+    "no_character_set_support",
+] }
 # rustls rather than native-tls: keeps the AppImage self-contained, matching
 # the vendored-OpenSSL decision for SQLCipher.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }

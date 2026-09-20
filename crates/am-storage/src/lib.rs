@@ -10,6 +10,7 @@ pub mod events;
 pub mod header;
 pub mod migrate;
 pub mod objects;
+pub mod scanning;
 pub mod series;
 pub mod spot;
 pub mod thumbs;

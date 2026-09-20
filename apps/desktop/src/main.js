@@ -829,6 +829,43 @@ function previewCollectible() {
   }, 120);
 }
 
+el("scan-slab").addEventListener("click", async () => {
+  try {
+    const path = await openDialog({
+      filters: [{ name: "Photo of a label", extensions: ["jpg", "jpeg", "png", "webp"] }],
+    });
+    if (!path) return;
+
+    const result = await invoke("scan_slab_label", { path });
+
+    // Suggested, never applied silently: a barcode is a claim on a label.
+    if (result.cert_number) {
+      const certField = el("cf-cert_number");
+      if (certField) certField.value = result.cert_number;
+    }
+    if (result.likely_grader) {
+      const graderField = el("cf-grader");
+      if (graderField) {
+        graderField.value = result.likely_grader;
+        applyGradeConstraints();
+      }
+    }
+    previewCollectible();
+
+    const found = [
+      result.cert_number ? `cert ${result.cert_number}` : null,
+      result.likely_grader ? result.likely_grader.toUpperCase() : null,
+    ].filter(Boolean);
+    status(
+      found.length
+        ? `Read ${found.join(", ")} from the label — check it against the slab.`
+        : `Read "${result.text}" but could not pick out a certificate number.`
+    );
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
 el("collectible-type").addEventListener("change", renderCollectibleFields);
 
 el("collectible-save").addEventListener("click", async () => {

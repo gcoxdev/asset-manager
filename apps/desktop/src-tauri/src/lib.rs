@@ -107,6 +107,7 @@ pub fn run() {
             collectible_commands::validate_collectible,
             collectible_commands::create_collectible,
             report_commands::insurance_report,
+            collectible_commands::scan_slab_label,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Asset Manager");
