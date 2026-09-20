@@ -4,6 +4,7 @@ pub mod commands;
 pub mod paths;
 pub mod protocol;
 pub mod session;
+pub mod valuation_commands;
 
 use std::time::Duration;
 
@@ -76,6 +77,11 @@ pub fn run() {
             commands::import_csv,
             commands::read_text_file,
             commands::write_text_file,
+            valuation_commands::set_prices,
+            valuation_commands::portfolio_total,
+            valuation_commands::valuation_history,
+            valuation_commands::change_quantity,
+            valuation_commands::quantity_on,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Asset Manager");

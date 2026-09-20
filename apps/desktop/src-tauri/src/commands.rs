@@ -50,6 +50,12 @@ pub struct AssetSummary {
     /// silently corrupt large values.
     pub current_amount_minor: Option<String>,
     pub current_currency: Option<String>,
+    /// Display-ready, e.g. "1234.50 USD" or "1000 JPY".
+    ///
+    /// Formatted here rather than in the frontend because the number of minor
+    /// digits is per-currency: JPY has none, so a frontend assuming two would
+    /// render ¥1000 as ¥10.00.
+    pub current_display: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -144,6 +150,10 @@ pub fn list_assets(session: State<'_, Session>) -> IpcResult<Vec<AssetSummary>> 
                             .get::<_, Option<i64>>(7)?
                             .map(|v| v.to_string()),
                         current_currency: r.get(8)?,
+                        current_display: format_money(
+                            r.get::<_, Option<i64>>(7)?,
+                            r.get::<_, Option<String>>(8)?,
+                        ),
                     })
                 })
                 .map_err(sqlite)?
@@ -240,6 +250,10 @@ pub fn search_assets(session: State<'_, Session>, query: String) -> IpcResult<Ve
                             .get::<_, Option<i64>>(7)?
                             .map(|v| v.to_string()),
                         current_currency: r.get(8)?,
+                        current_display: format_money(
+                            r.get::<_, Option<i64>>(7)?,
+                            r.get::<_, Option<String>>(8)?,
+                        ),
                     })
                 })
                 .map_err(sqlite)?
@@ -249,6 +263,14 @@ pub fn search_assets(session: State<'_, Session>, query: String) -> IpcResult<Ve
             Ok(rows)
         })
         .map_err(IpcError::from)
+}
+
+/// Format an amount for display using the currency's own minor-digit count.
+fn format_money(amount_minor: Option<i64>, currency: Option<String>) -> Option<String> {
+    let (amount, code) = (amount_minor?, currency?);
+    am_core::Currency::new(&code)
+        .ok()
+        .map(|c| am_core::Money::new(amount, c).format())
 }
 
 fn other(message: String) -> IpcError {

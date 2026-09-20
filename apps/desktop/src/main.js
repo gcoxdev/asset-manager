@@ -255,20 +255,44 @@ async function refresh() {
     tbody.innerHTML = "";
     for (const row of rows) {
       const tr = document.createElement("tr");
-      tr.addEventListener("click", () => showDetail(row));
+
       for (const cell of [
         row.name,
         row.type_id,
         `${row.quantity} ${row.quantity_unit}`,
         row.storage_location ?? "",
-        formatMoney(row.current_amount_minor, row.current_currency),
       ]) {
         const td = document.createElement("td");
         td.textContent = cell;   // textContent, never innerHTML: names are user data
+        td.addEventListener("click", () => showDetail(row));
         tr.append(td);
       }
+
+      // Value is editable in place: setting prices one dialog at a time does
+      // not scale to a few hundred collectibles.
+      const valueCell = document.createElement("td");
+      valueCell.className = "value-cell";
+      valueCell.textContent = row.current_display ?? "—";
+      valueCell.title = "Click to edit";
+      valueCell.addEventListener("click", (event) => {
+        event.stopPropagation();
+        beginPriceEdit(valueCell, row);
+      });
+      tr.append(valueCell);
+
+      const detailCell = document.createElement("td");
+      const openButton = document.createElement("button");
+      openButton.textContent = "Details";
+      openButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        showDetail(row);
+      });
+      detailCell.append(openButton);
+      tr.append(detailCell);
+
       tbody.append(tr);
     }
+    await refreshPortfolio();
     status("");
   } catch (e) {
     status(describe(e));
@@ -282,6 +306,7 @@ async function showDetail(row) {
   el("detail-name").textContent = row.name;
   el("detail").hidden = false;
   await refreshPhotos();
+  await showValuationHistory();
 }
 
 el("close-detail").addEventListener("click", () => {
@@ -370,16 +395,137 @@ async function refreshPhotos() {
 }
 
 /**
- * Money arrives as a string of minor units. Parsing it into a JS number would
- * be wrong for large values, so format by string manipulation.
+ * Edit a price in place.
+ *
+ * The entered text is sent to the backend as a string and parsed there as an
+ * exact decimal. Parsing it to a JS number first would lose precision.
  */
-function formatMoney(amountMinor, currency) {
-  if (amountMinor == null || currency == null) return "—";
-  const negative = amountMinor.startsWith("-");
-  const digits = (negative ? amountMinor.slice(1) : amountMinor).padStart(3, "0");
-  const major = digits.slice(0, -2);
-  const minor = digits.slice(-2);
-  return `${negative ? "-" : ""}${major}.${minor} ${currency}`;
+function beginPriceEdit(cell, row) {
+  if (cell.querySelector("input")) return;
+
+  const previous = cell.textContent;
+  const currency = row.current_currency ?? "USD";
+  const startingValue =
+    row.current_amount_minor == null ? "" : stripCurrency(previous);
+
+  cell.textContent = "";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = startingValue;
+  input.placeholder = "0.00";
+  cell.append(input);
+  input.focus();
+  input.select();
+
+  let settled = false;
+  const commit = async () => {
+    if (settled) return;
+    settled = true;
+    const typed = input.value.trim();
+
+    if (typed === "" || typed === startingValue) {
+      cell.textContent = previous;   // nothing to do
+      return;
+    }
+
+    try {
+      const [result] = await invoke("set_prices", {
+        entries: [{ asset_id: row.asset_id, amount: typed, currency }],
+      });
+      if (!result.ok) {
+        cell.textContent = previous;
+        return status(result.error ?? "Could not save that price.");
+      }
+      await refresh();
+    } catch (e) {
+      cell.textContent = previous;
+      status(describe(e));
+    }
+  };
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") { event.preventDefault(); commit(); }
+    if (event.key === "Escape") { settled = true; cell.textContent = previous; }
+  });
+  input.addEventListener("blur", commit);
+}
+
+/** "1234.50 USD" -> "1234.50", so editing starts from the number alone. */
+function stripCurrency(text) {
+  const match = text.match(/^-?[\d.]+/);
+  return match ? match[0] : "";
+}
+
+async function refreshPortfolio() {
+  try {
+    const view = await invoke("portfolio_total");
+    el("portfolio-total").textContent = view.total;
+
+    // Coverage is shown alongside the total: an unpriced holding must be
+    // visible, or a partial figure looks complete.
+    const parts = [];
+    if (view.unvalued > 0) {
+      parts.push(`${view.valued} of ${view.valued + view.unvalued} priced`);
+    }
+    if (view.skipped_currencies.length) {
+      parts.push(`excludes ${view.skipped_currencies.join(", ")} — no conversion yet`);
+    }
+    el("portfolio-coverage").textContent = parts.length ? `(${parts.join("; ")})` : "";
+  } catch (e) {
+    el("portfolio-total").textContent = "—";
+    el("portfolio-coverage").textContent = "";
+  }
+}
+
+el("qty-apply").addEventListener("click", async () => {
+  if (!currentAsset) return;
+  const amount = el("qty-amount").value.trim();
+  if (!amount) return status("Enter a quantity.");
+
+  try {
+    await invoke("change_quantity", {
+      change: {
+        asset_id: currentAsset.asset_id,
+        kind: el("qty-kind").value,
+        quantity: amount,
+        effective_date: el("qty-date").value || null,
+        note: null,
+      },
+    });
+    el("qty-amount").value = "";
+    await refresh();
+    await showValuationHistory();
+    status("");
+  } catch (e) {
+    status(describe(e));
+  }
+});
+
+async function showValuationHistory() {
+  if (!currentAsset) return;
+  try {
+    const points = await invoke("valuation_history", { assetId: currentAsset.asset_id });
+    const tbody = el("valuation-history").querySelector("tbody");
+    tbody.innerHTML = "";
+
+    for (const point of points) {
+      const tr = document.createElement("tr");
+      for (const cell of [
+        point.asof,
+        point.amount,
+        point.quantity_at_time,
+        point.basis,
+        point.provenance,
+      ]) {
+        const td = document.createElement("td");
+        td.textContent = cell;
+        tr.append(td);
+      }
+      tbody.append(tr);
+    }
+  } catch (e) {
+    status(describe(e));
+  }
 }
 
 function describe(error) {

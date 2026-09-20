@@ -13,6 +13,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 am-crypto = { path = "../../../crates/am-crypto" }
+am-core = { path = "../../../crates/am-core" }
 am-storage = { path = "../../../crates/am-storage" }
 anyhow.workspace = true
 chrono.workspace = true
