@@ -218,7 +218,8 @@ mod tests {
     fn roundtrips_across_chunk_boundaries() {
         // Empty, sub-chunk, exactly one chunk, one byte over, and several
         // chunks -- the off-by-one cases are where framing bugs hide.
-        for len in [0, 1, 100, CHUNK_SIZE - 1, CHUNK_SIZE, CHUNK_SIZE + 1, CHUNK_SIZE * 3 + 17] {
+        for len in [0, 1, 100, CHUNK_SIZE - 1, CHUNK_SIZE, CHUNK_SIZE + 1, CHUNK_SIZE * 3 + 17]
+        {
             let plaintext: Vec<u8> = (0..len).map(|i| (i % 251) as u8).collect();
             let sealed = seal(&key(), ctx(), &plaintext).unwrap();
             let opened = open(&key(), ctx(), &sealed).unwrap();
@@ -271,7 +272,10 @@ mod tests {
 
         let mut nonce_flipped = sealed.clone();
         nonce_flipped[0] ^= 0x01;
-        assert!(open(&key(), ctx(), &nonce_flipped).is_err(), "nonce tampering must be rejected");
+        assert!(
+            open(&key(), ctx(), &nonce_flipped).is_err(),
+            "nonce tampering must be rejected"
+        );
     }
 
     #[test]
@@ -282,7 +286,8 @@ mod tests {
         let sealed_chunk = CHUNK_SIZE + TAG_LEN;
         let mut swapped = Vec::with_capacity(sealed.len());
         swapped.extend_from_slice(&sealed[..NONCE_LEN]);
-        swapped.extend_from_slice(&sealed[NONCE_LEN + sealed_chunk..NONCE_LEN + 2 * sealed_chunk]);
+        swapped
+            .extend_from_slice(&sealed[NONCE_LEN + sealed_chunk..NONCE_LEN + 2 * sealed_chunk]);
         swapped.extend_from_slice(&sealed[NONCE_LEN..NONCE_LEN + sealed_chunk]);
 
         assert!(open(&key(), ctx(), &swapped).is_err(), "reordering must be rejected");

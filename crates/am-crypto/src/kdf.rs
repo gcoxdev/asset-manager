@@ -75,8 +75,13 @@ pub fn derive_kek(
     }
     params.validate()?;
 
-    let p = Params::new(params.memory_cost_kib, params.iterations, params.parallelism, Some(KEY_LEN))
-        .map_err(|e| anyhow::anyhow!("invalid argon2 parameters: {e}"))?;
+    let p = Params::new(
+        params.memory_cost_kib,
+        params.iterations,
+        params.parallelism,
+        Some(KEY_LEN),
+    )
+    .map_err(|e| anyhow::anyhow!("invalid argon2 parameters: {e}"))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, p);
 
     let mut out = Zeroizing::new([0u8; KEY_LEN]);
@@ -179,7 +184,9 @@ mod tests {
     #[test]
     fn kdf_params_reject_out_of_bounds() {
         assert!(KdfParams::default().validate().is_ok());
-        assert!(KdfParams { memory_cost_kib: 1, iterations: 3, parallelism: 1 }.validate().is_err());
+        assert!(KdfParams { memory_cost_kib: 1, iterations: 3, parallelism: 1 }
+            .validate()
+            .is_err());
         assert!(KdfParams { memory_cost_kib: 64 * 1024, iterations: 99, parallelism: 1 }
             .validate()
             .is_err());

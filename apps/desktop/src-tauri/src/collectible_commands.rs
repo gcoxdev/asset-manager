@@ -201,7 +201,10 @@ mod tests {
         let all = graders();
 
         let psa = all.iter().find(|g| g.id == "psa").unwrap();
-        assert_eq!((psa.min.as_str(), psa.max.as_str(), psa.step.as_str()), ("0.5", "10", "0.1"));
+        assert_eq!(
+            (psa.min.as_str(), psa.max.as_str(), psa.step.as_str()),
+            ("0.5", "10", "0.1")
+        );
         assert!(psa.numeric);
 
         let pcgs = all.iter().find(|g| g.id == "pcgs").unwrap();
@@ -215,7 +218,12 @@ mod tests {
     fn validation_previews_the_label() {
         let result = validate_collectible(input(
             "comic",
-            &[("title", "Amazing Fantasy"), ("issue", "15"), ("grader", "cgc"), ("grade", "9.8")],
+            &[
+                ("title", "Amazing Fantasy"),
+                ("issue", "15"),
+                ("grader", "cgc"),
+                ("grade", "9.8"),
+            ],
         ));
         assert!(result.ok);
         assert_eq!(result.label.as_deref(), Some("Amazing Fantasy #15 — CGC 9.8"));
@@ -223,8 +231,10 @@ mod tests {
 
     #[test]
     fn validation_explains_a_bad_grade_rather_than_just_refusing() {
-        let result =
-            validate_collectible(input("comic", &[("title", "X"), ("issue", "1"), ("grader", "psa"), ("grade", "65")]));
+        let result = validate_collectible(input(
+            "comic",
+            &[("title", "X"), ("issue", "1"), ("grader", "psa"), ("grade", "65")],
+        ));
         assert!(!result.ok);
         let message = result.error.unwrap();
         assert!(message.contains("PSA"), "the message should name the grader");

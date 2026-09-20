@@ -423,10 +423,7 @@ mod tests {
             if *metal == Metal::Palladium {
                 continue;
             }
-            assert!(
-                PRESETS.iter().any(|p| p.metal == *metal),
-                "no preset for {metal}"
-            );
+            assert!(PRESETS.iter().any(|p| p.metal == *metal), "no preset for {metal}");
         }
     }
 

@@ -1,0 +1,32 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Crypto dependencies are reviewed individually; everything else can be
+      # batched so routine bumps do not bury a meaningful one.
+      rust-minor:
+        patterns: ["*"]
+        exclude-patterns:
+          - argon2
+          - chacha20poly1305
+          - hkdf
+          - keyring
+          - rusqlite
+          - sha2
+          - zeroize
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /apps/desktop
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

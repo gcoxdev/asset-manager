@@ -120,7 +120,8 @@ impl Money {
 
     /// Exact major-unit value, for further arithmetic. Never lossy.
     pub fn to_decimal(&self) -> Decimal {
-        Decimal::from(self.amount_minor) / Decimal::from(10_i64.pow(self.currency.minor_digits()))
+        Decimal::from(self.amount_minor)
+            / Decimal::from(10_i64.pow(self.currency.minor_digits()))
     }
 
     pub fn checked_add(&self, other: &Money) -> Result<Money, MoneyError> {
@@ -179,9 +180,7 @@ pub fn parse_decimal(text: &str) -> Result<Decimal, MoneyError> {
     if trimmed.is_empty() {
         return Err(MoneyError::NotDecimal(text.to_string()));
     }
-    trimmed
-        .parse::<Decimal>()
-        .map_err(|_| MoneyError::NotDecimal(text.to_string()))
+    trimmed.parse::<Decimal>().map_err(|_| MoneyError::NotDecimal(text.to_string()))
 }
 
 /// A sort key for a decimal stored as TEXT.
@@ -297,10 +296,7 @@ mod tests {
 
         // And a decimal too large for i64 minor units.
         let enormous = Decimal::from_str("99999999999999999999").unwrap();
-        assert_eq!(
-            Money::from_total_decimal(enormous, usd()),
-            Err(MoneyError::Overflow)
-        );
+        assert_eq!(Money::from_total_decimal(enormous, usd()), Err(MoneyError::Overflow));
     }
 
     #[test]

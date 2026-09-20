@@ -33,13 +33,30 @@ stored**. It is encrypted at rest, by default, with no opt-in step:
 - Photos on disk are ciphertext under opaque random filenames. Copying the
   vault directory without the credentials yields nothing.
 
-**There is no password reset.** Lose both the passphrase and the recovery key
-and the catalog is unrecoverable — by design, since there is no account and no
-server. Keep the printed recovery sheet.
+### There is no password reset
 
-What this does *not* protect against: a compromised machine while the vault is
-unlocked, or anything you deliberately export (CSV, PDF reports). A threat
-model documenting this properly is part of the first release.
+Lose **both** the passphrase and the recovery key and the catalog is
+unrecoverable. Not by us, not by anyone — there is no account, no server, and
+nobody holding a master key, including the author. The recovery ceremony makes
+you acknowledge the key and retype its last six characters before it will let
+you continue, specifically so this cannot happen by clicking past a dialog.
+
+Print the recovery sheet. Keep it somewhere a burglar would not look.
+
+### What this does not protect against
+
+Read the [threat model](docs/threat-model.md) for the full account. The short
+version: a compromised machine while the vault is unlocked, swap on a host
+without encrypted swap, anything you deliberately export, and a weak
+passphrase. Full-disk encryption is complementary, not a substitute — it
+protects a powered-off machine only.
+
+### Network access
+
+Everything works offline. Price fetching is optional, manual, and off until you
+add an API key; nothing is fetched in the background. Asking a provider for
+prices does tell it which assets you hold — see the threat model's network
+section before enabling it.
 
 ## Building
 

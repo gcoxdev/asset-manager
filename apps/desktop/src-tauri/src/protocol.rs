@@ -71,9 +71,7 @@ pub fn handle<R: tauri::Runtime>(
     }
 
     let raw_variant = uri.query().and_then(|q| {
-        q.split('&')
-            .find_map(|pair| pair.strip_prefix("variant="))
-            .map(|v| v.to_string())
+        q.split('&').find_map(|pair| pair.strip_prefix("variant=")).map(|v| v.to_string())
     });
     let variant = variant_name(raw_variant.as_deref());
     if variant == Some("__invalid__") {

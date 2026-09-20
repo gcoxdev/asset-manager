@@ -161,8 +161,8 @@ pub fn set_spot_price(
     session.touch();
     let timestamp = now();
 
-    let metal = Metal::parse(&metal)
-        .ok_or_else(|| bad_input(format!("unknown metal: {metal}")))?;
+    let metal =
+        Metal::parse(&metal).ok_or_else(|| bad_input(format!("unknown metal: {metal}")))?;
     let price = spot::parse_spot_input(&price).map_err(|e| bad_input(e.to_string()))?;
     let currency = Currency::new(&currency.unwrap_or_else(|| "USD".into()))
         .map_err(|e| bad_input(e.to_string()))?;
@@ -254,8 +254,8 @@ pub fn value_metal_holding(
         other => return Err(bad_input(format!("basis must be gross or fine, got {other}"))),
     };
 
-    let quantity = parse_decimal(&request.quantity)
-        .map_err(|_| bad_input("quantity is not a number"))?;
+    let quantity =
+        parse_decimal(&request.quantity).map_err(|_| bad_input("quantity is not a number"))?;
     let weight = parse_decimal(&request.weight_per_item)
         .map_err(|_| bad_input("weight is not a number"))?;
     let purity =
@@ -265,9 +265,10 @@ pub fn value_metal_holding(
     // converted to a fraction for the arithmetic.
     let premium_pct = match request.premium_pct.as_deref() {
         None | Some("") => am_core::Decimal::ZERO,
-        Some(text) => parse_decimal(text)
-            .map_err(|_| bad_input("premium is not a number"))?
-            / am_core::Decimal::from(100),
+        Some(text) => {
+            parse_decimal(text).map_err(|_| bad_input("premium is not a number"))?
+                / am_core::Decimal::from(100)
+        }
     };
 
     let holding = am_core::MetalHolding {
@@ -291,8 +292,8 @@ pub fn value_metal_holding(
 
             let spot_value = parse_decimal(&spot_price.price_per_troy_oz)
                 .map_err(|_| storage("stored spot price is malformed"))?;
-            let currency = Currency::new(&spot_price.currency)
-                .map_err(|e| storage(e.to_string()))?;
+            let currency =
+                Currency::new(&spot_price.currency).map_err(|e| storage(e.to_string()))?;
 
             let fine = holding
                 .fine_weight(WeightUnit::TroyOunce)

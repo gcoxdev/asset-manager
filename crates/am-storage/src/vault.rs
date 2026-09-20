@@ -84,7 +84,8 @@ impl Vault {
         let lock = ProcessLock::acquire(&root.join(LOCK_FILE))?;
 
         let NewVault { header, data_key, recovery_key } =
-            VaultHeader::create(passphrase, params, now).map_err(|e| VaultError::Other(e.to_string()))?;
+            VaultHeader::create(passphrase, params, now)
+                .map_err(|e| VaultError::Other(e.to_string()))?;
 
         let conn = open_db(root, &data_key)?;
         migrate(&conn).map_err(|e| VaultError::Other(e.to_string()))?;
@@ -97,7 +98,10 @@ impl Vault {
 
         write_header_atomic(root, &header)?;
 
-        Ok((Self { root: root.to_path_buf(), header, conn, data_key, _lock: lock }, recovery_key))
+        Ok((
+            Self { root: root.to_path_buf(), header, conn, data_key, _lock: lock },
+            recovery_key,
+        ))
     }
 
     pub fn unlock(
@@ -238,8 +242,9 @@ pub fn restore_from(backup: &Path, dest: &Path) -> Result<BackupManifest, VaultE
     if !manifest_path.exists() {
         return Err(VaultError::Other("backup has no manifest.json".into()));
     }
-    let manifest: BackupManifest = serde_json::from_str(&fs::read_to_string(&manifest_path)?)
-        .map_err(|e| VaultError::Other(format!("unreadable manifest: {e}")))?;
+    let manifest: BackupManifest =
+        serde_json::from_str(&fs::read_to_string(&manifest_path)?)
+            .map_err(|e| VaultError::Other(format!("unreadable manifest: {e}")))?;
 
     if manifest.format != crate::header::FORMAT_TAG {
         return Err(VaultError::Other(format!("unknown backup format: {}", manifest.format)));
@@ -326,9 +331,11 @@ pub fn object_path(objects_dir: &Path, object_id: &str) -> PathBuf {
 fn open_db(root: &Path, data_key: &[u8; KEY_LEN]) -> Result<Connection, VaultError> {
     let db_subkey = derive_subkey(data_key, Purpose::Database);
     let path = root.join(DB_FILE);
-    open_encrypted(path.to_str().ok_or_else(|| VaultError::Other("non-UTF-8 path".into()))?,
-                   &key_to_hex(&db_subkey))
-        .map_err(|e| VaultError::Other(e.to_string()))
+    open_encrypted(
+        path.to_str().ok_or_else(|| VaultError::Other("non-UTF-8 path".into()))?,
+        &key_to_hex(&db_subkey),
+    )
+    .map_err(|e| VaultError::Other(e.to_string()))
 }
 
 fn write_header_atomic(root: &Path, header: &VaultHeader) -> Result<(), VaultError> {
@@ -500,7 +507,10 @@ mod tests {
 
         let first = Vault::unlock(&root, Credential::Passphrase, PASS).unwrap();
         assert!(
-            matches!(Vault::unlock(&root, Credential::Passphrase, PASS), Err(VaultError::Locked)),
+            matches!(
+                Vault::unlock(&root, Credential::Passphrase, PASS),
+                Err(VaultError::Locked)
+            ),
             "a second instance must not open the same vault"
         );
 

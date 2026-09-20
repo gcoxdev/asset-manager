@@ -160,7 +160,9 @@ fn a_copied_vault_is_useless_without_a_credential() {
             "unlocked a stolen vault with {wrong:?}"
         );
     }
-    assert!(Vault::unlock(&stolen, Credential::RecoveryKey, "AAAA-BBBB-CCCC-DDDD-EEEE").is_err());
+    assert!(
+        Vault::unlock(&stolen, Credential::RecoveryKey, "AAAA-BBBB-CCCC-DDDD-EEEE").is_err()
+    );
 
     // The correct passphrase still opens it, so the test is not passing
     // because the copy is simply broken.
@@ -200,7 +202,6 @@ fn no_vault_file_decodes_as_an_image() {
     }
 }
 
-
 /// A distinctive pixel pattern acts as the sentinel for image content.
 fn sentinel_png() -> Vec<u8> {
     let img = image::RgbImage::from_fn(240, 180, |x, y| {
@@ -233,8 +234,7 @@ fn imported_photos_and_their_thumbnails_are_never_plaintext_on_disk() {
             )
             .unwrap();
 
-        let stored =
-            am_storage::objects::import_object(&vault, &root, &photo, NOW).unwrap();
+        let stored = am_storage::objects::import_object(&vault, &root, &photo, NOW).unwrap();
         am_storage::objects::attach_to_asset(&vault, "a1", &stored.object_id, NOW).unwrap();
         am_storage::thumbs::generate_variants(&vault, &root, &stored.object_id, NOW).unwrap();
 
@@ -261,11 +261,7 @@ fn imported_photos_and_their_thumbnails_are_never_plaintext_on_disk() {
             "plaintext image body found in {}",
             path.display()
         );
-        assert!(
-            !bytes.starts_with(b"\x89PNG"),
-            "{} is a readable PNG",
-            path.display()
-        );
+        assert!(!bytes.starts_with(b"\x89PNG"), "{} is a readable PNG", path.display());
         assert!(
             !bytes.starts_with(b"\xFF\xD8\xFF"),
             "{} is a readable JPEG (thumbnails are JPEG-encoded before encryption)",
@@ -276,7 +272,9 @@ fn imported_photos_and_their_thumbnails_are_never_plaintext_on_disk() {
     // Sanity: the test is meaningful only if files were actually written.
     let object_files = files
         .iter()
-        .filter(|p| p.to_string_lossy().contains("objects") || p.to_string_lossy().contains("thumbs"))
+        .filter(|p| {
+            p.to_string_lossy().contains("objects") || p.to_string_lossy().contains("thumbs")
+        })
         .count();
     assert!(object_files >= 3, "expected an original plus two variants, found {object_files}");
 }

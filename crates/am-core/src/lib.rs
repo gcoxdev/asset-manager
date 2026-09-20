@@ -10,13 +10,18 @@ pub mod money;
 pub mod valuation;
 pub mod watch_only;
 
-pub use collectibles::{collectible_type, describe, validate, Attributes, CollectibleError, CollectibleType, Grader, COLLECTIBLE_TYPES};
-pub use crypto_assets::{coins_by_symbol, CoinIdentity, CryptoError, CryptoHolding, Custody, COMMON_COINS};
+pub use collectibles::{
+    collectible_type, describe, validate, Attributes, CollectibleError, CollectibleType,
+    Grader, COLLECTIBLE_TYPES,
+};
+pub use crypto_assets::{
+    coins_by_symbol, CoinIdentity, CryptoError, CryptoHolding, Custody, COMMON_COINS,
+};
 pub use metals::{preset, BullionPreset, Freshness, Metal, QuotaBudget, PRESETS};
 pub use money::{parse_decimal, sort_key, Currency, Money, MoneyError};
-pub use valuation::{
-    junk_silver_fine_oz, unrealized_gain, MetalHolding, UnitHolding, ValuationError, WeightBasis,
-    WeightUnit,
-};
 pub use rust_decimal::Decimal;
+pub use valuation::{
+    junk_silver_fine_oz, unrealized_gain, MetalHolding, UnitHolding, ValuationError,
+    WeightBasis, WeightUnit,
+};
 pub use watch_only::{parse_address, Chain, WatchAddress, WatchOnlyError};

@@ -76,10 +76,9 @@ mod gate {
         let path = dir.path().join("t.db");
         let conn = open_encrypted(path.to_str().unwrap(), &test_key()).unwrap();
 
-        let version: String =
-            conn.query_row("PRAGMA cipher_version", [], |r| r.get(0)).expect(
-                "PRAGMA cipher_version returned nothing — this is plain SQLite, not SQLCipher",
-            );
+        let version: String = conn.query_row("PRAGMA cipher_version", [], |r| r.get(0)).expect(
+            "PRAGMA cipher_version returned nothing — this is plain SQLite, not SQLCipher",
+        );
         assert!(!version.is_empty());
         println!("cipher_version = {version}");
     }
@@ -93,7 +92,8 @@ mod gate {
         {
             let conn = open_encrypted(path_str, &test_key()).unwrap();
             conn.execute("CREATE TABLE secrets (v TEXT)", []).unwrap();
-            conn.execute("INSERT INTO secrets VALUES ('SENTINEL-PLAINTEXT-MARKER')", []).unwrap();
+            conn.execute("INSERT INTO secrets VALUES ('SENTINEL-PLAINTEXT-MARKER')", [])
+                .unwrap();
             conn.pragma_update(None, "wal_checkpoint", "TRUNCATE").unwrap();
         }
 
@@ -221,9 +221,11 @@ mod gate {
             .expect("FTS5 rebuild failed under temp_store=MEMORY");
 
         let hits: i64 = conn
-            .query_row("SELECT count(*) FROM assets_fts WHERE assets_fts MATCH 'Jordan'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT count(*) FROM assets_fts WHERE assets_fts MATCH 'Jordan'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(hits, 5000);
 
@@ -258,9 +260,9 @@ mod gate {
         let conn = open_encrypted(src.to_str().unwrap(), &test_key()).unwrap();
         conn.execute("CREATE TABLE t (v TEXT)", []).unwrap();
 
-        let err = conn
-            .backup(rusqlite::MAIN_DB, &dst, None)
-            .expect_err("if this now succeeds, revisit the backup design — see VENDOR/plan notes");
+        let err = conn.backup(rusqlite::MAIN_DB, &dst, None).expect_err(
+            "if this now succeeds, revisit the backup design — see VENDOR/plan notes",
+        );
         assert!(
             err.to_string().contains("not supported with encrypted"),
             "unexpected backup failure mode: {err}"
@@ -323,7 +325,8 @@ mod gate {
         std::fs::copy(&src, &dst).unwrap();
 
         let restored = open_encrypted(dst.to_str().unwrap(), &test_key()).unwrap();
-        let count: i64 = restored.query_row("SELECT count(*) FROM t", [], |r| r.get(0)).unwrap();
+        let count: i64 =
+            restored.query_row("SELECT count(*) FROM t", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 500, "committed rows lost across checkpoint+copy");
     }
 }

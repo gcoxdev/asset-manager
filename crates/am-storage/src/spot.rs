@@ -431,18 +431,18 @@ mod tests {
             let (v, _r) = Vault::create(&root, PASS, &fast(), NOW).unwrap();
             for _ in 0..5 {
                 record_spot(
-            &v,
-            SpotReading {
-                metal: Metal::Gold,
-                price_per_troy_oz: d("2000"),
-                currency: &usd(),
-                source: "metals.dev",
-                source_asof: "2026-09-19T11:00:00Z",
-                origin: SpotOrigin::Api,
-            },
-            NOW,
-        )
-        .unwrap();
+                    &v,
+                    SpotReading {
+                        metal: Metal::Gold,
+                        price_per_troy_oz: d("2000"),
+                        currency: &usd(),
+                        source: "metals.dev",
+                        source_asof: "2026-09-19T11:00:00Z",
+                        origin: SpotOrigin::Api,
+                    },
+                    NOW,
+                )
+                .unwrap();
             }
         }
 
@@ -457,21 +457,24 @@ mod tests {
         let (_d, v) = setup();
         for _ in 0..3 {
             record_spot(
-            &v,
-            SpotReading {
-                metal: Metal::Gold,
-                price_per_troy_oz: d("2000"),
-                currency: &usd(),
-                source: "metals.dev",
-                source_asof: "2026-09-19T11:00:00Z",
-                origin: SpotOrigin::Api,
-            },
-            "2026-09-19T12:00:00Z",
-        )
-        .unwrap();
+                &v,
+                SpotReading {
+                    metal: Metal::Gold,
+                    price_per_troy_oz: d("2000"),
+                    currency: &usd(),
+                    source: "metals.dev",
+                    source_asof: "2026-09-19T11:00:00Z",
+                    origin: SpotOrigin::Api,
+                },
+                "2026-09-19T12:00:00Z",
+            )
+            .unwrap();
         }
 
-        assert_eq!(quota_status(&v, "metals.dev", "2026-09-30T00:00:00Z").unwrap().used_this_month, 3);
+        assert_eq!(
+            quota_status(&v, "metals.dev", "2026-09-30T00:00:00Z").unwrap().used_this_month,
+            3
+        );
         assert_eq!(
             quota_status(&v, "metals.dev", "2026-10-01T00:00:00Z").unwrap().used_this_month,
             0,
@@ -486,18 +489,18 @@ mod tests {
 
         for _ in 0..budget.automatic_allowance() {
             record_spot(
-            &v,
-            SpotReading {
-                metal: Metal::Gold,
-                price_per_troy_oz: d("2000"),
-                currency: &usd(),
-                source: "metals.dev",
-                source_asof: "2026-09-19T11:00:00Z",
-                origin: SpotOrigin::Api,
-            },
-            NOW,
-        )
-        .unwrap();
+                &v,
+                SpotReading {
+                    metal: Metal::Gold,
+                    price_per_troy_oz: d("2000"),
+                    currency: &usd(),
+                    source: "metals.dev",
+                    source_asof: "2026-09-19T11:00:00Z",
+                    origin: SpotOrigin::Api,
+                },
+                NOW,
+            )
+            .unwrap();
         }
 
         let status = quota_status(&v, "metals.dev", NOW).unwrap();
@@ -531,7 +534,10 @@ mod tests {
 
         // Two days on, past the ~30-hour interval.
         assert!(should_poll_automatically(
-            &v, Metal::Gold, "metals.dev", "2026-09-21T12:00:00Z"
+            &v,
+            Metal::Gold,
+            "metals.dev",
+            "2026-09-21T12:00:00Z"
         )
         .unwrap());
     }
@@ -612,11 +618,9 @@ mod tests {
         // All four keep provider provenance despite only one being charged.
         let stored: i64 = v
             .conn()
-            .query_row(
-                "SELECT count(*) FROM quotes WHERE match_quality = 'exact'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT count(*) FROM quotes WHERE match_quality = 'exact'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(stored, 4, "every fetched price is API-sourced");
     }

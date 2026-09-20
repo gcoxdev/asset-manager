@@ -78,9 +78,7 @@ fn looks_like_secret(input: &str) -> bool {
 
     // A BIP-39 mnemonic is 12–24 space-separated words.
     let words: Vec<&str> = lower.split_whitespace().collect();
-    if words.len() >= 12
-        && words.iter().all(|w| w.chars().all(|c| c.is_ascii_alphabetic()))
-    {
+    if words.len() >= 12 && words.iter().all(|w| w.chars().all(|c| c.is_ascii_alphabetic())) {
         return true;
     }
 
@@ -175,9 +173,9 @@ mod tests {
     #[test]
     fn accepts_real_bitcoin_address_formats() {
         for address in [
-            "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",            // genesis, legacy
-            "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",            // P2SH
-            "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq",    // bech32
+            "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", // genesis, legacy
+            "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy", // P2SH
+            "bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq", // bech32
         ] {
             assert!(
                 parse_address(Chain::Bitcoin, address, "test").is_ok(),

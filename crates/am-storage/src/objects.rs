@@ -59,10 +59,7 @@ pub const SUPPORTED_TYPES: &[(&str, &[u8])] = &[
 /// whoever named the file, and a mislabelled file should be rejected rather
 /// than stored under the wrong type.
 pub fn sniff_media_type(bytes: &[u8]) -> Option<&'static str> {
-    SUPPORTED_TYPES
-        .iter()
-        .find(|(_, magic)| bytes.starts_with(magic))
-        .map(|(name, _)| *name)
+    SUPPORTED_TYPES.iter().find(|(_, magic)| bytes.starts_with(magic)).map(|(name, _)| *name)
 }
 
 #[derive(Debug, Clone)]
@@ -278,9 +275,7 @@ pub fn sweep_deleted(vault: &Vault, root: &Path) -> Result<usize, ObjectError> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // already gone
             Err(e) => return Err(e.into()),
         }
-        vault
-            .conn()
-            .execute("DELETE FROM objects WHERE object_id = ?1", [&object_id])?;
+        vault.conn().execute("DELETE FROM objects WHERE object_id = ?1", [&object_id])?;
         swept += 1;
     }
     Ok(swept)
@@ -378,7 +373,10 @@ mod tests {
             !on_disk.windows(64).any(|w| w.iter().all(|&b| b == 0xCD)),
             "plaintext body survived into the stored object"
         );
-        assert!(path.extension().is_none(), "filename must not carry a type-revealing extension");
+        assert!(
+            path.extension().is_none(),
+            "filename must not carry a type-revealing extension"
+        );
         assert!(
             !path.to_string_lossy().contains(&plaintext_hash(&photo)),
             "the plaintext hash must not appear in the path"
@@ -439,10 +437,7 @@ mod tests {
         // Claim a size over the limit without actually allocating it.
         let mut huge = jpeg(0x00, 16);
         huge.resize((MAX_IMPORT_BYTES + 1) as usize, 0);
-        assert!(matches!(
-            import_object(&vault, &root, &huge, NOW),
-            Err(ObjectError::TooLarge)
-        ));
+        assert!(matches!(import_object(&vault, &root, &huge, NOW), Err(ObjectError::TooLarge)));
     }
 
     #[test]
@@ -665,7 +660,10 @@ mod tests {
         fs::copy(&src, &dst).unwrap();
 
         assert!(
-            matches!(load_object(&vault_b, &root_b, &stored.object_id), Err(ObjectError::Corrupt(_))),
+            matches!(
+                load_object(&vault_b, &root_b, &stored.object_id),
+                Err(ObjectError::Corrupt(_))
+            ),
             "an object must not decrypt in a vault it does not belong to"
         );
     }

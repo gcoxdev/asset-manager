@@ -55,9 +55,7 @@ pub enum CryptoProviderError {
 pub fn store_api_key(key: &str) -> Result<(), CryptoProviderError> {
     let entry = keyring::Entry::new(SERVICE, KEY_ENTRY)
         .map_err(|e| CryptoProviderError::Keyring(e.to_string()))?;
-    entry
-        .set_password(key.trim())
-        .map_err(|e| CryptoProviderError::Keyring(e.to_string()))
+    entry.set_password(key.trim()).map_err(|e| CryptoProviderError::Keyring(e.to_string()))
 }
 
 pub fn clear_api_key() -> Result<(), CryptoProviderError> {
@@ -255,7 +253,11 @@ fn unix_to_rfc3339(seconds: i64) -> String {
 fn format_price(value: f64) -> String {
     let formatted = format!("{value:.12}");
     let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
-    if trimmed.is_empty() { "0".to_string() } else { trimmed.to_string() }
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn redact(text: &str, api_key: &str) -> String {
@@ -307,10 +309,7 @@ mod tests {
     fn a_price_without_a_timestamp_is_refused() {
         // Staleness judged against our own clock would be a lie.
         let body = r#"{"bitcoin":{"usd":76975.0}}"#;
-        assert!(matches!(
-            parse_response(body, "usd"),
-            Err(CryptoProviderError::Malformed(_))
-        ));
+        assert!(matches!(parse_response(body, "usd"), Err(CryptoProviderError::Malformed(_))));
     }
 
     #[test]

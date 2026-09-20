@@ -177,8 +177,16 @@ pub const COLLECTIBLE_TYPES: &[CollectibleType] = &[
         label: "Comic book",
         required: &["title", "issue"],
         optional: &[
-            "publisher", "year", "volume", "variant", "printing",
-            "grader", "grade", "cert_number", "signed", "key_issue",
+            "publisher",
+            "year",
+            "volume",
+            "variant",
+            "printing",
+            "grader",
+            "grade",
+            "cert_number",
+            "signed",
+            "key_issue",
         ],
     },
     CollectibleType {
@@ -186,8 +194,16 @@ pub const COLLECTIBLE_TYPES: &[CollectibleType] = &[
         label: "Trading card",
         required: &["player_or_character", "set"],
         optional: &[
-            "year", "card_number", "parallel", "serial_number", "print_run",
-            "grader", "grade", "cert_number", "autographed", "rookie",
+            "year",
+            "card_number",
+            "parallel",
+            "serial_number",
+            "print_run",
+            "grader",
+            "grade",
+            "cert_number",
+            "autographed",
+            "rookie",
         ],
     },
     CollectibleType {
@@ -195,8 +211,16 @@ pub const COLLECTIBLE_TYPES: &[CollectibleType] = &[
         label: "TCG card (Magic, Pokémon, Yu-Gi-Oh)",
         required: &["name", "set"],
         optional: &[
-            "game", "set_code", "collector_number", "rarity", "finish",
-            "language", "edition", "grader", "grade", "cert_number",
+            "game",
+            "set_code",
+            "collector_number",
+            "rarity",
+            "finish",
+            "language",
+            "edition",
+            "grader",
+            "grade",
+            "cert_number",
         ],
     },
     CollectibleType {
@@ -204,8 +228,13 @@ pub const COLLECTIBLE_TYPES: &[CollectibleType] = &[
         label: "Coin (numismatic)",
         required: &["denomination", "year"],
         optional: &[
-            "mintmark", "variety", "grader", "grade", "cert_number",
-            "designation", "country",
+            "mintmark",
+            "variety",
+            "grader",
+            "grade",
+            "cert_number",
+            "designation",
+            "country",
         ],
     },
 ];
@@ -237,10 +266,7 @@ pub fn validate(type_id: &str, attrs: &Attributes) -> Result<Attributes, Collect
             continue; // an empty optional is simply absent
         }
         if trimmed.chars().count() > MAX_FIELD_LEN {
-            return Err(CollectibleError::TooLong {
-                field: key.clone(),
-                max: MAX_FIELD_LEN,
-            });
+            return Err(CollectibleError::TooLong { field: key.clone(), max: MAX_FIELD_LEN });
         }
         cleaned.insert(key.clone(), trimmed.to_string());
     }
@@ -450,11 +476,8 @@ mod tests {
 
     #[test]
     fn values_are_trimmed_and_empty_optionals_dropped() {
-        let messy = attrs(&[
-            ("title", "  Amazing Fantasy  "),
-            ("issue", "15"),
-            ("variant", "   "),
-        ]);
+        let messy =
+            attrs(&[("title", "  Amazing Fantasy  "), ("issue", "15"), ("variant", "   ")]);
         let cleaned = validate("comic", &messy).unwrap();
         assert_eq!(cleaned.get("title").map(String::as_str), Some("Amazing Fantasy"));
         assert!(!cleaned.contains_key("variant"), "a blank optional is absent, not empty");
@@ -481,8 +504,7 @@ mod tests {
 
     #[test]
     fn numeric_fields_are_checked() {
-        let bad_year =
-            attrs(&[("title", "X"), ("issue", "1"), ("year", "nineteen sixty-two")]);
+        let bad_year = attrs(&[("title", "X"), ("issue", "1"), ("year", "nineteen sixty-two")]);
         assert!(matches!(
             validate("comic", &bad_year),
             Err(CollectibleError::NotANumber { .. })
@@ -546,7 +568,11 @@ mod tests {
         // Numeric fields need a number even when they are required, so the
         // filler has to respect that — numismatic_coin requires `year`.
         let filler = |field: &str| {
-            if ["year", "print_run"].contains(&field) { "1962" } else { "value" }
+            if ["year", "print_run"].contains(&field) {
+                "1962"
+            } else {
+                "value"
+            }
         };
 
         for collectible in COLLECTIBLE_TYPES {

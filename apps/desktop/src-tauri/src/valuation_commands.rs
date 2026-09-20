@@ -37,12 +37,10 @@ fn storage(e: impl std::fmt::Display) -> SessionError {
 /// Parsed as exact decimal and converted to minor units **once**, at the end.
 /// Parsing to f64 first would lose precision on ordinary amounts.
 fn parse_money(amount: &str, currency: &str) -> Result<Money, IpcError> {
-    let currency = Currency::new(currency)
-        .map_err(|e| bad_input(format!("currency: {e}")))?;
+    let currency = Currency::new(currency).map_err(|e| bad_input(format!("currency: {e}")))?;
     let decimal = parse_decimal(amount)
         .map_err(|_| bad_input(format!("{amount:?} is not a valid amount")))?;
-    Money::from_total_decimal(decimal, currency)
-        .map_err(|e| bad_input(format!("amount: {e}")))
+    Money::from_total_decimal(decimal, currency).map_err(|e| bad_input(format!("amount: {e}")))
 }
 
 #[derive(Deserialize)]
@@ -93,14 +91,13 @@ pub fn set_prices(
 
             for entry in &entries {
                 let outcome = (|| -> Result<(), String> {
-                    let money = parse_money(&entry.amount, &entry.currency)
-                        .map_err(|e| e.message)?;
+                    let money =
+                        parse_money(&entry.amount, &entry.currency).map_err(|e| e.message)?;
 
                     // The quantity held on the valuation date — not today's.
                     let asof = entry.asof.clone().unwrap_or_else(|| today.clone());
-                    let quantity =
-                        events::quantity_as_of(vault, &entry.asset_id, Some(&asof))
-                            .map_err(|e| e.to_string())?;
+                    let quantity = events::quantity_as_of(vault, &entry.asset_id, Some(&asof))
+                        .map_err(|e| e.to_string())?;
 
                     valuations::record_valuation(
                         vault,
@@ -123,11 +120,9 @@ pub fn set_prices(
                 })();
 
                 results.push(match outcome {
-                    Ok(()) => PriceResult {
-                        asset_id: entry.asset_id.clone(),
-                        ok: true,
-                        error: None,
-                    },
+                    Ok(()) => {
+                        PriceResult { asset_id: entry.asset_id.clone(), ok: true, error: None }
+                    }
                     Err(message) => PriceResult {
                         asset_id: entry.asset_id.clone(),
                         ok: false,
@@ -168,8 +163,8 @@ pub fn portfolio_total(
 
     session
         .with_vault(|vault| {
-            let total = valuations::portfolio_total_as_of(vault, &asof, &currency)
-                .map_err(storage)?;
+            let total =
+                valuations::portfolio_total_as_of(vault, &asof, &currency).map_err(storage)?;
             Ok(PortfolioView {
                 total: total.total.format(),
                 currency: code.clone(),
@@ -256,7 +251,9 @@ pub fn change_quantity(
     let magnitude = parse_decimal(&change.quantity)
         .map_err(|_| bad_input(format!("{:?} is not a valid quantity", change.quantity)))?;
     if magnitude.is_sign_negative() {
-        return Err(bad_input("quantity must be positive; the direction comes from the action"));
+        return Err(bad_input(
+            "quantity must be positive; the direction comes from the action",
+        ));
     }
 
     let (event_type, delta) = match change.kind.as_str() {
@@ -267,8 +264,7 @@ pub fn change_quantity(
         other => return Err(bad_input(format!("unknown change type: {other}"))),
     };
 
-    let effective_date =
-        change.effective_date.unwrap_or_else(|| timestamp[..10].to_string());
+    let effective_date = change.effective_date.unwrap_or_else(|| timestamp[..10].to_string());
 
     session
         .with_vault(|vault| {
@@ -306,8 +302,8 @@ pub fn quantity_on(
     session.touch();
     session
         .with_vault(|vault| {
-            let quantity = events::quantity_as_of(vault, &asset_id, Some(&asof))
-                .map_err(storage)?;
+            let quantity =
+                events::quantity_as_of(vault, &asset_id, Some(&asof)).map_err(storage)?;
             Ok(QuantityAt { quantity: quantity.to_string(), asof: asof.clone() })
         })
         .map_err(IpcError::from)

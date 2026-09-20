@@ -1,1 +1,5 @@
 edition = "2021"
+# Matches the width the code is actually written to. Narrower than rustfmt's
+# 100 default so comments and code stay readable side by side in a split view.
+max_width = 96
+use_small_heuristics = "Max"

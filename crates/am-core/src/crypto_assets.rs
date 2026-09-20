@@ -115,7 +115,13 @@ impl CoinIdentity {
     pub fn display_label(&self) -> String {
         match (&self.chain, &self.contract) {
             (Some(chain), Some(contract)) if contract.len() >= 10 => {
-                format!("{} ({} {}…{})", self.symbol, chain, &contract[..6], &contract[contract.len() - 4..])
+                format!(
+                    "{} ({} {}…{})",
+                    self.symbol,
+                    chain,
+                    &contract[..6],
+                    &contract[contract.len() - 4..]
+                )
             }
             (Some(chain), _) => format!("{} ({chain})", self.symbol),
             _ => self.symbol.clone(),
@@ -160,11 +166,7 @@ impl CryptoHolding {
     /// Rounds once, at the end. A price like $0.000012 multiplied by a large
     /// balance is exactly the case where rounding the unit price first would
     /// erase the position.
-    pub fn value(
-        &self,
-        unit_price: Decimal,
-        currency: Currency,
-    ) -> Result<Money, CryptoError> {
+    pub fn value(&self, unit_price: Decimal, currency: Currency) -> Result<Money, CryptoError> {
         if self.quantity.is_sign_negative() {
             return Err(CryptoError::NegativeQuantity);
         }
@@ -203,11 +205,7 @@ pub fn common_coin(coin_id: &str) -> Option<(&'static str, &'static str, &'stati
 /// precisely how a holding gets priced as the wrong asset.
 pub fn coins_by_symbol(symbol: &str) -> Vec<(&'static str, &'static str, &'static str)> {
     let wanted = symbol.trim().to_ascii_uppercase();
-    COMMON_COINS
-        .iter()
-        .copied()
-        .filter(|(_, sym, _)| *sym == wanted)
-        .collect()
+    COMMON_COINS.iter().copied().filter(|(_, sym, _)| *sym == wanted).collect()
 }
 
 #[cfg(test)]
@@ -266,12 +264,16 @@ mod tests {
     fn a_token_label_shows_enough_to_tell_two_apart() {
         // Two tokens sharing a symbol must be distinguishable at a glance.
         let real = CoinIdentity::token(
-            "usd-coin", "USDC", "ethereum",
+            "usd-coin",
+            "USDC",
+            "ethereum",
             "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
         )
         .unwrap();
         let impostor = CoinIdentity::token(
-            "fake-usdc", "USDC", "ethereum",
+            "fake-usdc",
+            "USDC",
+            "ethereum",
             "0xdeadbeef00000000000000000000000000001234",
         )
         .unwrap();
@@ -318,10 +320,7 @@ mod tests {
         assert_eq!(holding.value(d("0.004"), usd()).unwrap().format(), "400.00 USD");
 
         // And an even smaller price on a bigger balance.
-        let dust = CryptoHolding {
-            quantity: Decimal::from(1_000_000),
-            ..holding.clone()
-        };
+        let dust = CryptoHolding { quantity: Decimal::from(1_000_000), ..holding.clone() };
         assert_eq!(dust.value(d("0.0000123"), usd()).unwrap().format(), "12.30 USD");
     }
 

@@ -25,8 +25,8 @@
 //!   leaves it silently editable.
 
 use am_crypto::{
-    derive_kek, kdf::KEY_LEN, normalize_recovery_key, unwrap_data_key, wrap_data_key, KdfParams,
-    WrappedKey,
+    derive_kek, kdf::KEY_LEN, normalize_recovery_key, unwrap_data_key, wrap_data_key,
+    KdfParams, WrappedKey,
 };
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -172,14 +172,12 @@ impl VaultHeader {
         };
 
         let pass_kek = derive_kek(passphrase, &passphrase_salt, params)?;
-        header.passphrase_slot.wrapped = wrap_data_key(
-            &pass_kek,
-            &data_key,
-            &header.aad(Credential::Passphrase)?,
-        )
-        .map_err(|_| anyhow::anyhow!("failed to wrap data key under passphrase"))?;
+        header.passphrase_slot.wrapped =
+            wrap_data_key(&pass_kek, &data_key, &header.aad(Credential::Passphrase)?)
+                .map_err(|_| anyhow::anyhow!("failed to wrap data key under passphrase"))?;
 
-        let rec_kek = derive_kek(&normalize_recovery_key(&recovery_key), &recovery_salt, params)?;
+        let rec_kek =
+            derive_kek(&normalize_recovery_key(&recovery_key), &recovery_salt, params)?;
         header.recovery_slot.wrapped =
             wrap_data_key(&rec_kek, &data_key, &header.aad(Credential::RecoveryKey)?)
                 .map_err(|_| anyhow::anyhow!("failed to wrap data key under recovery key"))?;
@@ -278,7 +276,11 @@ impl VaultHeader {
     /// a current `catalog.db` yields an intact but undecryptable vault. Without
     /// this check the failure looks like a wrong passphrase, which sends the
     /// user hunting for the wrong problem.
-    pub fn check_pairing(&self, db_vault_id: &[u8; 16], db_epoch: u64) -> Result<(), PairingError> {
+    pub fn check_pairing(
+        &self,
+        db_vault_id: &[u8; 16],
+        db_epoch: u64,
+    ) -> Result<(), PairingError> {
         if &self.vault_id == db_vault_id && self.key_epoch == db_epoch {
             return Ok(());
         }
@@ -382,7 +384,11 @@ mod tests {
         let via_recovery = v.header.unlock(Credential::RecoveryKey, &v.recovery_key).unwrap();
 
         assert_eq!(via_pass.as_ref(), v.data_key.as_ref());
-        assert_eq!(via_recovery.as_ref(), v.data_key.as_ref(), "recovery must reach the same key");
+        assert_eq!(
+            via_recovery.as_ref(),
+            v.data_key.as_ref(),
+            "recovery must reach the same key"
+        );
     }
 
     #[test]
@@ -436,7 +442,8 @@ mod tests {
         let mut header = v.header;
         header.passphrase_slot.params.memory_cost_kib = 4 * 1024 * 1024;
 
-        let err = header.unlock(Credential::Passphrase, "correct horse battery staple").unwrap_err();
+        let err =
+            header.unlock(Credential::Passphrase, "correct horse battery staple").unwrap_err();
         assert!(matches!(err, UnlockError::Malformed(_)), "got {err:?}");
     }
 
@@ -449,7 +456,9 @@ mod tests {
         tampered.vault_id[0] ^= 0xff;
 
         let wrong_pass = v.header.unlock(Credential::Passphrase, "wrong").unwrap_err();
-        let tamper = tampered.unlock(Credential::Passphrase, "correct horse battery staple").unwrap_err();
+        let tamper = tampered
+            .unlock(Credential::Passphrase, "correct horse battery staple")
+            .unwrap_err();
 
         assert_eq!(wrong_pass.to_string(), tamper.to_string());
     }
@@ -461,7 +470,8 @@ mod tests {
         let parsed = VaultHeader::from_json(&json).unwrap();
 
         assert_eq!(parsed, v.header);
-        let key = parsed.unlock(Credential::Passphrase, "correct horse battery staple").unwrap();
+        let key =
+            parsed.unlock(Credential::Passphrase, "correct horse battery staple").unwrap();
         assert_eq!(key.as_ref(), v.data_key.as_ref());
     }
 
@@ -532,7 +542,8 @@ mod tests {
 
         // Same vault, stale epoch: the header was restored from an older
         // backup after a passphrase change.
-        let err = a.header.check_pairing(&a.header.vault_id, a.header.key_epoch + 1).unwrap_err();
+        let err =
+            a.header.check_pairing(&a.header.vault_id, a.header.key_epoch + 1).unwrap_err();
         assert!(err.to_string().contains("partial restore"), "error must explain the cause");
     }
 

@@ -191,9 +191,7 @@ pub fn quantity_as_of(
                  WHERE asset_id = ?1
                  ORDER BY effective_date, recorded_at",
             )?;
-            let v = stmt
-                .query_map([asset_id], |r| r.get(0))?
-                .collect::<Result<Vec<_>, _>>()?;
+            let v = stmt.query_map([asset_id], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
             v
         }
     };
@@ -376,10 +374,7 @@ mod tests {
         assert_eq!(status, "sold", "a disposed holding stops counting toward today");
 
         // ...but its past contribution survives.
-        assert_eq!(
-            quantity_as_of(&v, "a1", Some("2026-03-01")).unwrap(),
-            Decimal::from(10)
-        );
+        assert_eq!(quantity_as_of(&v, "a1", Some("2026-03-01")).unwrap(), Decimal::from(10));
     }
 
     #[test]
@@ -450,9 +445,7 @@ mod tests {
         record(&v, &event(EventType::Acquire, "7", "2026-01-01"), NOW).unwrap();
 
         // Corrupt the cache, as a bad migration or manual edit might.
-        v.conn()
-            .execute("UPDATE assets SET quantity='999' WHERE asset_id='a1'", [])
-            .unwrap();
+        v.conn().execute("UPDATE assets SET quantity='999' WHERE asset_id='a1'", []).unwrap();
 
         let rebuilt = refresh_quantity_cache(&v, "a1", NOW).unwrap();
         assert_eq!(rebuilt, Decimal::from(7));
@@ -476,10 +469,7 @@ mod tests {
         assert_eq!(events[1].effective_date, "2026-06-01");
 
         // And a mid-range query sees only what had happened by then.
-        assert_eq!(
-            quantity_as_of(&v, "a1", Some("2026-03-01")).unwrap(),
-            Decimal::from(10)
-        );
+        assert_eq!(quantity_as_of(&v, "a1", Some("2026-03-01")).unwrap(), Decimal::from(10));
     }
 
     #[test]

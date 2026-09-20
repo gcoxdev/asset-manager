@@ -129,8 +129,8 @@ pub fn value_crypto_holding(
     }
     .map_err(|e| bad_input(e.to_string()))?;
 
-    let quantity = parse_decimal(&holding.quantity)
-        .map_err(|_| bad_input("quantity is not a number"))?;
+    let quantity =
+        parse_decimal(&holding.quantity).map_err(|_| bad_input("quantity is not a number"))?;
 
     let core_holding = am_core::CryptoHolding {
         identity: identity.clone(),
@@ -145,8 +145,8 @@ pub fn value_crypto_holding(
 
     session
         .with_vault(|vault| {
-            let latest = valuations::latest_quote(vault, &identity.instrument_id())
-                .map_err(storage)?;
+            let latest =
+                valuations::latest_quote(vault, &identity.instrument_id()).map_err(storage)?;
 
             let Some((_quote_id, unit_price, currency, asof)) = latest else {
                 return Ok(CryptoValuation {

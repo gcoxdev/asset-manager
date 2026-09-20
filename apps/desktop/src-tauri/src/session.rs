@@ -12,9 +12,9 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use am_crypto::KdfParams;
 use am_storage::header::Credential;
 use am_storage::vault::{Vault, VaultError};
-use am_crypto::KdfParams;
 
 /// Argon2id cost for real vaults. Tests override this; see `fast_params`.
 pub fn default_params() -> KdfParams {
@@ -112,10 +112,7 @@ impl Session {
     }
 
     pub fn idle_for(&self) -> Option<Duration> {
-        self.last_activity
-            .lock()
-            .expect("session mutex poisoned")
-            .map(|at| at.elapsed())
+        self.last_activity.lock().expect("session mutex poisoned").map(|at| at.elapsed())
     }
 
     pub fn create(
@@ -271,7 +268,10 @@ mod tests {
 
         let s = Session::new();
         s.create(&a, PASS, &fast_params(), NOW).unwrap();
-        assert!(matches!(s.create(&b, PASS, &fast_params(), NOW), Err(SessionError::AlreadyOpen)));
+        assert!(matches!(
+            s.create(&b, PASS, &fast_params(), NOW),
+            Err(SessionError::AlreadyOpen)
+        ));
     }
 
     #[test]
@@ -294,7 +294,10 @@ mod tests {
     #[test]
     fn auto_lock_on_a_locked_vault_is_a_no_op() {
         let s = Session::new();
-        assert!(!s.lock_if_idle(Duration::ZERO), "must not report locking an already-locked vault");
+        assert!(
+            !s.lock_if_idle(Duration::ZERO),
+            "must not report locking an already-locked vault"
+        );
     }
 
     #[test]
@@ -344,10 +347,8 @@ mod tests {
         s.create(&root, PASS, &fast_params(), NOW).unwrap();
         s.lock();
 
-        let err: IpcError = s
-            .unlock(&root, Credential::Passphrase, "wrong passphrase")
-            .unwrap_err()
-            .into();
+        let err: IpcError =
+            s.unlock(&root, Credential::Passphrase, "wrong passphrase").unwrap_err().into();
         assert_eq!(err.kind, "cannot_unlock");
         // The message must not hint at which half failed.
         assert!(!err.message.to_lowercase().contains("passphrase is"));

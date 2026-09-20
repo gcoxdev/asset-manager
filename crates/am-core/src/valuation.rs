@@ -329,10 +329,7 @@ mod tests {
 
     #[test]
     fn crypto_quantities_keep_full_precision() {
-        let holding = UnitHolding {
-            quantity: d("0.12345678"),
-            unit_quote: d("67432.19"),
-        };
+        let holding = UnitHolding { quantity: d("0.12345678"), unit_quote: d("67432.19") };
         // 0.12345678 × 67432.19 = 8324.9610457482 exactly (verified
         // independently), so it rounds to 8324.96.
         assert_eq!(holding.value(usd()).unwrap().format(), "8324.96 USD");
@@ -341,10 +338,7 @@ mod tests {
     #[test]
     fn sub_cent_unit_quotes_do_not_zero_out() {
         // The $400 case again, at the valuation layer.
-        let holding = UnitHolding {
-            quantity: Decimal::from(100_000),
-            unit_quote: d("0.004"),
-        };
+        let holding = UnitHolding { quantity: Decimal::from(100_000), unit_quote: d("0.004") };
         assert_eq!(holding.value(usd()).unwrap().format(), "400.00 USD");
     }
 
@@ -428,11 +422,8 @@ mod tests {
         assert_eq!(gold_value.format(), "2000.06 USD");
         assert_eq!(btc_value.format(), "33500.00 USD");
 
-        let total = silver_value
-            .checked_add(&gold_value)
-            .unwrap()
-            .checked_add(&btc_value)
-            .unwrap();
+        let total =
+            silver_value.checked_add(&gold_value).unwrap().checked_add(&btc_value).unwrap();
         assert_eq!(total.format(), "35800.06 USD");
     }
 }

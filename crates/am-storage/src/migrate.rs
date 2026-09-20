@@ -126,7 +126,8 @@ mod tests {
         .unwrap();
 
         // An amount without its currency must be rejected by the schema.
-        let bad = conn.execute("UPDATE assets SET acquired_amount_minor = 1000 WHERE asset_id='a1'", []);
+        let bad = conn
+            .execute("UPDATE assets SET acquired_amount_minor = 1000 WHERE asset_id='a1'", []);
         assert!(bad.is_err(), "amount without currency must violate the CHECK");
 
         conn.execute(
@@ -160,9 +161,11 @@ mod tests {
         .unwrap();
 
         let hits: i64 = conn
-            .query_row("SELECT count(*) FROM assets_fts WHERE assets_fts MATCH 'Jordan'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT count(*) FROM assets_fts WHERE assets_fts MATCH 'Jordan'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(hits, 1, "insert trigger did not index the row");
 
@@ -176,19 +179,24 @@ mod tests {
             .unwrap();
         assert_eq!(loc, 1);
 
-        conn.execute("UPDATE assets SET name = 'Renamed Card' WHERE asset_id='a1'", []).unwrap();
+        conn.execute("UPDATE assets SET name = 'Renamed Card' WHERE asset_id='a1'", [])
+            .unwrap();
         let stale: i64 = conn
-            .query_row("SELECT count(*) FROM assets_fts WHERE assets_fts MATCH 'Jordan'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT count(*) FROM assets_fts WHERE assets_fts MATCH 'Jordan'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(stale, 0, "update trigger left a stale index entry");
 
         conn.execute("DELETE FROM assets WHERE asset_id='a1'", []).unwrap();
         let after: i64 = conn
-            .query_row("SELECT count(*) FROM assets_fts WHERE assets_fts MATCH 'Renamed'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT count(*) FROM assets_fts WHERE assets_fts MATCH 'Renamed'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(after, 0, "delete trigger left a stale index entry");
     }
@@ -211,13 +219,15 @@ mod tests {
 
         conn.execute("DELETE FROM assets WHERE asset_id='a1'", []).unwrap();
 
-        let obj: i64 =
-            conn.query_row("SELECT count(*) FROM objects WHERE object_id='obj1'", [], |r| r.get(0))
-                .unwrap();
+        let obj: i64 = conn
+            .query_row("SELECT count(*) FROM objects WHERE object_id='obj1'", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(obj, 1, "shared object must survive");
 
         let still_linked: i64 = conn
-            .query_row("SELECT count(*) FROM asset_media WHERE object_id='obj1'", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM asset_media WHERE object_id='obj1'", [], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(still_linked, 1, "the other asset must keep its link");
     }

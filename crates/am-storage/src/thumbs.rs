@@ -217,9 +217,7 @@ pub fn purge_variants(vault: &Vault, root: &Path, object_id: &str) -> Result<(),
             Err(e) => return Err(e.into()),
         }
     }
-    vault
-        .conn()
-        .execute("DELETE FROM media_variants WHERE object_id = ?1", [object_id])?;
+    vault.conn().execute("DELETE FROM media_variants WHERE object_id = ?1", [object_id])?;
     Ok(())
 }
 

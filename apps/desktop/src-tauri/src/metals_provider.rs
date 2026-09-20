@@ -49,9 +49,7 @@ pub enum ProviderError {
 pub fn store_api_key(key: &str) -> Result<(), ProviderError> {
     let entry = keyring::Entry::new(SERVICE, KEY_ENTRY)
         .map_err(|e| ProviderError::Keyring(e.to_string()))?;
-    entry
-        .set_password(key.trim())
-        .map_err(|e| ProviderError::Keyring(e.to_string()))
+    entry.set_password(key.trim()).map_err(|e| ProviderError::Keyring(e.to_string()))
 }
 
 pub fn clear_api_key() -> Result<(), ProviderError> {
@@ -227,7 +225,11 @@ pub fn fetch_spot_prices(currency: &str) -> Result<Vec<FetchedPrice>, ProviderEr
 fn format_price(value: f64) -> String {
     let formatted = format!("{value:.6}");
     let trimmed = formatted.trim_end_matches('0').trim_end_matches('.');
-    if trimmed.is_empty() { "0".to_string() } else { trimmed.to_string() }
+    if trimmed.is_empty() {
+        "0".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 /// Remove the API key from any text that might be surfaced or logged.
@@ -320,10 +322,7 @@ mod tests {
         // Mirrors the filter in fetch_spot_prices: a zero or NaN price is
         // worse than no price, because it would silently zero a holding.
         for bad in [0.0_f64, -1.0, f64::NAN, f64::INFINITY] {
-            assert!(
-                !(bad.is_finite() && bad > 0.0),
-                "{bad} should have been rejected"
-            );
+            assert!(!(bad.is_finite() && bad > 0.0), "{bad} should have been rejected");
         }
         assert!(2014.3_f64.is_finite() && 2014.3 > 0.0);
     }

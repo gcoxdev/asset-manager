@@ -125,9 +125,8 @@ pub fn portfolio_series(
 
     // Dates on which a quantity event took effect, so steps can be attributed.
     let event_days: std::collections::HashSet<i64> = {
-        let mut stmt = vault
-            .conn()
-            .prepare("SELECT DISTINCT effective_date FROM asset_events")?;
+        let mut stmt =
+            vault.conn().prepare("SELECT DISTINCT effective_date FROM asset_events")?;
         let dates: Vec<String> =
             stmt.query_map([], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
         dates.iter().filter_map(|d| parse_date(d)).collect()
@@ -189,11 +188,9 @@ pub fn portfolio_series(
 pub fn earliest_activity(vault: &Vault) -> Result<Option<String>, ValuationError> {
     let earliest: Option<String> = vault
         .conn()
-        .query_row(
-            "SELECT min(effective_date) FROM asset_events",
-            [],
-            |r| r.get::<_, Option<String>>(0),
-        )
+        .query_row("SELECT min(effective_date) FROM asset_events", [], |r| {
+            r.get::<_, Option<String>>(0)
+        })
         .ok()
         .flatten();
     Ok(earliest)
@@ -403,12 +400,8 @@ mod tests {
         value(&v, "a1", 200_000, "2", "2026-06-15");
 
         let s = series(&v, "2026-06-14", "2026-06-16", 3);
-        let marked: Vec<&str> = s
-            .points
-            .iter()
-            .filter(|p| p.quantity_event)
-            .map(|p| p.date.as_str())
-            .collect();
+        let marked: Vec<&str> =
+            s.points.iter().filter(|p| p.quantity_event).map(|p| p.date.as_str()).collect();
         assert_eq!(marked, ["2026-06-15"], "only the purchase date is marked");
     }
 

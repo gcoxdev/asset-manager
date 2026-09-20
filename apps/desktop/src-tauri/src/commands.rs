@@ -220,7 +220,10 @@ pub fn create_asset(session: State<'_, Session>, asset: NewAsset) -> IpcResult<S
 }
 
 #[tauri::command]
-pub fn search_assets(session: State<'_, Session>, query: String) -> IpcResult<Vec<AssetSummary>> {
+pub fn search_assets(
+    session: State<'_, Session>,
+    query: String,
+) -> IpcResult<Vec<AssetSummary>> {
     session.touch();
     session
         .with_vault(|vault| {
@@ -268,9 +271,7 @@ pub fn search_assets(session: State<'_, Session>, query: String) -> IpcResult<Ve
 /// Format an amount for display using the currency's own minor-digit count.
 fn format_money(amount_minor: Option<i64>, currency: Option<String>) -> Option<String> {
     let (amount, code) = (amount_minor?, currency?);
-    am_core::Currency::new(&code)
-        .ok()
-        .map(|c| am_core::Money::new(amount, c).format())
+    am_core::Currency::new(&code).ok().map(|c| am_core::Money::new(amount, c).format())
 }
 
 fn other(message: String) -> IpcError {
@@ -332,8 +333,13 @@ pub fn import_photo<R: Runtime>(
         .with_vault(|vault| {
             let stored = am_storage::objects::import_object(vault, &root, &bytes, &timestamp)
                 .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
-            am_storage::objects::attach_to_asset(vault, &asset_id, &stored.object_id, &timestamp)
-                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
+            am_storage::objects::attach_to_asset(
+                vault,
+                &asset_id,
+                &stored.object_id,
+                &timestamp,
+            )
+            .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
 
             // Thumbnails are generated inline for now. When this moves to a
             // background worker it must be cancellable on lock, or a late
@@ -363,10 +369,7 @@ pub struct PhotoRef {
 }
 
 #[tauri::command]
-pub fn list_photos(
-    session: State<'_, Session>,
-    asset_id: String,
-) -> IpcResult<Vec<PhotoRef>> {
+pub fn list_photos(session: State<'_, Session>, asset_id: String) -> IpcResult<Vec<PhotoRef>> {
     session.touch();
     session
         .with_vault(|vault| {

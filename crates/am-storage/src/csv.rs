@@ -206,7 +206,9 @@ pub struct ExportResult {
 
 pub fn export_assets(vault: &Vault, now: &str) -> Result<ExportResult, CsvError> {
     let vault_id: String =
-        vault.conn().query_row("SELECT vault_id FROM vault_meta WHERE id=1", [], |r| r.get(0))?;
+        vault
+            .conn()
+            .query_row("SELECT vault_id FROM vault_meta WHERE id=1", [], |r| r.get(0))?;
 
     let mut out = String::new();
 
@@ -243,9 +245,7 @@ pub fn export_assets(vault: &Vault, now: &str) -> Result<ExportResult, CsvError>
                 rusqlite::types::ValueRef::Null => String::new(),
                 rusqlite::types::ValueRef::Integer(v) => v.to_string(),
                 rusqlite::types::ValueRef::Real(v) => v.to_string(),
-                rusqlite::types::ValueRef::Text(v) => {
-                    String::from_utf8_lossy(v).into_owned()
-                }
+                rusqlite::types::ValueRef::Text(v) => String::from_utf8_lossy(v).into_owned(),
                 rusqlite::types::ValueRef::Blob(_) => String::new(),
             };
             cells.push(value);
@@ -331,9 +331,10 @@ pub fn import_assets(
     // Refuse a file from another vault outright: merging two catalogs by
     // accident is far worse than an inconvenient error.
     if let Some(found) = metadata.get("vault") {
-        let expected: String = vault
-            .conn()
-            .query_row("SELECT vault_id FROM vault_meta WHERE id=1", [], |r| r.get(0))?;
+        let expected: String =
+            vault
+                .conn()
+                .query_row("SELECT vault_id FROM vault_meta WHERE id=1", [], |r| r.get(0))?;
         if found != &expected {
             return Err(CsvError::WrongVault { expected, found: found.clone() });
         }
@@ -379,7 +380,9 @@ pub fn import_assets(
             };
             let updated: Option<String> = vault
                 .conn()
-                .query_row("SELECT updated_at FROM assets WHERE asset_id = ?1", [id], |r| r.get(0))
+                .query_row("SELECT updated_at FROM assets WHERE asset_id = ?1", [id], |r| {
+                    r.get(0)
+                })
                 .ok();
 
             let Some(updated) = updated else { continue };
@@ -409,9 +412,7 @@ pub fn import_assets(
         }
         if !id.is_empty() {
             if let Some(first) = seen.get(id) {
-                preview
-                    .errors
-                    .push(format!("row {}: asset_id repeats row {first}", row.line));
+                preview.errors.push(format!("row {}: asset_id repeats row {first}", row.line));
                 continue;
             }
             seen.insert(id.to_string(), row.line);
@@ -432,10 +433,9 @@ pub fn import_assets(
                     ));
                 }
                 if currency.is_empty() {
-                    preview.errors.push(format!(
-                        "row {}: {amount_col} needs {currency_col}",
-                        row.line
-                    ));
+                    preview
+                        .errors
+                        .push(format!("row {}: {amount_col} needs {currency_col}", row.line));
                 }
             }
         }
@@ -492,11 +492,7 @@ pub fn import_assets(
 ///
 /// Used by stale-export detection: a row identical to the database is
 /// harmless to reapply no matter how the timestamps compare.
-fn row_differs_from_stored(
-    vault: &Vault,
-    id: &str,
-    row: &ParsedRow,
-) -> Result<bool, CsvError> {
+fn row_differs_from_stored(vault: &Vault, id: &str, row: &ParsedRow) -> Result<bool, CsvError> {
     for column in COLUMNS.iter().filter(|c| **c != "asset_id") {
         let Some(incoming) = cell(row, column) else { continue };
 
@@ -544,7 +540,8 @@ fn apply_update(
 
         // Identifiers are validated by CHECK constraints; the column name here
         // comes from our own COLUMNS list, never from the file.
-        let sql = format!("UPDATE assets SET {column} = ?1, updated_at = ?2 WHERE asset_id = ?3");
+        let sql =
+            format!("UPDATE assets SET {column} = ?1, updated_at = ?2 WHERE asset_id = ?3");
         tx.execute(&sql, rusqlite::params![value, now, id])?;
 
         if *column == "quantity" {
@@ -573,7 +570,9 @@ fn apply_insert(
             raw.to_string()
         }
     };
-    let get = |c: &str| row.values.get(c).map(|s| s.trim()).filter(|s| !s.is_empty() && *s != CLEAR_MARKER);
+    let get = |c: &str| {
+        row.values.get(c).map(|s| s.trim()).filter(|s| !s.is_empty() && *s != CLEAR_MARKER)
+    };
 
     let name = get("name").unwrap_or("Untitled");
     let type_id = get("type_id").unwrap_or("generic");
@@ -656,18 +655,15 @@ mod tests {
 
     #[test]
     fn parses_quoted_fields_and_embedded_separators() {
-        let rows = parse_csv("a,\"b,with,commas\",c\n\"line\nbreak\",\"say \"\"hi\"\"\",z\n")
-            .unwrap();
+        let rows =
+            parse_csv("a,\"b,with,commas\",c\n\"line\nbreak\",\"say \"\"hi\"\"\",z\n").unwrap();
         assert_eq!(rows[0], vec!["a", "b,with,commas", "c"]);
         assert_eq!(rows[1], vec!["line\nbreak", "say \"hi\"", "z"]);
     }
 
     #[test]
     fn rejects_unterminated_quotes() {
-        assert!(matches!(
-            parse_csv("a,\"unterminated\n"),
-            Err(CsvError::Malformed { .. })
-        ));
+        assert!(matches!(parse_csv("a,\"unterminated\n"), Err(CsvError::Malformed { .. })));
     }
 
     #[test]
@@ -747,17 +743,16 @@ mod tests {
 
         let exported = export_assets(&v, NOW).unwrap();
         for _ in 0..3 {
-            import_assets(&v, &exported.csv, ImportMode::Apply, "2026-09-21T00:00:00Z").unwrap();
+            import_assets(&v, &exported.csv, ImportMode::Apply, "2026-09-21T00:00:00Z")
+                .unwrap();
         }
 
         let count: i64 =
             v.conn().query_row("SELECT count(*) FROM assets", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 1, "repeated import duplicated rows");
 
-        let events: i64 = v
-            .conn()
-            .query_row("SELECT count(*) FROM asset_events", [], |r| r.get(0))
-            .unwrap();
+        let events: i64 =
+            v.conn().query_row("SELECT count(*) FROM asset_events", [], |r| r.get(0)).unwrap();
         assert_eq!(events, 0, "updates must not append acquisition events");
     }
 
@@ -927,11 +922,9 @@ mod tests {
 
         let (kind, delta): (String, String) = v
             .conn()
-            .query_row(
-                "SELECT event_type, quantity_delta FROM asset_events",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
+            .query_row("SELECT event_type, quantity_delta FROM asset_events", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
             .unwrap();
         assert_eq!(kind, "acquire");
         assert_eq!(delta, "3");
