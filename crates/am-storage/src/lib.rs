@@ -6,10 +6,12 @@
 //! test.
 
 pub mod csv;
+pub mod events;
 pub mod header;
 pub mod migrate;
 pub mod objects;
 pub mod thumbs;
+pub mod valuations;
 pub mod vault;
 
 use rusqlite::Connection;

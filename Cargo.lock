@@ -73,6 +73,7 @@ dependencies = [
 name = "am-storage"
 version = "0.0.1"
 dependencies = [
+ "am-core",
  "am-crypto",
  "anyhow",
  "image",

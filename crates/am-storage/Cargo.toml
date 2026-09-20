@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+am-core = { path = "../am-core" }
 am-crypto = { path = "../am-crypto" }
 anyhow.workspace = true
 image.workspace = true
