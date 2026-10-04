@@ -175,6 +175,7 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             collectible_commands::validate_collectible,
             collectible_commands::scan_slab_label,
             report_commands::insurance_report,
+            report_commands::export_claim_files,
         ])
 }
 

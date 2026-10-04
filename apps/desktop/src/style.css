@@ -994,3 +994,14 @@ tr.row-error td { background: color-mix(in srgb, var(--bad-bg) 60%, transparent)
 .reminder-banner > div { flex: 1; }
 .backup-history { margin-top: 12px; }
 .path-cell { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.claim-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+@media (max-width: 760px) { .claim-layout { grid-template-columns: 1fr; } }
+.claim-layout h3 { margin-bottom: 8px; }
+.claim-pick { max-height: 340px; overflow-y: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 8px; margin-top: 8px; }
+.claim-item { padding: 6px 0; border-bottom: 1px solid var(--border); }
+.claim-item:last-child { border-bottom: 0; }
+.claim-header { margin: 8px 0 16px; padding: 10px 14px; border: 1px solid #999; border-radius: 6px; }
+.claim-header dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
+.claim-header dt { font-weight: 600; }
+.claim-header dd { margin: 0; white-space: pre-wrap; }

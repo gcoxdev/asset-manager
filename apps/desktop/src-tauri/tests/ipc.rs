@@ -315,6 +315,33 @@ fn the_frontend_contract_holds_end_to_end() {
     let detail = ok(&w, "get_asset", json!({ "assetId": comic }));
     assert_eq!(detail["status_events"][0]["status"], "lost");
 
+    // A claim packet: exactly the chosen item, as it stood before the loss.
+    let packet = ok(
+        &w,
+        "insurance_report",
+        json!({ "options": { "asset_ids": [comic], "as_of": "2026-08-31",
+                             "compare_bases": true, "include_documents": true } }),
+    );
+    assert_eq!(packet["items"].as_array().unwrap().len(), 1, "nothing else is disclosed");
+    assert_eq!(packet["as_of"], "2026-08-31");
+    // Its only value was recorded later, so on that date it had none —
+    // unknown, not today's figure passed off as an earlier one.
+    assert_eq!(packet["items"][0]["current"], Value::Null);
+    let today = ok(
+        &w,
+        "insurance_report",
+        json!({ "options": { "asset_ids": [comic], "compare_bases": true } }),
+    );
+    assert_eq!(today["items"][0]["values_by_basis"][0]["basis"], "estimated_resale");
+    let claim_dir = dir.path().join("claims");
+    std::fs::create_dir_all(&claim_dir).unwrap();
+    let files = ok(
+        &w,
+        "export_claim_files",
+        json!({ "assetIds": [comic], "directory": claim_dir.to_str().unwrap(), "includePhotos": true }),
+    );
+    assert!(files["folder"].as_str().unwrap().contains("Claim files"));
+
     // The edit can be undone from its history, and a mistyped value voided.
     let revisions = ok(&w, "asset_revisions", json!({ "assetId": comic }));
     assert_eq!(revisions[0]["snapshot"]["status"], "active");

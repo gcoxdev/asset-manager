@@ -327,6 +327,7 @@ export async function renderHoldings(root, params, ctx) {
           bulkEdit("Reminder set", { review_every_days: review.value ? Number(review.value) : null });
         }
       } }, "Reminder…"),
+      h("button", { class: "btn btn-secondary btn-sm", disabled: !n, onclick: () => ctx.navigate("reports", { claim: ids() }) }, "Start a claim…"),
       h("button", { class: "btn btn-ghost btn-sm danger-text", disabled: !n, onclick: async () => {
         const ok = await confirmDialog({ title: `Move ${n} asset${n === 1 ? "" : "s"} to the trash?`, message: "They leave the catalog, totals and reports, and can be restored from Settings → Trash for 30 days.", confirmLabel: "Move to trash", danger: true });
         if (ok) run("Moved to trash", () => call("bulk_trash", { assetIds: ids() }));

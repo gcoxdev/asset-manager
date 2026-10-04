@@ -51,6 +51,15 @@ pub struct ReportItem {
     /// Receipts, appraisals and other documents on file, by title — so an
     /// assessor knows what evidence exists to ask for. Not their contents.
     pub documents: Vec<ReportDocument>,
+    /// With `compare_bases`: the latest value on each basis.
+    pub values_by_basis: Vec<BasisValue>,
+}
+
+#[derive(Serialize)]
+pub struct BasisValue {
+    pub basis: String,
+    pub value: String,
+    pub asof: String,
 }
 
 #[derive(Serialize)]
@@ -70,6 +79,8 @@ pub struct ReportCategory {
 #[derive(Serialize)]
 pub struct InsuranceReport {
     pub generated_at: String,
+    /// The date values and quantities are as of, when not today.
+    pub as_of: Option<String>,
     pub items: Vec<ReportItem>,
     pub categories: Vec<ReportCategory>,
     pub total: String,
@@ -106,6 +117,19 @@ pub struct ReportOptions {
     /// a title can say more than intended ("Safe deposit box 114 receipt").
     #[serde(default)]
     pub include_documents: bool,
+    /// Exactly these assets, whatever their status — a claim covers the
+    /// items it is about and discloses nothing else. Absent: every held
+    /// asset (plus lost ones with `include_lost`).
+    #[serde(default)]
+    pub asset_ids: Option<Vec<String>>,
+    /// Quantities and values as they stood on this date — the day before a
+    /// loss, for a claim — rather than today.
+    #[serde(default)]
+    pub as_of: Option<String>,
+    /// Each item's latest value on every basis — resale, replacement,
+    /// insured, melt — side by side, as of the same date.
+    #[serde(default)]
+    pub compare_bases: bool,
 }
 
 impl Default for ReportOptions {
@@ -116,6 +140,9 @@ impl Default for ReportOptions {
             include_photos: true,
             include_lost: false,
             include_documents: false,
+            asset_ids: None,
+            as_of: None,
+            compare_bases: false,
         }
     }
 }
@@ -201,13 +228,35 @@ pub fn insurance_report(
             // What is held — plus, when asked, what was lost: a claim needs
             // those items and their values from before the loss. Sold and
             // retired items are never included.
-            let records: Vec<_> = am_storage::assets::list(vault)
-                .map_err(storage)?
-                .into_iter()
-                .filter(|r| {
-                    r.status == "active" || (options.include_lost && r.status == "lost")
-                })
-                .collect();
+            let as_of = match options.as_of.as_deref().map(str::trim) {
+                None | Some("") => None,
+                Some(d) => Some(
+                    am_storage::events::normalize_date(d)
+                        .map_err(|e| storage(e.to_string()))?,
+                ),
+            };
+            let all = am_storage::assets::list(vault).map_err(storage)?;
+            let mut records: Vec<_> = match &options.asset_ids {
+                Some(ids) => {
+                    if ids.is_empty() || ids.len() > 5_000 {
+                        return Err(storage("choose between 1 and 5,000 items"));
+                    }
+                    all.into_iter().filter(|r| ids.contains(&r.asset_id)).collect()
+                }
+                None => all
+                    .into_iter()
+                    .filter(|r| {
+                        r.status == "active" || (options.include_lost && r.status == "lost")
+                    })
+                    .collect(),
+            };
+            if let Some(date) = &as_of {
+                for r in &mut records {
+                    as_of_figures(vault, r, date)?;
+                }
+                // Not yet acquired on that date: nothing to claim.
+                records.retain(|r| r.quantity != "0");
+            }
             let mut lost = 0usize;
 
             let mut items = Vec::new();
@@ -314,7 +363,13 @@ pub fn insurance_report(
                 } else {
                     None
                 };
+                let values_by_basis = if options.compare_bases {
+                    values_by_basis(vault, &r, as_of.as_deref())?
+                } else {
+                    Vec::new()
+                };
                 items.push(ReportItem {
+                    values_by_basis,
                     status: r.status.clone(),
                     lost_on,
                     details: details(&r.attrs),
@@ -355,6 +410,7 @@ pub fn insurance_report(
             }
 
             Ok(InsuranceReport {
+                as_of: as_of.clone(),
                 generated_at: generated_at.clone(),
                 items,
                 categories: categories
@@ -377,6 +433,208 @@ pub fn insurance_report(
             })
         })
         .map_err(IpcError::from)
+}
+
+#[derive(Serialize)]
+pub struct ClaimFiles {
+    pub folder: String,
+    pub files: usize,
+}
+
+/// A file name that is safe on every platform, from an asset and attachment.
+fn claim_file_name(index: usize, asset: &str, title: &str, extension: &str) -> String {
+    let clean = |s: &str| -> String {
+        s.chars()
+            .map(|c| if c.is_alphanumeric() || " -_.,()&'".contains(c) { c } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .chars()
+            .take(80)
+            .collect()
+    };
+    format!("{:02} {} - {}.{}", index, clean(asset), clean(title), extension)
+}
+
+/// Decrypt the chosen assets' documents — and photos, if asked — into a new
+/// folder inside `directory`, for sending with a claim. Only those assets'
+/// files are written; nothing else from the catalog leaves the vault. The
+/// caller has warned that the copies are not encrypted.
+#[tauri::command]
+pub fn export_claim_files<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    session: State<'_, Session>,
+    asset_ids: Vec<String>,
+    directory: String,
+    include_photos: bool,
+) -> IpcResult<ClaimFiles> {
+    session.touch();
+    let root = crate::paths::vault_root(&app)
+        .map_err(|m| IpcError { kind: "error".into(), message: m })?;
+    let parent = std::path::PathBuf::from(&directory);
+    if !parent.is_dir() {
+        return Err(crate::ipc::bad_input("choose an existing folder"));
+    }
+    if parent.starts_with(&root) {
+        return Err(crate::ipc::bad_input("choose a folder outside the vault itself"));
+    }
+    if asset_ids.is_empty() || asset_ids.len() > 5_000 {
+        return Err(crate::ipc::bad_input("choose between 1 and 5,000 items"));
+    }
+
+    // A new folder, never into one with files already in it.
+    let base = format!("Claim files {}", crate::ipc::today());
+    let mut folder = parent.join(&base);
+    let mut n = 2;
+    while folder.exists() {
+        folder = parent.join(format!("{base} ({n})"));
+        n += 1;
+    }
+
+    session
+        .with_vault(|vault| {
+            std::fs::create_dir_all(&folder).map_err(storage)?;
+            let mut written = 0usize;
+            for asset_id in &asset_ids {
+                let record = am_storage::assets::get(vault, asset_id).map_err(storage)?;
+                let mut stmt = vault
+                    .conn()
+                    .prepare(
+                        "SELECT m.object_id, o.media_type, m.doc_kind, m.title FROM asset_media m
+                         JOIN objects o ON o.object_id = m.object_id
+                         WHERE m.asset_id = ?1 AND o.gc_state = 'live'
+                           AND (m.doc_kind <> 'photo' OR ?2)
+                         ORDER BY m.doc_kind = 'photo', coalesce(m.doc_date, m.created_at)",
+                    )
+                    .map_err(storage)?;
+                let attachments = stmt
+                    .query_map(rusqlite::params![asset_id, include_photos], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, String>(2)?,
+                            r.get::<_, Option<String>>(3)?,
+                        ))
+                    })
+                    .map_err(storage)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(storage)?;
+                for (object_id, media_type, kind, title) in attachments {
+                    let bytes = am_storage::objects::load_object(vault, &root, &object_id)
+                        .map_err(storage)?;
+                    let extension = match media_type.as_str() {
+                        "application/pdf" => "pdf",
+                        "image/png" => "png",
+                        "image/webp" => "webp",
+                        "image/heic" => "heic",
+                        _ => "jpg",
+                    };
+                    written += 1;
+                    let name = claim_file_name(
+                        written,
+                        &record.name,
+                        title.as_deref().unwrap_or(&kind),
+                        extension,
+                    );
+                    std::fs::write(folder.join(name), bytes.as_slice()).map_err(storage)?;
+                }
+            }
+            Ok(written)
+        })
+        .map(|files| ClaimFiles { folder: folder.display().to_string(), files })
+        .map_err(|e| {
+            // Leave no half-written folder behind.
+            let _ = std::fs::remove_dir_all(&folder);
+            IpcError::from(e)
+        })
+}
+
+/// Rewrite a record's quantity and value to how they stood on `date`: the
+/// quantity replayed from the log, the valuation in effect then, scaled to
+/// that quantity.
+fn as_of_figures(
+    vault: &am_storage::vault::Vault,
+    r: &mut am_storage::assets::AssetRecord,
+    date: &str,
+) -> Result<(), crate::session::SessionError> {
+    let quantity =
+        am_storage::events::quantity_as_of(vault, &r.asset_id, Some(date)).map_err(storage)?;
+    r.quantity = quantity.normalize().to_string();
+    match am_storage::valuations::valuation_as_of(vault, &r.asset_id, date).map_err(storage)? {
+        Some(v) if !quantity.is_zero() => {
+            let scaled = am_storage::valuations::scale_to_quantity(
+                &v.value,
+                v.quantity_at_time,
+                quantity,
+            )
+            .map_err(storage)?;
+            r.current_amount_minor = Some(scaled.amount_minor);
+            r.current_currency = Some(scaled.currency.code().to_string());
+            r.value_source = Some(v.provenance.as_str().to_string());
+            r.value_asof = Some(v.asof);
+        }
+        _ => {
+            r.current_amount_minor = None;
+            r.current_currency = None;
+            r.value_source = None;
+            r.value_asof = None;
+        }
+    }
+    Ok(())
+}
+
+/// The latest value on each basis, as of a date (today if none), scaled to
+/// the quantity then held.
+fn values_by_basis(
+    vault: &am_storage::vault::Vault,
+    r: &am_storage::assets::AssetRecord,
+    as_of: Option<&str>,
+) -> Result<Vec<BasisValue>, crate::session::SessionError> {
+    let date = as_of.map(str::to_string).unwrap_or_else(crate::ipc::today);
+    let quantity =
+        am_storage::events::quantity_as_of(vault, &r.asset_id, Some(&date)).map_err(storage)?;
+    let mut stmt = vault
+        .conn()
+        .prepare(
+            "SELECT basis, amount_minor, currency, quantity_at_time, asof FROM valuations
+             WHERE asset_id = ?1 AND voided_at IS NULL AND asof <= ?2
+             ORDER BY asof DESC, recorded_at DESC, rowid DESC",
+        )
+        .map_err(storage)?;
+    let rows = stmt
+        .query_map([&r.asset_id, &date], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(storage)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(storage)?;
+    let mut out: Vec<BasisValue> = Vec::new();
+    for (basis, minor, code, at_time, asof) in rows {
+        if out.iter().any(|b| b.basis == basis) {
+            continue;
+        }
+        let currency = Currency::new(&code).map_err(storage)?;
+        let at_time = am_core::parse_decimal(&at_time).map_err(storage)?;
+        let value = if quantity.is_zero() {
+            Money::new(minor, currency)
+        } else {
+            am_storage::valuations::scale_to_quantity(
+                &Money::new(minor, currency),
+                at_time,
+                quantity,
+            )
+            .map_err(storage)?
+        };
+        out.push(BasisValue { basis, value: value.format(), asof });
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -417,6 +675,14 @@ mod tests {
         assert!(!partial.include_notes);
         let empty: ReportOptions = serde_json::from_str("{}").unwrap();
         assert!(!empty.include_locations && empty.include_photos);
+    }
+
+    #[test]
+    fn claim_file_names_are_safe_everywhere() {
+        assert_eq!(
+            claim_file_name(3, "Rolex: Submariner / 116610", "Receipt <2021>", "pdf"),
+            "03 Rolex Submariner 116610 - Receipt 2021.pdf"
+        );
     }
 
     #[test]
