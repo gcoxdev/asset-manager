@@ -45,6 +45,22 @@ pub struct KdfSlot {
     pub salt: [u8; 16],
     pub params: KdfParams,
     pub wrapped: WrappedKey,
+    /// The `key_epoch` this slot was wrapped under, when it differs from the
+    /// header's current epoch.
+    ///
+    /// Each slot's AAD binds an epoch. Changing one credential advances the
+    /// header epoch but can only re-wrap *that* credential's slot — the other
+    /// slot's KEK comes from a secret the app does not hold. Without this
+    /// field the untouched slot's AAD would silently change and that
+    /// credential would stop working: changing the passphrase used to break
+    /// the recovery key, and rotating the recovery key broke the passphrase.
+    ///
+    /// Absent means "the header's epoch", which is exactly how every slot was
+    /// authenticated before this field existed, so older headers read and
+    /// unlock unchanged. The value is itself inside the AAD, so editing it
+    /// breaks the unwrap like any other tampering.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wrapped_at_epoch: Option<u64>,
 }
 
 /// One unlock path. Both wrap the *same* data key.
@@ -162,11 +178,13 @@ impl VaultHeader {
                 salt: passphrase_salt,
                 params: params.clone(),
                 wrapped: WrappedKey { nonce: Vec::new(), ciphertext: Vec::new() },
+                wrapped_at_epoch: None,
             },
             recovery_slot: KdfSlot {
                 salt: recovery_salt,
                 params: params.clone(),
                 wrapped: WrappedKey { nonce: Vec::new(), ciphertext: Vec::new() },
+                wrapped_at_epoch: None,
             },
             recovery_fingerprint: am_crypto::recovery_fingerprint(&recovery_key),
         };
@@ -232,12 +250,15 @@ impl VaultHeader {
         params.validate()?;
 
         let salt = am_crypto::random_salt();
+        // The recovery slot cannot be re-wrapped here — its KEK comes from
+        // the recovery key, which the app never keeps — so it goes on
+        // authenticating under the epoch it was wrapped at.
+        self.pin_slot_epoch(Credential::RecoveryKey);
         self.key_epoch += 1;
         self.passphrase_slot.salt = salt;
         self.passphrase_slot.params = params.clone();
+        self.passphrase_slot.wrapped_at_epoch = None;
 
-        // The recovery slot's AAD covers key_epoch, so it must be re-wrapped
-        // too or it would no longer authenticate.
         let pass_kek = derive_kek(new_passphrase, &salt, params)?;
         self.passphrase_slot.wrapped =
             wrap_data_key(&pass_kek, data_key, &self.aad(Credential::Passphrase)?)
@@ -257,9 +278,12 @@ impl VaultHeader {
         let recovery_key = am_crypto::generate_recovery_key();
         let salt = am_crypto::random_salt();
 
+        // Likewise the passphrase slot, whose KEK needs the passphrase.
+        self.pin_slot_epoch(Credential::Passphrase);
         self.key_epoch += 1;
         self.recovery_slot.salt = salt;
         self.recovery_slot.params = params.clone();
+        self.recovery_slot.wrapped_at_epoch = None;
         self.recovery_fingerprint = am_crypto::recovery_fingerprint(&recovery_key);
 
         let rec_kek = derive_kek(&normalize_recovery_key(&recovery_key), &salt, params)?;
@@ -305,6 +329,73 @@ impl VaultHeader {
         Ok(())
     }
 
+    /// Find a slot orphaned by an older build, and the epoch it was wrapped at.
+    ///
+    /// Before slots recorded their own epoch, changing one credential left
+    /// the other authenticating under an epoch the header no longer carried,
+    /// so it stopped working. The wrapped key is intact; only the AAD moved.
+    /// This derives the KEK once and retries the unwrap at each earlier
+    /// epoch. It never succeeds for a wrong credential, and the caller must
+    /// still pass the header↔database pairing check, so a header whose epoch
+    /// was edited gains nothing from it.
+    pub fn unlock_orphaned_slot(
+        &self,
+        credential: Credential,
+        secret: &str,
+    ) -> Result<(Zeroizing<[u8; KEY_LEN]>, u64), UnlockError> {
+        let slot = match credential {
+            Credential::Passphrase => &self.passphrase_slot,
+            Credential::RecoveryKey => &self.recovery_slot,
+        };
+        if slot.wrapped_at_epoch.is_some() || self.key_epoch <= 1 {
+            return Err(UnlockError::CannotUnlock);
+        }
+        self.check_supported()?;
+        slot.params.validate().map_err(|e| UnlockError::Malformed(e.to_string()))?;
+
+        let normalized;
+        let secret = match credential {
+            Credential::Passphrase => secret,
+            Credential::RecoveryKey => {
+                normalized = normalize_recovery_key(secret);
+                &normalized
+            }
+        };
+        let kek = derive_kek(secret, &slot.salt, &slot.params)
+            .map_err(|_| UnlockError::CannotUnlock)?;
+
+        for epoch in (1..self.key_epoch).rev() {
+            let mut candidate = self.clone();
+            candidate.pin_slot_epoch_at(credential, epoch);
+            let aad =
+                candidate.aad(credential).map_err(|e| UnlockError::Malformed(e.to_string()))?;
+            if let Ok(key) = unwrap_data_key(&kek, &slot.wrapped, &aad) {
+                return Ok((key, epoch));
+            }
+        }
+        Err(UnlockError::CannotUnlock)
+    }
+
+    /// Pin a slot to a known epoch — used when repairing an orphaned slot.
+    pub fn pin_slot_epoch_at(&mut self, credential: Credential, epoch: u64) {
+        let slot = match credential {
+            Credential::Passphrase => &mut self.passphrase_slot,
+            Credential::RecoveryKey => &mut self.recovery_slot,
+        };
+        slot.wrapped_at_epoch = Some(epoch);
+    }
+
+    /// Record the epoch a slot is authenticated under before the header's
+    /// epoch moves on without it.
+    fn pin_slot_epoch(&mut self, credential: Credential) {
+        let current = self.key_epoch;
+        let slot = match credential {
+            Credential::Passphrase => &mut self.passphrase_slot,
+            Credential::RecoveryKey => &mut self.recovery_slot,
+        };
+        slot.wrapped_at_epoch.get_or_insert(current);
+    }
+
     fn aad(&self, credential: Credential) -> anyhow::Result<Vec<u8>> {
         let slot = match credential {
             Credential::Passphrase => &self.passphrase_slot,
@@ -315,7 +406,7 @@ impl VaultHeader {
             format_version: self.format_version,
             purpose: credential.aad_purpose(),
             vault_id: self.vault_id,
-            key_epoch: self.key_epoch,
+            key_epoch: slot.wrapped_at_epoch.unwrap_or(self.key_epoch),
             created_at: &self.created_at,
             slot_salt: slot.salt,
             slot_params: &slot.params,
@@ -512,6 +603,66 @@ mod tests {
 
         let key = header.unlock(Credential::Passphrase, "a brand new passphrase").unwrap();
         assert_eq!(key.as_ref(), v.data_key.as_ref(), "data key must be unchanged");
+
+        // The recovery path must survive, which is the test's name and was
+        // once untrue: the recovery slot's AAD followed the header epoch.
+        let key = header.unlock(Credential::RecoveryKey, &v.recovery_key).unwrap();
+        assert_eq!(key.as_ref(), v.data_key.as_ref());
+    }
+
+    #[test]
+    fn rotating_the_recovery_key_keeps_the_passphrase_working() {
+        let v = new_vault();
+        let mut header = v.header;
+        header.rotate_recovery_key(&v.data_key, &fast()).unwrap();
+        assert!(header.unlock(Credential::Passphrase, "correct horse battery staple").is_ok());
+    }
+
+    #[test]
+    fn both_credentials_survive_any_sequence_of_changes() {
+        let v = new_vault();
+        let mut header = v.header;
+        for round in 0..3 {
+            let passphrase = format!("passphrase number {round} is long enough");
+            header.change_passphrase(&v.data_key, &passphrase, &fast()).unwrap();
+            header.change_passphrase(&v.data_key, &passphrase, &fast()).unwrap();
+            let recovery = header.rotate_recovery_key(&v.data_key, &fast()).unwrap();
+
+            // Survives a save and reload, as a real header does.
+            header = VaultHeader::from_json(&header.to_json().unwrap()).unwrap();
+            assert!(
+                header.unlock(Credential::Passphrase, &passphrase).is_ok(),
+                "round {round}"
+            );
+            assert!(header.unlock(Credential::RecoveryKey, &recovery).is_ok(), "round {round}");
+        }
+        assert_eq!(header.key_epoch, 10, "every change still advances the epoch");
+    }
+
+    #[test]
+    fn a_pinned_slot_epoch_is_authenticated() {
+        let v = new_vault();
+        let mut header = v.header;
+        header.change_passphrase(&v.data_key, "a brand new passphrase", &fast()).unwrap();
+        assert_eq!(header.recovery_slot.wrapped_at_epoch, Some(1));
+
+        let mut tampered = header.clone();
+        tampered.recovery_slot.wrapped_at_epoch = Some(2);
+        assert!(tampered.unlock(Credential::RecoveryKey, &v.recovery_key).is_err());
+        tampered.recovery_slot.wrapped_at_epoch = None;
+        assert!(tampered.unlock(Credential::RecoveryKey, &v.recovery_key).is_err());
+    }
+
+    #[test]
+    fn headers_written_before_slot_epochs_still_unlock() {
+        // A freshly created vault never pins an epoch, so its JSON has no
+        // `wrapped_at_epoch` at all — the shape every existing vault has.
+        let v = new_vault();
+        let json = v.header.to_json().unwrap();
+        assert!(!json.contains("wrapped_at_epoch"));
+        let reread = VaultHeader::from_json(&json).unwrap();
+        assert!(reread.unlock(Credential::Passphrase, "correct horse battery staple").is_ok());
+        assert!(reread.unlock(Credential::RecoveryKey, &v.recovery_key).is_ok());
     }
 
     #[test]
