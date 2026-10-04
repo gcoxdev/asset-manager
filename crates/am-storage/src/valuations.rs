@@ -296,7 +296,8 @@ pub(crate) fn refresh_current_value_in(
     let latest: Option<(i64, String, String, String, String)> = tx
         .query_row(
             "SELECT amount_minor, currency, provenance, asof, quantity_at_time FROM valuations
-             WHERE asset_id = ?1 ORDER BY asof DESC, recorded_at DESC, rowid DESC LIMIT 1",
+             WHERE asset_id = ?1 AND voided_at IS NULL
+             ORDER BY asof DESC, recorded_at DESC, rowid DESC LIMIT 1",
             [asset_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
@@ -322,7 +323,42 @@ pub(crate) fn refresh_current_value_in(
              WHERE asset_id = ?6",
             rusqlite::params![scaled.amount_minor, currency, provenance, asof, now, asset_id],
         )?;
+    } else {
+        // No valuation left — the only one was voided. Unknown, not zero.
+        tx.execute(
+            "UPDATE assets
+             SET current_amount_minor = NULL, current_currency = NULL,
+                 value_source = NULL, value_asof = NULL, updated_at = ?1
+             WHERE asset_id = ?2",
+            rusqlite::params![now, asset_id],
+        )?;
     }
+    Ok(())
+}
+
+/// Void a valuation: it stops counting toward any figure — today's value,
+/// every historical total — but stays in the history with its reason, so a
+/// mistyped price is corrected without erasing that it was ever entered.
+pub fn void_valuation(
+    vault: &Vault,
+    valuation_id: &str,
+    reason: &str,
+    now: &str,
+) -> Result<(), ValuationError> {
+    let unit = crate::atomic::begin(vault.conn())?;
+    let asset_id: String = unit
+        .query_row(
+            "SELECT asset_id FROM valuations WHERE valuation_id = ?1 AND voided_at IS NULL",
+            [valuation_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| ValuationError::UnknownAsset(format!("valuation {valuation_id}")))?;
+    unit.execute(
+        "UPDATE valuations SET voided_at = ?1, void_reason = ?2 WHERE valuation_id = ?3",
+        rusqlite::params![now, reason.trim(), valuation_id],
+    )?;
+    refresh_current_value_in(&unit, &asset_id, now)?;
+    unit.commit()?;
     Ok(())
 }
 
@@ -338,7 +374,7 @@ pub fn valuation_as_of(
             "SELECT valuation_id, asset_id, amount_minor, currency, quantity_at_time,
                     basis, provenance, asof, recorded_at
              FROM valuations
-             WHERE asset_id = ?1 AND asof <= ?2
+             WHERE asset_id = ?1 AND asof <= ?2 AND voided_at IS NULL
              ORDER BY asof DESC, recorded_at DESC, rowid DESC LIMIT 1",
             rusqlite::params![asset_id, as_of],
             |r| {
@@ -392,7 +428,8 @@ pub fn portfolio_total_as_of(
 ) -> Result<PortfolioTotal, ValuationError> {
     // Every asset, whatever its status today: one lost in October still
     // counts in March. Whether it counts on *this* date is asked below.
-    let mut stmt = vault.conn().prepare("SELECT asset_id FROM assets")?;
+    let mut stmt =
+        vault.conn().prepare("SELECT asset_id FROM assets WHERE deleted_at IS NULL")?;
     let asset_ids: Vec<String> =
         stmt.query_map([], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
@@ -878,5 +915,45 @@ mod tests {
         let july = portfolio_total_as_of(&v, "2026-07-01", &usd()).unwrap();
         assert_eq!(march.total.amount_minor, 300_000, "before the sale, all ten");
         assert_eq!(july.total.amount_minor, 150_000, "after it, five of ten");
+    }
+
+    #[test]
+    fn a_voided_valuation_counts_for_nothing_but_stays_on_record() {
+        let (_d, v) = setup();
+        add_asset(&v, "a1", "Coin");
+        acquire(&v, "a1", "1", "2026-01-01");
+        value(&v, "a1", 10_000, "1", "2026-02-01");
+        value(&v, "a1", 9_999_900, "1", "2026-03-01"); // a typo
+        let typo: String = v
+            .conn()
+            .query_row(
+                "SELECT valuation_id FROM valuations WHERE amount_minor = 9999900",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+
+        void_valuation(&v, &typo, "extra zeros", NOW).unwrap();
+        let current: i64 = v
+            .conn()
+            .query_row("SELECT current_amount_minor FROM assets WHERE asset_id='a1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(current, 10_000, "back to the last real value");
+        assert_eq!(
+            portfolio_total_as_of(&v, "2026-04-01", &usd()).unwrap().total.amount_minor,
+            10_000
+        );
+        let kept: i64 = v
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM valuations WHERE void_reason = 'extra zeros'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 1, "the mistake is still in the history");
+        assert!(void_valuation(&v, &typo, "again", NOW).is_err(), "voided once");
     }
 }

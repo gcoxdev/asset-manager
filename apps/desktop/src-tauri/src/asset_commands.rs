@@ -158,6 +158,9 @@ pub struct ValuationView {
     pub unit_price: Option<String>,
     pub quote_source: Option<String>,
     pub quote_asof: Option<String>,
+    /// Set when the value was voided as a mistake; it then counts for nothing.
+    pub voided_at: Option<String>,
+    pub void_reason: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -222,7 +225,8 @@ fn valuations_of(vault: &Vault, asset_id: &str) -> Result<Vec<ValuationView>, Se
         .conn()
         .prepare(
             "SELECT v.valuation_id, v.asof, v.amount_minor, v.currency, v.basis, v.provenance,
-                    v.quantity_at_time, v.inputs, q.unit_quote, q.source, q.source_asof
+                    v.quantity_at_time, v.inputs, q.unit_quote, q.source, q.source_asof,
+                    v.voided_at, v.void_reason
              FROM valuations v LEFT JOIN quotes q ON q.quote_id = v.quote_id
              WHERE v.asset_id = ?1
              ORDER BY v.asof DESC, v.recorded_at DESC, v.rowid DESC",
@@ -250,6 +254,8 @@ fn valuations_of(vault: &Vault, asset_id: &str) -> Result<Vec<ValuationView>, Se
                 unit_price: r.get(8)?,
                 quote_source: r.get(9)?,
                 quote_asof: r.get(10)?,
+                voided_at: r.get(11)?,
+                void_reason: r.get::<_, String>(12).ok().filter(|s| !s.is_empty()),
             })
         })
         .map_err(storage)?
@@ -650,15 +656,125 @@ pub fn update_asset(
 }
 
 #[tauri::command]
-pub fn delete_asset<R: Runtime>(
+pub fn delete_asset(session: State<'_, Session>, asset_id: String) -> IpcResult<()> {
+    session.touch();
+    let timestamp = now();
+    session
+        .with_vault(|vault| assets::trash(vault, &asset_id, &timestamp).map_err(storage))
+        .map_err(IpcError::from)
+}
+
+#[tauri::command]
+pub fn restore_asset(session: State<'_, Session>, asset_id: String) -> IpcResult<()> {
+    session.touch();
+    session
+        .with_vault(|vault| assets::restore(vault, &asset_id).map_err(storage))
+        .map_err(IpcError::from)
+}
+
+#[derive(Serialize)]
+pub struct TrashItem {
+    pub asset_id: String,
+    pub name: String,
+    pub type_label: String,
+    pub deleted_at: String,
+    /// The day it will be purged if left in the trash.
+    pub purge_on: Option<String>,
+}
+
+#[tauri::command]
+pub fn list_trash(session: State<'_, Session>) -> IpcResult<Vec<TrashItem>> {
+    session.touch();
+    session
+        .with_vault(|vault| {
+            let items = assets::list_trash(vault).map_err(storage)?;
+            Ok(items
+                .into_iter()
+                .map(|r| {
+                    let deleted_at = r.deleted_at.unwrap_or_default();
+                    TrashItem {
+                        purge_on: am_storage::summary::add_days(
+                            &deleted_at[..10.min(deleted_at.len())],
+                            assets::TRASH_RETENTION_DAYS,
+                        ),
+                        asset_id: r.asset_id,
+                        name: r.name,
+                        type_label: r.type_label,
+                        deleted_at,
+                    }
+                })
+                .collect())
+        })
+        .map_err(IpcError::from)
+}
+
+/// Delete for good: one trashed asset, or with no ID, the whole trash.
+#[tauri::command]
+pub fn purge_trash<R: Runtime>(
     app: AppHandle<R>,
     session: State<'_, Session>,
-    asset_id: String,
-) -> IpcResult<()> {
+    asset_id: Option<String>,
+) -> IpcResult<usize> {
     session.touch();
     let root = vault_root(&app).map_err(other)?;
+    let timestamp = now();
     session
-        .with_vault(|vault| assets::delete(vault, &root, &asset_id).map_err(storage))
+        .with_vault(|vault| match &asset_id {
+            Some(id) => assets::purge(vault, &root, id).map(|()| 1).map_err(storage),
+            None => assets::purge_trash(vault, &root, &timestamp, true).map_err(storage),
+        })
+        .map_err(IpcError::from)
+}
+
+/// Void a mistyped valuation. It stays in the history, marked, with the
+/// reason; it no longer counts toward any figure.
+#[tauri::command]
+pub fn void_valuation(
+    session: State<'_, Session>,
+    valuation_id: String,
+    reason: String,
+) -> IpcResult<()> {
+    session.touch();
+    let timestamp = now();
+    session
+        .with_vault(|vault| {
+            valuations::void_valuation(vault, &valuation_id, &reason, &timestamp)
+                .map_err(storage)
+        })
+        .map_err(IpcError::from)
+}
+
+#[tauri::command]
+pub fn asset_revisions(
+    session: State<'_, Session>,
+    asset_id: String,
+) -> IpcResult<Vec<assets::Revision>> {
+    session.touch();
+    session
+        .with_vault(|vault| assets::revisions(vault, &asset_id).map_err(storage))
+        .map_err(IpcError::from)
+}
+
+/// Undo edits by putting back an earlier version. Itself recorded as an
+/// edit, so it can be undone too.
+#[tauri::command]
+pub fn restore_revision(
+    session: State<'_, Session>,
+    asset_id: String,
+    revision_id: String,
+) -> IpcResult<()> {
+    session.touch();
+    let timestamp = now();
+    session
+        .with_vault(|vault| {
+            atomically(vault, || {
+                assets::restore_revision(vault, &asset_id, &revision_id, &today(), &timestamp)
+                    .map_err(storage)?;
+                am_storage::pricing::revalue_asset(vault, &asset_id, &timestamp, &today())
+                    .map_err(storage)?;
+                Ok(())
+            })
+        })
         .map_err(IpcError::from)
 }
 
@@ -1114,6 +1230,7 @@ mod tests {
             acquired_amount_minor: None,
             acquired_currency: None,
             cost_complete: true,
+            deleted_at: None,
             acquired_from: None,
             storage_location: None,
             notes: String::new(),

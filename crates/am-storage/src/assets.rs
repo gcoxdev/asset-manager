@@ -80,6 +80,8 @@ pub struct AssetRecord {
     /// recorded cost covers only some of it. Gain is not computed then.
     pub cost_complete: bool,
     pub acquired_from: Option<String>,
+    /// When it was moved to the trash; `None` for everything in the catalog.
+    pub deleted_at: Option<String>,
     pub storage_location: Option<String>,
     pub notes: String,
     #[serde(serialize_with = "minor_as_string")]
@@ -115,7 +117,7 @@ const SELECT: &str = "
              ORDER BY m.is_primary DESC, m.sort_order, m.created_at LIMIT 1),
            (SELECT count(*) FROM asset_media m JOIN objects o ON o.object_id = m.object_id
              WHERE m.asset_id = a.asset_id AND o.gc_state = 'live'),
-           a.created_at, a.updated_at, a.cost_complete
+           a.created_at, a.updated_at, a.cost_complete, a.deleted_at
     FROM assets a JOIN asset_types t ON t.type_id = a.type_id";
 
 fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
@@ -150,6 +152,7 @@ fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
         acquired_amount_minor: r.get(10)?,
         acquired_currency: r.get(11)?,
         cost_complete: r.get::<_, i64>(31)? != 0,
+        deleted_at: r.get(32)?,
         acquired_from: r.get(12)?,
         storage_location: r.get(13)?,
         notes: r.get(14)?,
@@ -172,9 +175,12 @@ fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
     })
 }
 
-/// Every asset, most recently changed first.
+/// Every asset in the catalog, most recently changed first. Trashed assets
+/// are not in the catalog; see [`list_trash`].
 pub fn list(vault: &Vault) -> Result<Vec<AssetRecord>, AssetError> {
-    let mut stmt = vault.conn().prepare(&format!("{SELECT} ORDER BY a.updated_at DESC"))?;
+    let mut stmt = vault
+        .conn()
+        .prepare(&format!("{SELECT} WHERE a.deleted_at IS NULL ORDER BY a.updated_at DESC"))?;
     let rows = stmt.query_map([], from_row)?.collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -477,6 +483,8 @@ pub fn update(
     };
 
     let tx = crate::atomic::begin(vault.conn())?;
+    // The record as it was, so this edit can be undone.
+    record_revision(&tx, &current, now)?;
     tx.execute(
         "UPDATE assets SET
            type_id = ?1, name = ?2, quantity_unit = ?3, acquired_date = ?4,
@@ -549,15 +557,53 @@ pub fn set_pricing(
     Ok(())
 }
 
-/// Delete an asset outright, with its history and photos.
+/// How long a trashed asset is kept before it is purged for good.
+pub const TRASH_RETENTION_DAYS: i64 = 30;
+
+/// Move an asset to the trash.
 ///
-/// For records entered by mistake. Something sold should be *disposed* —
-/// that keeps its past contribution to the chart; deleting erases it.
-///
-/// Photos are detached first so shared objects keep their other references,
-/// then anything left unreferenced is swept from disk.
-pub fn delete(vault: &Vault, root: &Path, asset_id: &str) -> Result<(), AssetError> {
+/// It leaves every list, total, search, report and export, but keeps its
+/// history, photos and documents, so [`restore`] brings it back whole. It is
+/// still in the encrypted vault until purged — after
+/// [`TRASH_RETENTION_DAYS`], or when the trash is emptied.
+pub fn trash(vault: &Vault, asset_id: &str, now: &str) -> Result<(), AssetError> {
     get(vault, asset_id)?;
+    vault.conn().execute(
+        "UPDATE assets SET deleted_at = ?1 WHERE asset_id = ?2 AND deleted_at IS NULL",
+        rusqlite::params![now, asset_id],
+    )?;
+    Ok(())
+}
+
+/// Take an asset out of the trash, exactly as it was.
+pub fn restore(vault: &Vault, asset_id: &str) -> Result<(), AssetError> {
+    let n = vault.conn().execute(
+        "UPDATE assets SET deleted_at = NULL WHERE asset_id = ?1 AND deleted_at IS NOT NULL",
+        [asset_id],
+    )?;
+    if n == 0 {
+        return Err(AssetError::Other("that asset is not in the trash".into()));
+    }
+    Ok(())
+}
+
+/// What is in the trash, most recently deleted first.
+pub fn list_trash(vault: &Vault) -> Result<Vec<AssetRecord>, AssetError> {
+    let mut stmt = vault.conn().prepare(&format!(
+        "{SELECT} WHERE a.deleted_at IS NOT NULL ORDER BY a.deleted_at DESC"
+    ))?;
+    let rows = stmt.query_map([], from_row)?.collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Delete a trashed asset for good: its record, history and every photo or
+/// document nothing else uses. Only trashed assets can be purged, so
+/// permanent deletion is always a second, deliberate step.
+pub fn purge(vault: &Vault, root: &Path, asset_id: &str) -> Result<(), AssetError> {
+    let record = get(vault, asset_id)?;
+    if record.deleted_at.is_none() {
+        return Err(AssetError::Other("move it to the trash first".into()));
+    }
 
     let objects: Vec<String> = {
         let mut stmt =
@@ -570,9 +616,182 @@ pub fn delete(vault: &Vault, root: &Path, asset_id: &str) -> Result<(), AssetErr
             .map_err(|e| AssetError::Other(e.to_string()))?;
     }
 
-    // Events, valuations and media rows cascade.
+    // Events, valuations, revisions and media rows cascade.
     vault.conn().execute("DELETE FROM assets WHERE asset_id = ?1", [asset_id])?;
     crate::objects::sweep_deleted(vault, root).map_err(|e| AssetError::Other(e.to_string()))?;
+    Ok(())
+}
+
+/// Purge everything trashed more than [`TRASH_RETENTION_DAYS`] ago — or
+/// everything in the trash, with `all`. Returns how many were purged.
+pub fn purge_trash(
+    vault: &Vault,
+    root: &Path,
+    now: &str,
+    all: bool,
+) -> Result<usize, AssetError> {
+    let cutoff = crate::summary::add_days(&now[..10], -TRASH_RETENTION_DAYS)
+        .ok_or_else(|| AssetError::Other("bad date".into()))?;
+    let ids: Vec<String> = {
+        let mut stmt = vault.conn().prepare(
+            "SELECT asset_id FROM assets
+             WHERE deleted_at IS NOT NULL AND (?1 OR substr(deleted_at, 1, 10) < ?2)",
+        )?;
+        let rows = stmt
+            .query_map(rusqlite::params![all, cutoff], |r| r.get(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    for id in &ids {
+        purge(vault, root, id)?;
+    }
+    Ok(ids.len())
+}
+
+/// An earlier version of an asset's editable fields.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct Revision {
+    pub revision_id: String,
+    pub recorded_at: String,
+    pub snapshot: Snapshot,
+}
+
+/// The fields an edit can change, as they were.
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
+pub struct Snapshot {
+    pub type_id: String,
+    pub name: String,
+    pub status: String,
+    pub quantity_unit: String,
+    pub acquired_date: Option<String>,
+    pub acquired_amount_minor: Option<i64>,
+    pub acquired_currency: Option<String>,
+    pub acquired_from: Option<String>,
+    pub storage_location: Option<String>,
+    pub notes: String,
+    pub insured_amount_minor: Option<i64>,
+    pub insured_currency: Option<String>,
+    pub attrs: BTreeMap<String, String>,
+    pub review_every_days: Option<i64>,
+}
+
+impl Snapshot {
+    fn of(r: &AssetRecord) -> Self {
+        Snapshot {
+            type_id: r.type_id.clone(),
+            name: r.name.clone(),
+            status: r.status.clone(),
+            quantity_unit: r.quantity_unit.clone(),
+            acquired_date: r.acquired_date.clone(),
+            acquired_amount_minor: r.acquired_amount_minor,
+            acquired_currency: r.acquired_currency.clone(),
+            acquired_from: r.acquired_from.clone(),
+            storage_location: r.storage_location.clone(),
+            notes: r.notes.clone(),
+            insured_amount_minor: r.insured_amount_minor,
+            insured_currency: r.insured_currency.clone(),
+            attrs: r.attrs.clone(),
+            review_every_days: r.review_every_days,
+        }
+    }
+
+    /// The edit that puts these fields back.
+    pub fn to_edit(&self) -> Result<AssetEdit, AssetError> {
+        let money = |minor: Option<i64>,
+                     code: &Option<String>|
+         -> Result<Option<Money>, AssetError> {
+            match (minor, code) {
+                (Some(m), Some(c)) => Ok(Some(Money::new(
+                    m,
+                    am_core::Currency::new(c).map_err(|e| AssetError::Other(e.to_string()))?,
+                ))),
+                _ => Ok(None),
+            }
+        };
+        Ok(AssetEdit {
+            type_id: self.type_id.clone(),
+            name: self.name.clone(),
+            status: self.status.clone(),
+            quantity_unit: self.quantity_unit.clone(),
+            acquired_date: self.acquired_date.clone(),
+            acquired_cost: money(self.acquired_amount_minor, &self.acquired_currency)?,
+            acquired_from: self.acquired_from.clone(),
+            storage_location: self.storage_location.clone(),
+            notes: self.notes.clone(),
+            insured: money(self.insured_amount_minor, &self.insured_currency)?,
+            attrs: self.attrs.clone(),
+            review_every_days: self.review_every_days,
+            cost_covers_holding: false,
+            status_date: None,
+        })
+    }
+}
+
+/// How many earlier versions are kept per asset.
+const MAX_REVISIONS: i64 = 50;
+
+/// Earlier versions of an asset, newest first.
+pub fn revisions(vault: &Vault, asset_id: &str) -> Result<Vec<Revision>, AssetError> {
+    let mut stmt = vault.conn().prepare(
+        "SELECT revision_id, recorded_at, snapshot FROM asset_revisions
+         WHERE asset_id = ?1 ORDER BY recorded_at DESC, rowid DESC",
+    )?;
+    let rows = stmt
+        .query_map([asset_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(revision_id, recorded_at, json)| {
+            let snapshot =
+                serde_json::from_str(&json).map_err(|e| AssetError::Other(e.to_string()))?;
+            Ok(Revision { revision_id, recorded_at, snapshot })
+        })
+        .collect()
+}
+
+/// Put an asset's editable fields back as they were in a revision. Itself an
+/// edit, so it can be undone the same way.
+pub fn restore_revision(
+    vault: &Vault,
+    asset_id: &str,
+    revision_id: &str,
+    today: &str,
+    now: &str,
+) -> Result<(), AssetError> {
+    let revision = revisions(vault, asset_id)?
+        .into_iter()
+        .find(|r| r.revision_id == revision_id)
+        .ok_or_else(|| AssetError::Other("that version no longer exists".into()))?;
+    let current = get(vault, asset_id)?;
+    let mut edit = revision.snapshot.to_edit()?;
+    // A sold asset stays sold; anything else returns to the status it had,
+    // dated today rather than rewriting when it changed.
+    if current.status == "sold" || edit.status == "sold" {
+        edit.status = current.status.clone();
+    }
+    edit.status_date = Some(today.to_string());
+    update(vault, asset_id, &edit, now)
+}
+
+fn record_revision(
+    conn: &rusqlite::Connection,
+    current: &AssetRecord,
+    now: &str,
+) -> Result<(), AssetError> {
+    let json = serde_json::to_string(&Snapshot::of(current))
+        .map_err(|e| AssetError::Other(e.to_string()))?;
+    conn.execute(
+        "INSERT INTO asset_revisions (revision_id, asset_id, snapshot, recorded_at)
+         VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![uuid_v4(), &current.asset_id, json, now],
+    )?;
+    conn.execute(
+        "DELETE FROM asset_revisions WHERE asset_id = ?1 AND revision_id NOT IN (
+             SELECT revision_id FROM asset_revisions WHERE asset_id = ?1
+             ORDER BY recorded_at DESC, rowid DESC LIMIT ?2)",
+        rusqlite::params![&current.asset_id, MAX_REVISIONS],
+    )?;
     Ok(())
 }
 
@@ -627,7 +846,7 @@ pub fn search(vault: &Vault, input: &str) -> Result<Vec<String>, AssetError> {
     let Some(query) = fts_query(input) else { return Ok(Vec::new()) };
     let mut stmt = vault.conn().prepare(
         "SELECT a.asset_id FROM assets_fts f JOIN assets a ON a.rowid = f.rowid
-         WHERE assets_fts MATCH ?1 ORDER BY rank LIMIT 1000",
+         WHERE assets_fts MATCH ?1 AND a.deleted_at IS NULL ORDER BY rank LIMIT 1000",
     )?;
     let rows = stmt.query_map([query], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
@@ -894,7 +1113,75 @@ mod tests {
     }
 
     #[test]
-    fn delete_removes_history_and_unshared_photos_only() {
+    fn trash_hides_an_asset_and_restore_brings_it_back_whole() {
+        let (_d, root, v) = setup();
+        let mut a = new_asset("Rolex");
+        a.attrs.insert("serial_number".into(), "SN12345".into());
+        let id = create(&v, &a, NOW).unwrap();
+        let photo = crate::objects::import_object(&v, &root, &png(3), NOW).unwrap();
+        crate::objects::attach_to_asset(&v, &id, &photo.object_id, NOW).unwrap();
+
+        trash(&v, &id, NOW).unwrap();
+        assert!(list(&v).unwrap().is_empty(), "gone from the catalog");
+        assert!(search(&v, "SN12345").unwrap().is_empty(), "and from search");
+        assert_eq!(list_trash(&v).unwrap().len(), 1);
+
+        restore(&v, &id).unwrap();
+        assert_eq!(list(&v).unwrap().len(), 1);
+        assert_eq!(search(&v, "SN12345").unwrap(), vec![id.clone()]);
+        assert!(crate::objects::load_object(&v, &root, &photo.object_id).is_ok(), "photo kept");
+        assert!(restore(&v, &id).is_err(), "not in the trash any more");
+    }
+
+    #[test]
+    fn the_trash_empties_itself_after_the_retention_period() {
+        let (_d, root, v) = setup();
+        let old = create(&v, &new_asset("Old"), NOW).unwrap();
+        let recent = create(&v, &new_asset("Recent"), NOW).unwrap();
+        trash(&v, &old, "2026-08-01T00:00:00Z").unwrap();
+        trash(&v, &recent, "2026-09-15T00:00:00Z").unwrap();
+
+        // 2026-09-19: Old has been there 49 days, Recent 4.
+        assert_eq!(purge_trash(&v, &root, NOW, false).unwrap(), 1);
+        assert!(get(&v, &old).is_err());
+        assert_eq!(list_trash(&v).unwrap().len(), 1);
+        assert_eq!(purge_trash(&v, &root, NOW, true).unwrap(), 1, "emptying takes the rest");
+    }
+
+    #[test]
+    fn an_edit_can_be_undone_by_restoring_the_earlier_version() {
+        let (_d, _root, v) = setup();
+        let mut a = new_asset("Original name");
+        a.storage_location = Some("Safe".into());
+        a.acquired_cost = Some(usd(10_000));
+        let id = create(&v, &a, NOW).unwrap();
+
+        let mut edit = edit_of(&get(&v, &id).unwrap());
+        edit.name = "Mistyped".into();
+        edit.storage_location = None;
+        edit.acquired_cost = Some(usd(99_999));
+        update(&v, &id, &edit, NOW).unwrap();
+
+        let history = revisions(&v, &id).unwrap();
+        assert_eq!(history.len(), 1);
+        restore_revision(
+            &v,
+            &id,
+            &history[0].revision_id,
+            "2026-09-19",
+            "2026-09-19T00:00:05Z",
+        )
+        .unwrap();
+
+        let r = get(&v, &id).unwrap();
+        assert_eq!(r.name, "Original name");
+        assert_eq!(r.storage_location.as_deref(), Some("Safe"));
+        assert_eq!(r.acquired_amount_minor, Some(10_000));
+        assert_eq!(revisions(&v, &id).unwrap().len(), 2, "and the undo can itself be undone");
+    }
+
+    #[test]
+    fn purging_removes_history_and_unshared_photos_only() {
         let (_d, root, v) = setup();
         let a = create(&v, &new_asset("A"), NOW).unwrap();
         let b = create(&v, &new_asset("B"), NOW).unwrap();
@@ -906,7 +1193,9 @@ mod tests {
         crate::objects::attach_to_asset(&v, &b, &shared.object_id, NOW).unwrap();
         crate::objects::attach_to_asset(&v, &a, &only_a.object_id, NOW).unwrap();
 
-        delete(&v, &root, &a).unwrap();
+        assert!(purge(&v, &root, &a).is_err(), "only from the trash");
+        trash(&v, &a, NOW).unwrap();
+        purge(&v, &root, &a).unwrap();
 
         assert!(matches!(get(&v, &a), Err(AssetError::UnknownAsset(_))));
         let events: i64 = v

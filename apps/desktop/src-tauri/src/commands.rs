@@ -117,6 +117,11 @@ pub fn unlock_vault<R: Runtime>(
         if use_recovery_key { Credential::RecoveryKey } else { Credential::Passphrase };
     session.unlock(&root, credential, &secret).map_err(IpcError::from)?;
     apply_session_settings(&session);
+    // The trash keeps things for a stated time; past that, they go. Best
+    // effort: a failure here must not block opening the vault.
+    let _ = session.with_vault(|vault| {
+        am_storage::assets::purge_trash(vault, &root, &now(), false).map_err(storage)
+    });
     maybe_poll_metals(app);
     Ok(())
 }
@@ -481,7 +486,7 @@ pub fn vault_info(session: State<'_, Session>) -> IpcResult<VaultInfo> {
                 recovery_fingerprint: header.recovery_fingerprint.clone(),
                 key_epoch: header.key_epoch,
                 schema_version: am_storage::migrate::SCHEMA_VERSION,
-                asset_count: count("SELECT count(*) FROM assets")?,
+                asset_count: count("SELECT count(*) FROM assets WHERE deleted_at IS NULL")?,
                 photo_count: count("SELECT count(*) FROM objects WHERE gc_state = 'live'")?,
                 photo_bytes: count(
                     "SELECT coalesce(sum(ciphertext_bytes), 0) FROM objects WHERE gc_state = 'live'",

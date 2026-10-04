@@ -230,7 +230,7 @@ pub fn export_assets(vault: &Vault, now: &str) -> Result<ExportResult, CsvError>
         "SELECT asset_id, type_id, name, status, quantity, quantity_unit,
                 acquired_date, acquired_amount_minor, acquired_currency, acquired_from,
                 storage_location, notes, current_amount_minor, current_currency, value_asof
-         FROM assets ORDER BY created_at",
+         FROM assets WHERE deleted_at IS NULL ORDER BY created_at",
     )?;
 
     let rows = stmt.query_map([], |r| {
@@ -500,17 +500,22 @@ pub fn import_assets(
             }
         }
 
-        let exists = if id.is_empty() {
-            false
+        let (exists, trashed) = if id.is_empty() {
+            (false, false)
         } else {
             vault.conn().query_row(
-                "SELECT count(*) FROM assets WHERE asset_id = ?1",
+                "SELECT count(*), count(deleted_at) FROM assets WHERE asset_id = ?1",
                 [id],
-                |r| r.get::<_, i64>(0),
-            )? > 0
+                |r| Ok((r.get::<_, i64>(0)? > 0, r.get::<_, i64>(1)? > 0)),
+            )?
         };
 
-        if exists {
+        if trashed {
+            preview.errors.push(format!(
+                "row {}: that asset is in the trash — restore it before importing changes to it",
+                row.line
+            ));
+        } else if exists {
             preview.updates += 1;
         } else {
             preview.creates += 1;

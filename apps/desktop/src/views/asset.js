@@ -8,7 +8,7 @@ import { h, mount } from "../lib/dom.js";
 import { icon, typeIcon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
 import * as store from "../lib/store.js";
-import { busy, toast, confirmDialog, menuButton, sourceBadge, statusBadge, toggle, callout, modal } from "../ui/components.js";
+import { busy, toast, confirmDialog, menuButton, sourceBadge, statusBadge, toggle, callout, modal, field } from "../ui/components.js";
 import { valueChart } from "../ui/chart.js";
 import { openEditAsset, openUpdateValue, openRecordChange } from "./asset-forms.js";
 
@@ -35,7 +35,9 @@ export async function renderAsset(root, params, ctx) {
     menuButton(h("button", { class: "btn btn-ghost", "aria-label": "More" }, icon("more")), [
       { label: "Add photos…", icon: "image", onSelect: () => addPhotos(a, reload) },
       "divider",
-      { label: "Delete asset…", icon: "trash", danger: true, onSelect: () => deleteAsset(a, ctx) },
+      { label: "Edit history…", icon: "clock", onSelect: () => editHistory(a, reload) },
+      "divider",
+      { label: "Move to trash…", icon: "trash", danger: true, onSelect: () => deleteAsset(a, ctx) },
     ])
   );
 
@@ -54,7 +56,7 @@ export async function renderAsset(root, params, ctx) {
     ),
     h("div", { class: "asset-layout" },
       h("div", { class: "asset-main" }, gallery(a, detail.photos, reload), detailsCard(a, detail), notesCard(a)),
-      h("div", { class: "asset-side" }, valueCard(a, detail, reload), historyCard(a, detail), eventsCard(detail))
+      h("div", { class: "asset-side" }, valueCard(a, detail, reload), historyCard(a, detail, reload), eventsCard(detail))
     )
   );
 }
@@ -318,7 +320,7 @@ function watchBox(a, reload) {
   );
 }
 
-function historyCard(a, detail) {
+function historyCard(a, detail, reload) {
   const vals = detail.valuations;
   if (!vals.length) return null;
 
@@ -326,8 +328,9 @@ function historyCard(a, detail) {
   // The current value's currency is charted; anything else stays in the
   // table below, and the chart says so.
   const currency = a.current_currency ?? vals[0].currency;
-  const charted = [...vals].reverse().filter((v) => v.currency === currency);
-  const otherCurrencies = vals.length - charted.length;
+  const live = vals.filter((v) => !v.voided_at);
+  const charted = [...live].reverse().filter((v) => v.currency === currency);
+  const otherCurrencies = live.length - charted.length;
   const points = charted.map((v, i) => ({
     date: v.asof,
     display: v.amount,
@@ -343,13 +346,15 @@ function historyCard(a, detail) {
   if (otherCurrencies) notes.push(`${otherCurrencies} value${otherCurrencies === 1 ? "" : "s"} in other currencies ${otherCurrencies === 1 ? "is" : "are"} listed below but not charted.`);
 
   const row = (v) =>
-    h("tr", {},
+    h("tr", { class: v.voided_at ? "voided" : null },
       h("td", {}, fmt.date(v.asof)),
       h("td", { class: "num" }, fmt.money(v.amount)),
       h("td", {}, h("div", { class: "name-cell" },
-        h("span", {}, fmt.PROVENANCE_LABELS[v.provenance] ?? v.provenance),
+        h("span", {}, v.voided_at ? `Voided — ${v.void_reason ?? "no reason given"}` : fmt.PROVENANCE_LABELS[v.provenance] ?? v.provenance),
         h("span", { class: "sub" }, [fmt.BASIS_LABELS[v.basis] ?? v.basis, `${fmt.quantity(v.quantity_at_time)} held`, v.unit_price ? `at ${fmt.unitPrice(v.unit_price, v.currency)}` : null, v.note].filter(Boolean).join(" · "))
-      ))
+      )),
+      h("td", { class: "row-action" }, v.voided_at ? null
+        : h("button", { class: "icon-btn", title: "Void this value", "aria-label": `Void the value of ${v.amount} on ${v.asof}`, onclick: () => voidValuation(v, reload) }, icon("x", { size: 14 })))
     );
   const LIMIT = 12;
   const tbody = h("tbody", {}, vals.slice(0, LIMIT).map(row));
@@ -363,6 +368,88 @@ function historyCard(a, detail) {
     h("table", { class: "table compact" }, h("caption", { class: "sr-only" }, "Every recorded value, newest first"), tbody),
     showAll
   );
+}
+
+/** Void a mistyped value: kept in the history, counted nowhere. */
+async function voidValuation(v, reload) {
+  const reason = textInputLike();
+  const m = modal({
+    title: "Void this value?",
+    size: "sm",
+    body: h("div", { class: "stack" },
+      h("p", {}, `${fmt.money(v.amount)} as of ${fmt.date(v.asof)} will stop counting toward the current value and every past total. It stays in the history, marked as voided, so the correction is visible.`),
+      field("Reason", reason, { hint: "For example: typo, wrong item, duplicate entry." })
+    ),
+    footer: (close) => [
+      h("button", { class: "btn btn-ghost", onclick: () => close(false) }, "Cancel"),
+      h("button", { class: "btn btn-danger", onclick: () => close(true) }, "Void value"),
+    ],
+  });
+  if (!(await m.done)) return;
+  try {
+    await call("void_valuation", { valuationId: v.valuation_id, reason: reason.value.trim() });
+    store.invalidate();
+    toast("Value voided.", { kind: "success" });
+    reload();
+  } catch (e) {
+    toast(describe(e), { kind: "error" });
+  }
+}
+
+function textInputLike() {
+  return h("input", { type: "text", maxlength: 200, autocomplete: "off", autofocus: true });
+}
+
+/** Earlier versions of the record, each restorable. */
+async function editHistory(a, reload) {
+  let revisions;
+  try {
+    revisions = await call("asset_revisions", { assetId: a.asset_id });
+  } catch (e) {
+    return toast(describe(e), { kind: "error" });
+  }
+  const FIELDS = [
+    ["name", "Name"], ["type_id", "Type"], ["status", "Status"], ["storage_location", "Location"],
+    ["acquired_date", "Acquired on"], ["acquired_from", "Acquired from"], ["notes", "Notes"],
+    ["quantity_unit", "Unit"], ["review_every_days", "Review interval"],
+  ];
+  const changes = (s) => {
+    const out = FIELDS.filter(([k]) => (s[k] ?? null) !== (a[k] ?? null)).map(([, label]) => label);
+    if ((s.acquired_amount_minor ?? null) !== (a.acquired_amount_minor == null ? null : Number(a.acquired_amount_minor)) || (s.acquired_currency ?? null) !== (a.acquired_currency ?? null)) out.push("Total paid");
+    if ((s.insured_amount_minor ?? null) !== (a.insured_amount_minor == null ? null : Number(a.insured_amount_minor)) || (s.insured_currency ?? null) !== (a.insured_currency ?? null)) out.push("Insured for");
+    if (JSON.stringify(s.attrs) !== JSON.stringify(a.attrs)) out.push("Details");
+    return out;
+  };
+  const m = modal({
+    title: "Edit history",
+    subtitle: a.name,
+    size: "md",
+    body: revisions.length
+      ? h("div", { class: "stack" },
+          h("p", { class: "muted small" }, "The record as it was before each edit, newest first. Restoring a version is itself an edit, so it can be undone here too."),
+          h("ul", { class: "revision-list" }, revisions.map((r) => {
+            const diff = changes(r.snapshot);
+            return h("li", {},
+              h("div", {},
+                h("strong", {}, fmt.date(r.recorded_at)), " ", h("span", { class: "muted" }, new Date(r.recorded_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })),
+                h("p", { class: "muted small" }, diff.length ? `Differs from now in: ${diff.join(", ")}` : "Same as now")
+              ),
+              diff.length
+                ? h("button", { class: "btn btn-secondary btn-sm", onclick: async () => {
+                    try {
+                      await call("restore_revision", { assetId: a.asset_id, revisionId: r.revision_id });
+                      store.invalidate();
+                      m.close();
+                      toast("Earlier version restored.", { kind: "success" });
+                      reload();
+                    } catch (e) { toast(describe(e), { kind: "error" }); }
+                  } }, "Restore this version")
+                : null
+            );
+          }))
+        )
+      : h("p", { class: "muted" }, "No edits yet. Each time you save changes, the version before is kept here."),
+  });
 }
 
 const STATUS_EVENT_LABELS = { lost: "Marked lost", retired: "Retired", active: "Recovered" };
@@ -447,19 +534,27 @@ function notesCard(a) {
 
 async function deleteAsset(a, ctx) {
   const ok = await confirmDialog({
-    title: `Delete “${a.name}”?`,
+    title: `Move “${a.name}” to the trash?`,
     message: [
-      "This removes the asset, its photos and its whole history from the vault. It cannot be undone.",
+      "It leaves your catalog, totals, reports and exports. Its history, photos and documents are kept, so you can restore it from Settings → Trash for 30 days. After that it is deleted for good.",
       "If you sold it, use “Record change → Sold all” instead: that keeps its past value in your charts.",
     ],
-    confirmLabel: "Delete permanently",
+    confirmLabel: "Move to trash",
     danger: true,
   });
   if (!ok) return;
   try {
     await call("delete_asset", { assetId: a.asset_id });
     store.invalidate();
-    toast(`Deleted ${a.name}.`, { kind: "success" });
+    const dismiss = toast(h("span", {}, `Moved ${a.name} to the trash. `,
+      h("button", { class: "link", onclick: async () => {
+        dismiss();
+        try {
+          await call("restore_asset", { assetId: a.asset_id });
+          store.invalidate();
+          ctx.navigate("asset", { id: a.asset_id });
+        } catch (e) { toast(describe(e), { kind: "error" }); }
+      } }, "Undo")), { kind: "success", timeout: 9000 });
     ctx.navigate("holdings");
   } catch (e) {
     toast(describe(e), { kind: "error" });

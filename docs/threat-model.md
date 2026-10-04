@@ -123,6 +123,13 @@ Backups are **not** in this category: a backup is a ciphertext copy of the
 vault — header, database and objects — and is as safe to store on an external
 drive or synced folder as the vault itself.
 
+Deleting an asset moves it to the **trash** for 30 days, and edits keep the
+previous version (the last 50 per asset). Both stay inside the encrypted
+vault and are visible in the app; neither is secure deletion. "Delete for
+good" and the 30-day purge remove the records and unshared files from the
+vault, but backups made earlier still contain them, and SQLite may leave
+freed pages until they are reused.
+
 ### 4.4 A weak passphrase
 
 Argon2id at 64 MiB makes guessing expensive, not impossible. A passphrase found

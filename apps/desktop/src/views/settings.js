@@ -7,7 +7,7 @@ import { h, mount } from "../lib/dom.js";
 import { icon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
 import * as store from "../lib/store.js";
-import { busy, toast, modal, field, select, toggle, callout } from "../ui/components.js";
+import { busy, toast, modal, field, select, toggle, callout, confirmDialog } from "../ui/components.js";
 import { recoveryCeremony, restoreDialog, restoredMessage } from "./onboarding.js";
 
 const CURRENCIES = [
@@ -17,11 +17,12 @@ const CURRENCIES = [
 ];
 
 export async function renderSettings(root, params, ctx) {
-  const [settings, info, metals, crypto] = await Promise.all([
+  const [settings, info, metals, crypto, trash] = await Promise.all([
     store.settings({ fresh: true }),
     call("vault_info"),
     call("metals_provider_status"),
     call("crypto_provider_status"),
+    call("list_trash"),
   ]);
 
   const save = async (patch) => {
@@ -42,6 +43,7 @@ export async function renderSettings(root, params, ctx) {
     h("header", { class: "page-head" }, h("div", {}, h("h1", {}, "Settings"), h("p", { class: "page-sub" }, "Stored inside this vault, so they travel with it"))),
     securityCard(settings, info, save, ctx),
     backupCard(settings, ctx),
+    trashCard(trash, ctx),
     feedsCard(settings, metals, crypto, save, ctx),
     privacyCard(settings, save),
     displayCard(settings, save),
@@ -192,6 +194,58 @@ function backupCard(settings, ctx) {
     h("p", { class: "card-text" }, "A backup is a complete, still-encrypted copy of the vault — records, photos and history. It is safe to keep on an external drive or in a synced folder; without your passphrase or recovery key it is unreadable."),
     h("p", { class: "card-text muted" }, "The vault closes for a moment while it is copied, so nothing changes mid-copy. You stay signed in."),
     h("div", { class: "btn-row" }, backup, restore)
+  );
+}
+
+// ------------------------------------------------------------ trash
+
+function trashCard(items, ctx) {
+  const purge = async (assetId, name) => {
+    const ok = await confirmDialog({
+      title: assetId ? `Delete “${name}” for good?` : "Empty the trash?",
+      message: assetId
+        ? "Its record, history, and any photos or documents nothing else uses are removed from the vault. This cannot be undone — though backups made before now still contain it."
+        : `All ${items.length} item${items.length === 1 ? "" : "s"} in the trash are removed from the vault for good. This cannot be undone — though backups made before now still contain them.`,
+      confirmLabel: assetId ? "Delete for good" : "Empty trash",
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      await call("purge_trash", { assetId: assetId ?? null });
+      toast("Deleted for good.", { kind: "success" });
+      ctx.refresh();
+    } catch (e) {
+      toast(describe(e), { kind: "error" });
+    }
+  };
+  const restore = async (item) => {
+    try {
+      await call("restore_asset", { assetId: item.asset_id });
+      store.invalidate();
+      toast(`Restored ${item.name}.`, { kind: "success" });
+      ctx.refresh();
+    } catch (e) {
+      toast(describe(e), { kind: "error" });
+    }
+  };
+  return h("section", { class: "card", id: "trash" },
+    h("div", { class: "card-head" },
+      h("h2", {}, icon("trash", { size: 18 }), " Trash"),
+      items.length ? h("button", { class: "btn btn-ghost btn-sm", onclick: () => purge(null) }, "Empty trash") : null
+    ),
+    h("p", { class: "card-text" }, "Deleted assets wait here for 30 days with their history, photos and documents, then are removed for good. Until then they are still inside the encrypted vault."),
+    items.length
+      ? h("table", { class: "table compact" },
+          h("tbody", {}, items.map((item) => h("tr", {},
+            h("td", {}, h("div", { class: "name-cell" }, h("span", {}, item.name), h("span", { class: "sub" }, item.type_label))),
+            h("td", { class: "muted small" }, `Deleted ${fmt.ago(item.deleted_at)}${item.purge_on ? ` · removed ${fmt.date(item.purge_on)}` : ""}`),
+            h("td", { class: "num" }, h("div", { class: "btn-row", style: { justifyContent: "flex-end" } },
+              h("button", { class: "btn btn-secondary btn-sm", onclick: () => restore(item) }, "Restore"),
+              h("button", { class: "btn btn-ghost btn-sm", onclick: () => purge(item.asset_id, item.name) }, "Delete for good")
+            ))
+          )))
+        )
+      : h("p", { class: "muted small" }, "The trash is empty.")
   );
 }
 

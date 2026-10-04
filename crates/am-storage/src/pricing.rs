@@ -267,7 +267,8 @@ pub fn revalue_asset(
     let row: Option<(String, String, String)> = vault
         .conn()
         .query_row(
-            "SELECT pricing, status, attrs FROM assets WHERE asset_id = ?1",
+            "SELECT pricing, CASE WHEN deleted_at IS NULL THEN status ELSE 'trashed' END, attrs
+             FROM assets WHERE asset_id = ?1",
             [asset_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -304,7 +305,8 @@ pub fn revalue_asset(
     let last: Option<(Option<String>, String)> = vault
         .conn()
         .query_row(
-            "SELECT quote_id, quantity_at_time FROM valuations WHERE asset_id = ?1
+            "SELECT quote_id, quantity_at_time FROM valuations
+             WHERE asset_id = ?1 AND voided_at IS NULL
              ORDER BY asof DESC, recorded_at DESC, rowid DESC LIMIT 1",
             [asset_id],
             |r| Ok((r.get(0)?, r.get(1)?)),
@@ -346,7 +348,8 @@ pub fn revalue_all(
 ) -> Result<RevalueSummary, PricingError> {
     let assets: Vec<(String, String)> = {
         let mut stmt = vault.conn().prepare(
-            "SELECT asset_id, name FROM assets WHERE pricing = 'market' AND status = 'active'",
+            "SELECT asset_id, name FROM assets
+             WHERE pricing = 'market' AND status = 'active' AND deleted_at IS NULL",
         )?;
         let rows =
             stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
@@ -373,7 +376,8 @@ pub fn revalue_all(
 pub fn held_coin_ids(vault: &Vault) -> Result<Vec<String>, PricingError> {
     let mut stmt = vault.conn().prepare(
         "SELECT DISTINCT json_extract(attrs, '$.coin_id') FROM assets
-         WHERE status = 'active' AND json_extract(attrs, '$.coin_id') IS NOT NULL",
+         WHERE status = 'active' AND deleted_at IS NULL
+           AND json_extract(attrs, '$.coin_id') IS NOT NULL",
     )?;
     let ids: Vec<String> = stmt.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
     Ok(ids)

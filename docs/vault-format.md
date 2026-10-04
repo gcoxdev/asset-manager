@@ -286,6 +286,7 @@ the user after the wrong problem. On mismatch, refuse to open and say so.
 | 4 | `cost_complete` on assets: false when part of a holding was added at an unknown cost (or in another currency), so no gain is computed against a cost covering only some of it. Backfilled from existing `add` events |
 | 5 | `firearms` category with `firearm`, `ammunition` and `firearm_accessory` types |
 | 6 | `status_events` (dated lost / retired / recovered; existing lost and retired items dated from their last edit) and `cost_statements` (cost replayed in effective-date order from the latest statement; every existing cost recorded as a statement so no figure changes) |
+| 7 | `assets.deleted_at` (trash, purged after 30 days), `valuations.voided_at` / `void_reason` (voided values kept, not counted), `asset_revisions` (the record before each edit, last 50 kept) |
 
 ---
 

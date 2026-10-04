@@ -182,6 +182,7 @@ fn the_frontend_contract_holds_end_to_end() {
     );
     assert_eq!(ok(&w, "search_assets", json!({ "query": "G1234567" })), json!([rifle.clone()]));
     ok(&w, "delete_asset", json!({ "assetId": rifle }));
+    ok(&w, "purge_trash", json!({ "assetId": rifle }));
 
     // Search: punctuation is harmless and attributes are indexed.
     assert_eq!(ok(&w, "search_assets", json!({ "query": "#15 cgc" })), json!([comic.clone()]));
@@ -288,6 +289,15 @@ fn the_frontend_contract_holds_end_to_end() {
     assert_eq!(lost["current"], "1250000.00 USD", "its value from before the loss");
     let detail = ok(&w, "get_asset", json!({ "assetId": comic }));
     assert_eq!(detail["status_events"][0]["status"], "lost");
+
+    // The edit can be undone from its history, and a mistyped value voided.
+    let revisions = ok(&w, "asset_revisions", json!({ "assetId": comic }));
+    assert_eq!(revisions[0]["snapshot"]["status"], "active");
+    let valuation = detail["valuations"][0]["valuation_id"].clone();
+    ok(&w, "void_valuation", json!({ "valuationId": valuation, "reason": "typo" }));
+    let voided = ok(&w, "get_asset", json!({ "assetId": comic }));
+    assert_eq!(voided["valuations"][0]["void_reason"], "typo");
+    assert_eq!(voided["asset"]["current_display"], Value::Null, "unknown, not zero");
     assert_eq!(report["items"][0]["storage_location"], Value::Null, "locations left out");
 
     let series = ok(&w, "portfolio_series", json!({ "from": null, "maxPoints": 160 }));
@@ -371,7 +381,23 @@ fn the_frontend_contract_holds_end_to_end() {
     assert_eq!(row["primary_photo"], first["object_id"]);
     ok(&w, "remove_photo", json!({ "assetId": btc, "objectId": first["object_id"] }));
     assert_eq!(ok(&w, "list_photos", json!({ "assetId": btc })), json!([]));
+    // Deleting moves to the trash: out of the catalog, restorable, and only
+    // then removable for good.
     ok(&w, "delete_asset", json!({ "assetId": btc }));
+    let trash = ok(&w, "list_trash", json!({}));
+    assert_eq!(trash.as_array().unwrap().len(), 1);
+    assert_eq!(trash[0]["asset_id"], btc);
+    assert!(trash[0]["purge_on"].as_str().is_some());
+    assert!(!ok(&w, "list_assets", json!({}))
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|a| a["asset_id"] == btc));
+    ok(&w, "restore_asset", json!({ "assetId": btc }));
+    assert!(invoke(&w, "purge_trash", json!({ "assetId": btc })).is_err(), "not trashed");
+    ok(&w, "delete_asset", json!({ "assetId": btc }));
+    assert_eq!(ok(&w, "purge_trash", json!({ "assetId": btc })), 1);
+    assert_eq!(ok(&w, "list_trash", json!({})), json!([]));
 
     // --- credentials, backup and restore -------------------------------------------
     let wrong = invoke(

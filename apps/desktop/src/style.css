@@ -943,3 +943,12 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .carry-over { background: var(--surface-2); }
 .carry-over .kv { margin: 8px 0 10px; }
 .carry-over-head { font-size: 12.5px; font-weight: 600; color: var(--text-2); margin-bottom: 4px; }
+
+/* Value history: a voided value stays visible, plainly not counted. */
+tr.voided td { color: var(--muted); }
+tr.voided td.num { text-decoration: line-through; }
+.row-action { width: 1%; white-space: nowrap; text-align: right; }
+
+.revision-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.revision-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.revision-list li:last-child { border-bottom: 0; }

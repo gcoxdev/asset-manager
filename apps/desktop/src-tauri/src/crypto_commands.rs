@@ -339,7 +339,8 @@ pub fn crypto_prices(session: State<'_, Session>) -> IpcResult<Vec<CoinPrice>> {
                     "SELECT json_extract(attrs, '$.coin_id'), json_extract(attrs, '$.symbol'),
                             quantity
                      FROM assets
-                     WHERE status = 'active' AND json_extract(attrs, '$.coin_id') IS NOT NULL",
+                     WHERE status = 'active' AND deleted_at IS NULL
+                       AND json_extract(attrs, '$.coin_id') IS NOT NULL",
                 )
                 .map_err(storage)?;
             let rows: Vec<(String, Option<String>, String)> = stmt

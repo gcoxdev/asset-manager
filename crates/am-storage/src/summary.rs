@@ -138,7 +138,7 @@ pub fn dashboard(
                       WHERE m.asset_id = a.asset_id AND o.gc_state = 'live'
                       ORDER BY m.is_primary DESC, m.sort_order LIMIT 1)
              FROM assets a JOIN asset_types t ON t.type_id = a.type_id
-             WHERE a.status = 'active'",
+             WHERE a.status = 'active' AND a.deleted_at IS NULL",
         )?;
         let rows = stmt
             .query_map([], |r| {
@@ -280,6 +280,7 @@ pub fn dashboard(
         let mut stmt = vault.conn().prepare(
             "SELECT e.asset_id, a.name, e.event_type, e.effective_date, e.quantity_delta
              FROM asset_events e JOIN assets a ON a.asset_id = e.asset_id
+             WHERE a.deleted_at IS NULL
              ORDER BY e.recorded_at DESC, e.rowid DESC LIMIT 8",
         )?;
         let rows = stmt
