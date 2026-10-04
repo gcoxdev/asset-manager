@@ -159,6 +159,30 @@ fn the_frontend_contract_holds_end_to_end() {
     assert_eq!(row["current_amount_minor"], "125000000", "money crosses IPC as text");
     assert_eq!(row["next_review"].as_str().map(|d| d.len()), Some(10));
 
+    // Firearms are their own category, found by serial number.
+    let types = ok(&w, "asset_types", json!({}));
+    assert!(types
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["type_id"] == "firearm" && t["category"] == "firearms"));
+    let rifle = ok(
+        &w,
+        "create_asset",
+        json!({ "form": {
+            "type_id": "firearm", "name": "Model 70", "quantity": "1", "quantity_unit": "item",
+            "attrs": { "manufacturer": "Winchester", "caliber": ".30-06", "serial_number": "G1234567" },
+            "pricing": "manual", "current_value": null
+        }}),
+    );
+    let rifle = rifle.as_str().unwrap().to_string();
+    assert_eq!(
+        ok(&w, "get_asset", json!({ "assetId": rifle }))["asset"]["category"],
+        "firearms"
+    );
+    assert_eq!(ok(&w, "search_assets", json!({ "query": "G1234567" })), json!([rifle.clone()]));
+    ok(&w, "delete_asset", json!({ "assetId": rifle }));
+
     // Search: punctuation is harmless and attributes are indexed.
     assert_eq!(ok(&w, "search_assets", json!({ "query": "#15 cgc" })), json!([comic.clone()]));
     assert_eq!(

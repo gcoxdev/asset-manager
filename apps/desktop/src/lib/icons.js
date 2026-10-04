@@ -17,6 +17,7 @@ const PATHS = {
   lock: ["M5 11h14v10H5z", "M8 11V7a4 4 0 0 1 8 0v4"],
   unlock: ["M5 11h14v10H5z", "M8 11V7a4 4 0 0 1 7.5-2"],
   plus: ["M12 5v14", "M5 12h14"],
+  target: ["M12 19a7 7 0 1 0 0-14 7 7 0 0 0 0 14z", "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z", "M12 2v3", "M12 19v3", "M2 12h3", "M19 12h3"],
   search: ["M11 18a7 7 0 1 0 0-14 7 7 0 0 0 0 14z", "M21 21l-5-5"],
   x: ["M6 6l12 12", "M18 6 6 18"],
   back: ["M15 18l-6-6 6-6"],
@@ -120,7 +121,8 @@ export function typeIcon(typeId, category) {
     numismatic_coin: "coin", memorabilia: "signed", sealed_product: "box",
     video_game: "game", vinyl: "vinyl", art: "art", watch: "watch", jewelry: "gem",
     instrument: "music", wine: "wine", cash: "cash", generic: "item",
+    firearm: "target", ammunition: "target", firearm_accessory: "target",
   };
   if (byType[typeId]) return byType[typeId];
-  return { metals: "metal", crypto: "crypto", collectibles: "card", valuables: "gem", cash: "cash" }[category] ?? "item";
+  return { metals: "metal", crypto: "crypto", collectibles: "card", valuables: "gem", firearms: "target", cash: "cash" }[category] ?? "item";
 }

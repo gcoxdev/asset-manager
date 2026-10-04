@@ -149,7 +149,7 @@ export async function renderHoldings(root, params, ctx) {
   function drawChips() {
     const counts = new Map();
     for (const a of assets) if (a.status === "active") counts.set(a.category, (counts.get(a.category) ?? 0) + 1);
-    const order = ["metals", "crypto", "collectibles", "valuables", "cash", "other"];
+    const order = ["metals", "crypto", "collectibles", "valuables", "firearms", "cash", "other"];
     const cats = order.filter((c) => counts.has(c) || prefs.category === c);
     const chip = (id, label, count) =>
       h("button", {

@@ -32,6 +32,8 @@ const KINDS = [
   { id: "vinyl", type: "vinyl", label: "Vinyl record", glyph: "vinyl", blurb: "Pressing, matrix, condition" },
   { id: "instrument", type: "instrument", label: "Instrument", glyph: "music", blurb: "Maker, model, serial" },
   { id: "wine", type: "wine", label: "Wine & spirits", glyph: "wine", blurb: "Producer, vintage, bottle size" },
+  { id: "firearm", type: "firearm", label: "Firearm", glyph: "target", blurb: "Make, model, caliber, serial" },
+  { id: "ammunition", type: "ammunition", label: "Ammunition", glyph: "target", blurb: "Caliber, load, rounds held" },
   { id: "cash", type: "cash", label: "Cash & accounts", glyph: "cash", blurb: "Balances held for completeness" },
   { id: "generic", type: "generic", label: "Anything else", glyph: "item", blurb: "A general item with your own details" },
 ];
@@ -53,6 +55,9 @@ const SUGGESTED = {
   vinyl: ["artist", "title", "pressing", "matrix", "condition"],
   instrument: ["maker", "model", "serial_number", "year", "condition"],
   wine: ["producer", "vintage", "varietal", "bottle_size", "storage_conditions"],
+  firearm: ["manufacturer", "model", "caliber", "serial_number", "action", "barrel_length", "finish", "year", "condition"],
+  ammunition: ["manufacturer", "caliber", "grain", "bullet_type", "lot_number"],
+  firearm_accessory: ["brand", "model", "serial_number", "fits"],
   cash: ["institution", "account_type", "last_four"],
   generic: ["brand", "model", "serial_number"],
 };
@@ -176,7 +181,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
     identity = collectibleFields(schema, graders, attrs, collect, () => previewName());
     name.placeholder = "Leave blank to name it from the fields above";
   } else {
-    identity = freeFields(SUGGESTED[kind.type] ?? SUGGESTED.generic, attrs, collect);
+    identity = freeFields(SUGGESTED[asset?.type_id] ?? SUGGESTED[kind.type] ?? SUGGESTED.generic, attrs, collect);
     const freeTypes = types.filter((t) => !["metals", "crypto"].includes(t.category) && !collectibles.some((c) => c.id === t.type_id));
     typeSelect = select(freeTypes.map((t) => [t.type_id, t.label]), asset?.type_id ?? kind.type);
   }

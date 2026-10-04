@@ -284,6 +284,7 @@ the user after the wrong problem. On mismatch, refuse to open and say so.
 | 2 | `app_settings` (per-vault settings, including privacy opt-ins) |
 | 3 | Effective dates normalized to calendar dates; type categories and the types the forms create; collectibles saved as `generic` reclassified from their fields; `pricing` (`manual`/`market`) and `review_every_days` on assets; FTS index extended to type-specific attributes |
 | 4 | `cost_complete` on assets: false when part of a holding was added at an unknown cost (or in another currency), so no gain is computed against a cost covering only some of it. Backfilled from existing `add` events |
+| 5 | `firearms` category with `firearm`, `ammunition` and `firearm_accessory` types |
 
 ---
 

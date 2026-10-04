@@ -195,6 +195,7 @@ export const CATEGORY_LABELS = {
   crypto: "Crypto",
   collectibles: "Collectibles",
   valuables: "Valuables",
+  firearms: "Firearms",
   cash: "Cash & accounts",
   other: "Other",
 };

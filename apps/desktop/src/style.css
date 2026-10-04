@@ -421,6 +421,8 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 .callout-info { background: var(--info-bg); color: var(--info-ink); }
 .callout-danger { background: var(--bad-bg); color: var(--bad); }
 .callout-success { background: var(--good-bg); color: var(--good); }
+/* A card's action buttons sit clear of a notice directly above them. */
+.card > .callout + .btn-row { margin-top: 16px; }
 
 .empty { text-align: center; padding: 36px 20px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .empty-glyph { width: 56px; height: 56px; border-radius: 16px; display: grid; place-items: center; background: var(--surface-3); color: var(--text-2); margin-bottom: 4px; }
