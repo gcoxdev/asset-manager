@@ -130,6 +130,12 @@ good" and the 30-day purge remove the records and unshared files from the
 vault, but backups made earlier still contain them, and SQLite may leave
 freed pages until they are reused.
 
+The **emergency access sheet** (Settings) tells a trusted person where the
+vault and its backups are and where the recovery key sheet is kept. It holds
+no secret: by design it opens nothing on its own. It does say that a
+catalog of valuables exists and where, so treat it like any document that
+says where valuables are, and keep it apart from the recovery key sheet.
+
 ### 4.4 A weak passphrase
 
 Argon2id at 64 MiB makes guessing expensive, not impossible. A passphrase found

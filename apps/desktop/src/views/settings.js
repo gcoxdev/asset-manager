@@ -8,7 +8,7 @@ import { icon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
 import * as store from "../lib/store.js";
 import { busy, toast, modal, field, select, toggle, callout, confirmDialog } from "../ui/components.js";
-import { recoveryCeremony, restoreDialog, restoredMessage } from "./onboarding.js";
+import { recoveryCeremony, restoreDialog, restoredMessage, runPrint } from "./onboarding.js";
 
 const CURRENCIES = [
   ["USD", "US dollar (USD)"], ["EUR", "Euro (EUR)"], ["GBP", "British pound (GBP)"], ["CAD", "Canadian dollar (CAD)"],
@@ -45,6 +45,7 @@ export async function renderSettings(root, params, ctx) {
     securityCard(settings, info, save, ctx),
     backupCard(settings, centre, ctx),
     trashCard(trash, ctx),
+    emergencyCard(info, centre),
     feedsCard(settings, metals, crypto, save, ctx),
     privacyCard(settings, save),
     displayCard(settings, save),
@@ -329,6 +330,91 @@ function verifyDialog(centre, ctx, presetPath = null) {
     ),
     footer: (close) => [h("button", { class: "btn btn-ghost", type: "button", onclick: () => close() }, "Close"), run],
   });
+}
+
+// ------------------------------------------------------------ emergency access
+
+/**
+ * A sheet for someone you trust: what this is, where the vault and its
+ * backups are, and how to open it — but never the passphrase or recovery
+ * key. Possession of those is what opens the vault, so they stay on their
+ * own sheet, kept elsewhere; this one says where.
+ */
+function emergencyCard(info, centre) {
+  return h("section", { class: "card", id: "emergency" },
+    h("div", { class: "card-head" }, h("h2", {}, icon("key", { size: 18 }), " Emergency access")),
+    h("p", { class: "card-text" }, "If something happened to you, could someone you trust find and open this catalog? Print instructions for them: where the vault and its backups are, how to restore it on another computer, and where you keep the recovery key. The sheet holds no passphrase or key — on its own it opens nothing."),
+    h("div", { class: "btn-row" }, h("button", { class: "btn btn-secondary", onclick: () => emergencyDialog(info, centre) }, icon("printer", { size: 16 }), "Print an access sheet…"))
+  );
+}
+
+function emergencyDialog(info, centre) {
+  const fields = {
+    for_whom: h("input", { type: "text", maxlength: 200, placeholder: "e.g. Sam, my executor" }),
+    recovery_kept: h("input", { type: "text", maxlength: 500, placeholder: "e.g. in the fire safe, envelope marked “Asset Manager”" }),
+    backups_kept: h("input", { type: "text", maxlength: 500, value: centre.folder ? `On the drive or folder: ${centre.folder}` : "" }),
+    contact: h("input", { type: "text", maxlength: 500, placeholder: "e.g. my attorney, Jane Doe, 555-0100" }),
+    notes: h("textarea", { rows: 3, maxlength: 2000, placeholder: "Anything else they should know" }),
+  };
+  const print = h("button", { class: "btn btn-primary" }, icon("printer", { size: 16 }), "Print");
+  const m = modal({
+    title: "Emergency access sheet",
+    size: "md",
+    body: h("div", { class: "stack" },
+      callout("info", "Keep this sheet apart from your recovery key sheet. Together they open the vault; this one alone does not. What you type here is printed, not saved."),
+      h("div", { class: "form-grid" },
+        field("For", fields.for_whom, { span: 2 }),
+        field("Where the recovery key sheet is kept", fields.recovery_kept, { span: 2 }),
+        field("Where backups are kept", fields.backups_kept, { span: 2 }),
+        field("Who else can help", fields.contact, { span: 2 }),
+        field("Anything else", fields.notes, { span: 2 })
+      )
+    ),
+    footer: (close) => [h("button", { class: "btn btn-ghost", onclick: () => close() }, "Cancel"), print],
+  });
+  print.addEventListener("click", () => {
+    const v = Object.fromEntries(Object.entries(fields).map(([k, el]) => [k, el.value.trim()]));
+    printEmergencySheet(info, centre, v);
+    m.close();
+  });
+}
+
+function printEmergencySheet(info, centre, v) {
+  const line = (label, value) => (value ? [h("dt", {}, label), h("dd", {}, value)] : null);
+  mount(document.getElementById("print-root"),
+    h("div", { class: "print-sheet emergency-sheet" },
+      h("h1", {}, "Asset Manager — emergency access"),
+      v.for_whom ? h("p", {}, h("strong", {}, "For: "), v.for_whom) : null,
+      h("p", {}, "This explains how to open an encrypted catalog of valuables kept in the Asset Manager desktop app — what is owned, what it is worth, and the receipts and photos that prove it. It is useful for insurance, an estate, or replacing what was lost."),
+      h("h2", {}, "What you need"),
+      h("ol", {},
+        h("li", {}, "The Asset Manager app, installed on any computer."),
+        h("li", {}, "The vault — either this computer, or a backup (below)."),
+        h("li", {}, "The ", h("strong", {}, "recovery key"), ", a printed sheet of letters and numbers. ", v.recovery_kept ? `It is kept: ${v.recovery_kept}.` : "Its location is not written here."),
+      ),
+      h("p", {}, "This sheet does not contain the recovery key or the passphrase. Without one of them the catalog cannot be opened by anyone — there is no reset and no company that can help."),
+      h("h2", {}, "Where things are"),
+      h("dl", { class: "kv" },
+        line("Vault on this computer", info.location),
+        line("Created", fmt.date(info.created_at)),
+        line("Recovery key fingerprint", info.recovery_fingerprint),
+        line("Backups", v.backups_kept || centre.folder),
+        line("Last backup", centre.last_backup_at ? fmt.date(centre.last_backup_at) : "none recorded"),
+        line("Last backup proven to restore", centre.last_verified_at ? fmt.date(centre.last_verified_at) : "none recorded"),
+        line("Who else can help", v.contact)
+      ),
+      h("p", { class: "muted" }, "The fingerprint identifies which recovery key sheet belongs to this vault. It is printed on that sheet too, and reveals nothing about the key."),
+      h("h2", {}, "How to open it"),
+      h("ol", {},
+        h("li", {}, "On this computer: open Asset Manager and choose “Use the recovery key instead”. Type the key from the recovery sheet."),
+        h("li", {}, "On another computer: install Asset Manager, choose “Restore from a backup”, pick the backup folder, and give the recovery key. Every file is checked before the catalog opens."),
+        h("li", {}, "Once open, Reports → “Prepare a claim” or “Insurance inventory” produce documents for an insurer. Settings → Backups can make a fresh copy.")
+      ),
+      v.notes ? [h("h2", {}, "Also"), h("p", { class: "pre-wrap" }, v.notes)] : null,
+      h("p", { class: "print-meta" }, `Prepared ${new Date().toLocaleDateString()}. Reprint it after moving the vault or its backups.`)
+    )
+  );
+  runPrint(`Asset-Manager-Emergency-Access-${fmt.todayIso()}`);
 }
 
 // ------------------------------------------------------------ trash

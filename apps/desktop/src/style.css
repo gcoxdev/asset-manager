@@ -1005,3 +1005,8 @@ tr.row-error td { background: color-mix(in srgb, var(--bad-bg) 60%, transparent)
 .claim-header dl { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0; }
 .claim-header dt { font-weight: 600; }
 .claim-header dd { margin: 0; white-space: pre-wrap; }
+
+.emergency-sheet h2 { font-size: 15px; margin: 18px 0 6px; }
+.emergency-sheet ol { padding-left: 20px; }
+.emergency-sheet li { margin-bottom: 4px; }
+.pre-wrap { white-space: pre-wrap; }
