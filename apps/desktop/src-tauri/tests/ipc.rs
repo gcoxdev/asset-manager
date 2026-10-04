@@ -233,6 +233,39 @@ fn the_frontend_contract_holds_end_to_end() {
         "contacts never leave"
     );
 
+    // A type of the owner's own, validated like the built-in ones.
+    let quilt = ok(
+        &w,
+        "save_custom_type",
+        json!({ "definition": { "label": "Quilt", "category": "collectibles", "fields": [
+            { "label": "Maker", "kind": "text", "required": true },
+            { "label": "Pattern", "kind": "choice", "options": ["Log cabin", "Star"], "required": false } ] } }),
+    );
+    assert_eq!(quilt, "custom_quilt");
+    let missing = invoke(
+        &w,
+        "create_asset",
+        json!({ "form": { "type_id": "custom_quilt", "name": "Wedding quilt" } }),
+    )
+    .unwrap_err();
+    assert!(missing["message"].as_str().unwrap().contains("Maker is required"));
+    let made = ok(
+        &w,
+        "create_asset",
+        json!({ "form": { "type_id": "custom_quilt", "name": "Wedding quilt",
+                          "attrs": { "maker": "Grandma", "pattern": "star" } } }),
+    );
+    let made_detail = ok(&w, "get_asset", json!({ "assetId": made }));
+    assert_eq!(made_detail["asset"]["attrs"]["pattern"], "Star");
+    assert_eq!(made_detail["asset"]["type_label"], "Quilt");
+    assert!(
+        invoke(&w, "delete_custom_type", json!({ "typeId": "custom_quilt" })).is_err(),
+        "in use"
+    );
+    ok(&w, "delete_asset", json!({ "assetId": made }));
+    ok(&w, "purge_trash", json!({ "assetId": made }));
+    ok(&w, "delete_custom_type", json!({ "typeId": "custom_quilt" }));
+
     // Organizing: tags, a location move, a bulk change, a duplicate, a view.
     ok(&w, "set_asset_tags", json!({ "assetId": comic, "tags": ["Key issues", "Insured"] }));
     assert_eq!(ok(&w, "list_tags", json!({})).as_array().unwrap().len(), 2);

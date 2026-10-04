@@ -17,13 +17,14 @@ const CURRENCIES = [
 ];
 
 export async function renderSettings(root, params, ctx) {
-  const [settings, info, metals, crypto, trash, centre] = await Promise.all([
+  const [settings, info, metals, crypto, trash, centre, customTypes] = await Promise.all([
     store.settings({ fresh: true }),
     call("vault_info"),
     call("metals_provider_status"),
     call("crypto_provider_status"),
     call("list_trash"),
     call("backup_centre"),
+    call("list_custom_types"),
   ]);
 
   const save = async (patch) => {
@@ -45,6 +46,7 @@ export async function renderSettings(root, params, ctx) {
     securityCard(settings, info, save, ctx),
     backupCard(settings, centre, ctx),
     trashCard(trash, ctx),
+    typesCard(customTypes, ctx),
     emergencyCard(info, centre),
     feedsCard(settings, metals, crypto, save, ctx),
     privacyCard(settings, save),
@@ -330,6 +332,90 @@ function verifyDialog(centre, ctx, presetPath = null) {
     ),
     footer: (close) => [h("button", { class: "btn btn-ghost", type: "button", onclick: () => close() }, "Close"), run],
   });
+}
+
+// ------------------------------------------------------------ item types
+
+const FIELD_KIND_LABELS = { text: "Text", number: "Number", date: "Date", yes_no: "Yes / no", choice: "One of a list" };
+const TYPE_CATEGORIES = [["collectibles", "Collectibles"], ["valuables", "Valuables"], ["household", "Home & household"], ["vehicles", "Vehicles"], ["property", "Property"], ["investments", "Investments"], ["other", "Other"]];
+
+/** Types the owner defines: their own fields, for things the app does not know. */
+function typesCard(types, ctx) {
+  return h("section", { class: "card", id: "types" },
+    h("div", { class: "card-head" },
+      h("h2", {}, icon("tag", { size: 18 }), " Item types"),
+      h("button", { class: "btn btn-secondary btn-sm", onclick: () => typeEditor(null, ctx) }, icon("plus", { size: 14 }), "New type…")
+    ),
+    h("p", { class: "card-text" }, "For things the app has no form for — model trains, quilts, rare plants. Choose the fields; each can be required, a number, a date, yes/no or one of a list, and is checked whenever an item is saved or imported."),
+    types.length
+      ? h("table", { class: "table compact" }, h("tbody", {}, types.map((t) => h("tr", {},
+          h("td", {}, h("div", { class: "name-cell" }, h("span", {}, t.label), h("span", { class: "sub" }, `${fmt.categoryLabel(t.category)} · ${t.fields.map((f) => f.label).join(", ")}`))),
+          h("td", { class: "num muted small" }, `${t.in_use} item${t.in_use === 1 ? "" : "s"}`),
+          h("td", { class: "row-action" }, h("button", { class: "btn btn-ghost btn-sm", onclick: () => typeEditor(t, ctx) }, "Edit"))
+        ))))
+      : h("p", { class: "muted small" }, "No types of your own yet.")
+  );
+}
+
+function typeEditor(existing, ctx) {
+  const def = existing ? structuredClone(existing) : { type_id: "", label: "", category: "collectibles", blurb: "", fields: [{ key: "", label: "", kind: "text", required: false, options: [] }] };
+  const label = h("input", { type: "text", maxlength: 60, value: def.label, placeholder: "e.g. Model train" });
+  const category = select(TYPE_CATEGORIES, def.category);
+  const blurb = h("input", { type: "text", maxlength: 200, value: def.blurb, placeholder: "Shown under its name when adding" });
+  const list = h("div", { class: "stack" });
+  const error = h("p", { class: "form-error", role: "alert" });
+
+  const drawFields = () => mount(list, def.fields.map((f, i) => {
+    const name = h("input", { type: "text", maxlength: 60, value: f.label, placeholder: "Field name", "aria-label": `Field ${i + 1} name`, oninput: () => (f.label = name.value) });
+    const kind = select(Object.entries(FIELD_KIND_LABELS), f.kind, { "aria-label": `Field ${i + 1} kind` });
+    const options = h("input", { type: "text", value: (f.options ?? []).join(", "), placeholder: "Choices, separated by commas", hidden: f.kind !== "choice", oninput: () => (f.options = options.value.split(",")) });
+    kind.addEventListener("change", () => { f.kind = kind.value; options.hidden = f.kind !== "choice"; });
+    const required = h("input", { type: "checkbox", checked: f.required, onchange: () => (f.required = required.checked) });
+    const move = (d) => { const j = i + d; if (j < 0 || j >= def.fields.length) return; [def.fields[i], def.fields[j]] = [def.fields[j], def.fields[i]]; drawFields(); };
+    return h("div", { class: "type-field" },
+      name, kind,
+      h("label", { class: "check inline-check" }, required, h("span", {}, "Required")),
+      h("div", { class: "doc-actions" },
+        h("button", { type: "button", class: "icon-btn", "aria-label": "Move up", onclick: () => move(-1) }, icon("chevronUp", { size: 14 })),
+        h("button", { type: "button", class: "icon-btn", "aria-label": "Move down", onclick: () => move(1) }, icon("down", { size: 14 })),
+        h("button", { type: "button", class: "icon-btn", "aria-label": "Remove field", onclick: () => { def.fields.splice(i, 1); drawFields(); } }, icon("x", { size: 14 }))),
+      options,
+      f.key ? h("span", { class: "muted small type-field-note" }, "Renaming keeps values already entered.") : null
+    );
+  }));
+  drawFields();
+
+  const save = h("button", { class: "btn btn-primary" }, existing ? "Save type" : "Create type");
+  const del = existing
+    ? h("button", { class: "btn btn-ghost danger-text", onclick: async () => {
+        if (!(await confirmDialog({ title: `Delete “${existing.label}”?`, message: "Only a type no item uses — including items in the trash — can be deleted.", confirmLabel: "Delete type", danger: true }))) return;
+        try { await call("delete_custom_type", { typeId: existing.type_id }); m.close(); ctx.refresh(); } catch (e) { error.textContent = describe(e); }
+      } }, "Delete")
+    : null;
+  const m = modal({
+    title: existing ? "Edit item type" : "New item type",
+    size: "lg",
+    body: h("div", { class: "stack" },
+      h("div", { class: "form-grid" }, field("Name", label), field("Category", category), field("Description", blurb, { span: 2 })),
+      h("h3", {}, "Fields"),
+      list,
+      h("button", { type: "button", class: "btn btn-ghost btn-sm", onclick: () => { def.fields.push({ key: "", label: "", kind: "text", required: false, options: [] }); drawFields(); } }, icon("plus", { size: 14 }), "Add a field"),
+      existing?.in_use ? callout("info", `${existing.in_use} item${existing.in_use === 1 ? " uses" : "s use"} this type. A field you remove keeps its values on them, shown as other details.`) : null,
+      error
+    ),
+    footer: (close) => [del, h("button", { class: "btn btn-ghost", onclick: () => close() }, "Cancel"), save].filter(Boolean),
+  });
+  save.addEventListener("click", () => busy(save, async () => {
+    error.textContent = "";
+    try {
+      await call("save_custom_type", { definition: { ...def, label: label.value, category: category.value, blurb: blurb.value, fields: def.fields.filter((f) => f.label.trim()) } });
+      m.close();
+      toast(existing ? "Type saved." : "Type created — it is in the add picker under “Your types”.", { kind: "success" });
+      ctx.refresh();
+    } catch (e) {
+      error.textContent = describe(e);
+    }
+  }));
 }
 
 // ------------------------------------------------------------ emergency access

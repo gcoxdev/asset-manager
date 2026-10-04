@@ -56,7 +56,24 @@ const KINDS = [
   { id: "generic", type: "generic", group: "Other", label: "Anything else", glyph: "item", blurb: "A general item with your own details" },
 ];
 
-const KIND_GROUPS = ["Investments", "Valuables", "Home", "Vehicles & property", "Collectibles", "Firearms", "Other"];
+const KIND_GROUPS = ["Your types", "Investments", "Valuables", "Home", "Vehicles & property", "Collectibles", "Firearms", "Other"];
+
+/** Types the owner defined, as kinds. Refreshed before any picker or form. */
+let customKinds = [];
+
+export async function loadCustomKinds() {
+  try {
+    const types = await call("list_custom_types");
+    customKinds = types.map((t) => ({ id: t.type_id, type: t.type_id, group: "Your types", label: t.label, glyph: "item", blurb: t.blurb || `${t.fields.length} field${t.fields.length === 1 ? "" : "s"} of your own`, fields: t.fields }));
+  } catch {
+    customKinds = [];
+  }
+  return customKinds;
+}
+
+function allKinds() {
+  return [...customKinds, ...KINDS];
+}
 
 /**
  * The kind picker, grouped and searchable — there are enough kinds now that
@@ -67,7 +84,7 @@ function kindPicker(onPick, { exclude = [], lede = null } = {}) {
   const groups = h("div", { class: "kind-groups" });
   const draw = () => {
     const q = search.value.trim().toLowerCase();
-    const shown = KINDS.filter((k) => !exclude.includes(k.id) && (!q || `${k.label} ${k.blurb} ${k.group}`.toLowerCase().includes(q)));
+    const shown = allKinds().filter((k) => !exclude.includes(k.id) && (!q || `${k.label} ${k.blurb} ${k.group}`.toLowerCase().includes(q)));
     mount(groups,
       shown.length ? null : h("p", { class: "muted" }, "Nothing matches — “Anything else” takes any item."),
       KIND_GROUPS.map((g) => {
@@ -172,6 +189,7 @@ function metalTypeFor(metal, preset) {
 function kindOf(asset, collectibleIds) {
   if (asset.attrs.metal) return "metal";
   if (asset.attrs.coin_id) return "crypto";
+  if (customKinds.some((k) => k.id === asset.type_id)) return asset.type_id;
   if (collectibleIds.includes(asset.type_id)) return asset.type_id;
   return KINDS.find((k) => k.type === asset.type_id)?.id ?? "generic";
 }
@@ -184,7 +202,8 @@ function amountOf(display) {
 // ------------------------------------------------------------ add / edit
 
 /** Open the add flow: choose a kind, then fill the form. */
-export function openAddAsset({ onSaved, kind } = {}) {
+export async function openAddAsset({ onSaved, kind } = {}) {
+  await loadCustomKinds();
   const m = modal({ title: "Add to your catalog", subtitle: "What are you adding?", size: "lg", body: h("div") });
   const body = m.dialog.querySelector(".modal-body");
 
@@ -199,6 +218,7 @@ export function openAddAsset({ onSaved, kind } = {}) {
 }
 
 export async function openEditAsset(asset, { onSaved } = {}) {
+  await loadCustomKinds();
   const collectibles = await store.collectibleTypes();
   const kindId = kindOf(asset, collectibles.map((c) => c.id));
   const m = modal({ title: `Edit ${asset.name}`, size: "lg", body: h("div") });
@@ -223,7 +243,7 @@ export async function openEditAsset(asset, { onSaved } = {}) {
  * over; the rest are listed apart and dropped on save unless kept.
  */
 async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom = null }) {
-  const kind = KINDS.find((k) => k.id === kindId) ?? KINDS.at(-1);
+  const kind = allKinds().find((k) => k.id === kindId) ?? KINDS.at(-1);
   const [collectibles, graders, settings, knownTags, knownLocations] = await Promise.all([
     store.collectibleTypes(),
     store.graders(),
@@ -236,7 +256,11 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
   const editing = mode === "edit";
 
   // The fields this kind's form is built from.
-  const kindKeys = schema ? [...schema.required, ...schema.optional] : SUGGESTED[kind.type] ?? SUGGESTED.generic;
+  const kindKeys = schema
+    ? [...schema.required, ...schema.optional]
+    : kind.fields
+      ? kind.fields.map((f) => f.key)
+      : SUGGESTED[kind.type] ?? SUGGESTED.generic;
   // After a type change, only details the new kind also uses come into its
   // form. The others are held apart, shown, and kept only if asked.
   const attrs = { ...(asset?.attrs ?? {}) };
@@ -293,7 +317,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
     identity = collectibleFields(schema, graders, attrs, collect, () => previewName());
     name.placeholder = "Leave blank to name it from the fields above";
   } else {
-    identity = freeFields(kindKeys, attrs, collect);
+    identity = kind.fields ? customFields(kind.fields, attrs, collect) : freeFields(kindKeys, attrs, collect);
   }
   name.addEventListener("input", () => (name.dataset.auto = "0"));
 
@@ -852,6 +876,28 @@ function collectibleFields(schema, graders, attrs, collect, onChange) {
       extras
     ),
   };
+}
+
+/** The fields of a type the owner defined, each with the input its kind needs. */
+function customFields(defs, attrs, collect) {
+  const inputs = new Map();
+  const fields = defs.map((f) => {
+    let input;
+    if (f.kind === "yes_no") input = select([["", "—"], ["yes", "Yes"], ["no", "No"]], attrs[f.key] ?? "");
+    else if (f.kind === "choice") input = select([["", "—"], ...f.options.map((o) => [o, o])], attrs[f.key] ?? "");
+    else if (f.kind === "date") input = h("input", { type: "date", value: attrs[f.key] ?? "" });
+    else input = textInput({ value: attrs[f.key] ?? "", inputmode: f.kind === "number" ? "decimal" : null });
+    inputs.set(f.key, input);
+    return field(f.label, input, { required: f.required });
+  });
+  const extras = otherDetails(attrs, defs.map((f) => f.key), inputs);
+  collect.push((form) => {
+    for (const [key, input] of inputs) {
+      const v = input.value.trim();
+      if (v) form.attrs[key] = v;
+    }
+  });
+  return { el: h("div", {}, h("div", { class: "form-grid" }, fields), extras) };
 }
 
 function freeFields(keys, attrs, collect) {

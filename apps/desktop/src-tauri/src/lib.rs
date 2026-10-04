@@ -18,6 +18,7 @@ pub mod protocol;
 pub mod report_commands;
 pub mod session;
 pub mod spreadsheet_commands;
+pub mod types_commands;
 pub mod valuation_commands;
 
 use std::time::Duration;
@@ -130,6 +131,10 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             custody_commands::record_custody,
             custody_commands::delete_custody,
             custody_commands::away_list,
+            // Item types
+            types_commands::list_custom_types,
+            types_commands::save_custom_type,
+            types_commands::delete_custom_type,
             // Organizing
             organize_commands::list_tags,
             organize_commands::set_asset_tags,

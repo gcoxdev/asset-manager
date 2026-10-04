@@ -610,6 +610,23 @@ pub fn create_asset(session: State<'_, Session>, form: AssetForm) -> IpcResult<S
         .map_err(IpcError::from)
 }
 
+/// Validate details against a type the owner defined; other types pass
+/// through unchanged (they were checked by `prepare_attrs`).
+fn check_custom(
+    vault: &Vault,
+    type_id: &str,
+    attrs: BTreeMap<String, String>,
+) -> Result<BTreeMap<String, String>, SessionError> {
+    if !type_id.starts_with("custom_") {
+        return Ok(attrs);
+    }
+    let def = am_storage::custom_types::get(vault, type_id)
+        .map_err(storage)?
+        .ok_or_else(|| invalid(bad_input(format!("unknown type: {type_id}"))))?;
+    am_storage::custom_types::validate(&def, &attrs)
+        .map_err(|e| invalid(bad_input(e.to_string())))
+}
+
 /// A form's rejection, carried as a session error so it can unwind a unit.
 fn invalid(e: IpcError) -> SessionError {
     SessionError::Vault(am_storage::vault::VaultError::Other(e.message))
@@ -625,6 +642,7 @@ pub(crate) fn create_from_form(
 ) -> Result<String, SessionError> {
     let timestamp = timestamp.to_string();
     let (attrs, derived) = prepare_attrs(&form.type_id, &form.attrs).map_err(invalid)?;
+    let attrs = check_custom(vault, &form.type_id, attrs)?;
     let name = pick_name(&form.name, derived).map_err(invalid)?;
     let quantity = match form.quantity.as_deref().map(str::trim) {
         None | Some("") => Decimal::ONE,
@@ -702,6 +720,7 @@ pub fn update_asset(
 
     session
         .with_vault(|vault| {
+            let attrs = check_custom(vault, &form.type_id, attrs.clone())?;
             atomically(vault, || {
                 let current = assets::get(vault, &asset_id).map_err(storage)?;
                 let currency = currency_or(&form.currency, &base_currency(vault))

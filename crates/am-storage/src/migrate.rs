@@ -7,7 +7,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 struct Migration {
     version: i64,
@@ -27,6 +27,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration { version: 10, sql: include_str!("../migrations/010_care.sql") },
     Migration { version: 11, sql: include_str!("../migrations/011_custody.sql") },
     Migration { version: 12, sql: include_str!("../migrations/012_more_types.sql") },
+    Migration { version: 13, sql: include_str!("../migrations/013_custom_types.sql") },
 ];
 
 #[derive(Debug, thiserror::Error)]
