@@ -989,3 +989,8 @@ tr.voided td.num { text-decoration: line-through; }
 tr.row-skipped td { opacity: 0.5; }
 tr.row-error td { background: color-mix(in srgb, var(--bad-bg) 60%, transparent); }
 .warn-text { font-size: 12px; color: var(--attention-ink); }
+
+.reminder-banner { align-items: center; margin-bottom: 16px; }
+.reminder-banner > div { flex: 1; }
+.backup-history { margin-top: 12px; }
+.path-cell { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

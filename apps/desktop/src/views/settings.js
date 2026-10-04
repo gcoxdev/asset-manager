@@ -17,12 +17,13 @@ const CURRENCIES = [
 ];
 
 export async function renderSettings(root, params, ctx) {
-  const [settings, info, metals, crypto, trash] = await Promise.all([
+  const [settings, info, metals, crypto, trash, centre] = await Promise.all([
     store.settings({ fresh: true }),
     call("vault_info"),
     call("metals_provider_status"),
     call("crypto_provider_status"),
     call("list_trash"),
+    call("backup_centre"),
   ]);
 
   const save = async (patch) => {
@@ -42,7 +43,7 @@ export async function renderSettings(root, params, ctx) {
     root,
     h("header", { class: "page-head" }, h("div", {}, h("h1", {}, "Settings"), h("p", { class: "page-sub" }, "Stored inside this vault, so they travel with it"))),
     securityCard(settings, info, save, ctx),
-    backupCard(settings, ctx),
+    backupCard(settings, centre, ctx),
     trashCard(trash, ctx),
     feedsCard(settings, metals, crypto, save, ctx),
     privacyCard(settings, save),
@@ -50,7 +51,7 @@ export async function renderSettings(root, params, ctx) {
     aboutCard(info)
   );
 
-  if (params.section === "feeds") root.querySelector("#feeds")?.scrollIntoView({ block: "start" });
+  if (params.section) root.querySelector(`#${params.section}`)?.scrollIntoView({ block: "start" });
 }
 
 function row(title, description, control) {
@@ -158,43 +159,176 @@ export function rotateRecovery() {
 
 // ------------------------------------------------------------ backup
 
-function backupCard(settings, ctx) {
-  const last = settings.last_backup_at;
+/**
+ * The backup centre: where backups go, how many to keep, when to be
+ * reminded, and — the line that matters — when a backup was last proven to
+ * restore.
+ */
+function backupCard(settings, centre, ctx) {
+  const last = centre.last_backup_at;
   const days = last ? fmt.daysSince(last) : null;
-  const status = last
-    ? h("span", { class: days > 30 ? "badge badge-attention" : "badge badge-fresh" }, icon(days > 30 ? "warn" : "check", { size: 12 }), `Last backup ${fmt.ago(last)}`)
-    : h("span", { class: "badge badge-attention" }, icon("warn", { size: 12 }), "Never backed up");
+  const overdue = centre.reminder_days > 0 && (days === null || days > centre.reminder_days);
+  const verifiedDays = centre.last_verified_at ? fmt.daysSince(centre.last_verified_at) : null;
 
-  const backup = h("button", { class: "btn btn-primary", onclick: async () => {
-    const directory = await openDialog({ directory: true, title: "Choose where to put the backup" });
-    if (!directory) return;
-    await busy(backup, async () => {
-      const result = await call("backup_vault", { directory });
+  const runBackup = async (button, directory) => {
+    await busy(button, async () => {
+      const result = await call("backup_vault", { directory: directory ?? null });
       store.setSettings(null);
-      toast(`Backup saved to ${result.path} (${result.objects} photo${result.objects === 1 ? "" : "s"}).`, { kind: "success", timeout: 9000 });
+      const pruned = result.pruned.length ? ` Removed ${result.pruned.length} older backup${result.pruned.length === 1 ? "" : "s"} under your keep rule.` : "";
+      toast(`Backup saved to ${result.path} (${result.objects} file${result.objects === 1 ? "" : "s"}).${pruned} Verify it to be sure it restores.`, { kind: "success", timeout: 10000 });
       ctx.refresh();
     }, "Backing up…");
-  } }, icon("archive", { size: 16 }), "Back up now…");
+  };
+  const chooseFolder = async () => openDialog({ directory: true, title: "Choose where to put backups" });
 
-  const restore = h("button", { class: "btn btn-secondary", onclick: async () => {
+  const backupNow = h("button", { class: "btn btn-primary", onclick: async () => {
+    if (centre.folder && centre.folder_available) return runBackup(backupNow, null);
+    const directory = await chooseFolder();
+    if (directory) runBackup(backupNow, directory);
+  } }, icon("archive", { size: 16 }), centre.folder && centre.folder_available ? "Back up now" : "Back up now…");
+  const backupElsewhere = h("button", { class: "btn btn-secondary", onclick: async () => {
+    const directory = await chooseFolder();
+    if (directory) runBackup(backupElsewhere, directory);
+  } }, "Back up to another folder…");
+  const verify = h("button", { class: "btn btn-secondary", onclick: () => verifyDialog(centre, ctx) }, icon("check", { size: 16 }), "Verify a backup…");
+
+  const restore = h("button", { class: "btn btn-ghost", onclick: async () => {
     const restored = await restoreDialog({ replacing: true });
     if (restored?.opened) {
-      // A different vault is open now; nothing cached from this one applies.
       ctx.reopen();
       toast(restoredMessage(restored), { kind: "success", timeout: 7000 });
       return;
     }
-    // A restore that failed after the swap began leaves the session locked.
     const state = await call("session_state").catch(() => null);
     if (state && !state.unlocked) ctx.lock();
   } }, icon("upload", { size: 16 }), "Restore…");
 
-  return h("section", { class: "card" },
-    h("div", { class: "card-head" }, h("h2", {}, icon("archive", { size: 18 }), " Backup & restore"), status),
-    h("p", { class: "card-text" }, "A backup is a complete, still-encrypted copy of the vault — records, photos and history. It is safe to keep on an external drive or in a synced folder; without your passphrase or recovery key it is unreadable."),
-    h("p", { class: "card-text muted" }, "The vault closes for a moment while it is copied, so nothing changes mid-copy. You stay signed in."),
-    h("div", { class: "btn-row" }, backup, restore)
+  // Preferences.
+  const savePrefs = async (patch) => {
+    try {
+      await call("update_backup_preferences", { preferences: { folder: centre.folder ?? null, keep: centre.keep, reminder_days: centre.reminder_days, ...patch } });
+      store.setSettings(null);
+      toast("Saved.", { kind: "success", timeout: 1800 });
+      ctx.refresh();
+    } catch (e) {
+      toast(describe(e), { kind: "error" });
+    }
+  };
+  const keep = select([["0", "Keep every backup"], ["3", "The newest 3"], ["5", "The newest 5"], ["10", "The newest 10"], ["20", "The newest 20"]], String(centre.keep));
+  if (keep.value !== String(centre.keep)) {
+    keep.append(h("option", { value: String(centre.keep) }, `The newest ${centre.keep}`));
+    keep.value = String(centre.keep);
+  }
+  keep.addEventListener("change", () => savePrefs({ keep: Number(keep.value) }));
+  const reminder = select([["0", "Never"], ["7", "After a week"], ["14", "After two weeks"], ["30", "After a month"], ["90", "After three months"]], String(centre.reminder_days));
+  if (reminder.value !== String(centre.reminder_days)) {
+    reminder.append(h("option", { value: String(centre.reminder_days) }, `After ${centre.reminder_days} days`));
+    reminder.value = String(centre.reminder_days);
+  }
+  reminder.addEventListener("change", () => savePrefs({ reminder_days: Number(reminder.value) }));
+  const changeFolder = h("button", { class: "btn btn-secondary btn-sm", onclick: async () => {
+    const directory = await chooseFolder();
+    if (directory) savePrefs({ folder: directory });
+  } }, centre.folder ? "Change…" : "Choose…");
+
+  const history = centre.history.slice(0, 12).map((b) => {
+    const state = b.pruned ? h("span", { class: "badge badge-muted" }, "Removed (keep rule)")
+      : !b.present ? h("span", { class: "badge badge-muted" }, "Not found — drive unplugged?")
+      : b.verified_ok === true ? h("span", { class: "badge badge-fresh" }, icon("check", { size: 12 }), `Verified ${fmt.ago(b.verified_at)}`)
+      : b.verified_ok === false ? h("span", { class: "badge badge-attention", title: b.verify_note ?? "" }, icon("warn", { size: 12 }), `Failed: ${b.verify_note ?? "did not restore"}`)
+      : h("span", { class: "badge badge-muted" }, "Not verified");
+    return h("tr", {},
+      h("td", {}, fmt.date(b.created_at), h("div", { class: "muted small path-cell", title: b.path }, b.path)),
+      h("td", { class: "num muted small" }, `${b.objects} file${b.objects === 1 ? "" : "s"}`),
+      h("td", {}, state),
+      h("td", { class: "row-action" }, b.present && !b.pruned ? h("button", { class: "btn btn-ghost btn-sm", onclick: () => verifyDialog(centre, ctx, b.path) }, "Verify") : null)
+    );
+  });
+
+  return h("section", { class: "card", id: "backup" },
+    h("div", { class: "card-head" },
+      h("h2", {}, icon("archive", { size: 18 }), " Backups"),
+      h("div", { class: "btn-row" },
+        last
+          ? h("span", { class: overdue ? "badge badge-attention" : "badge badge-fresh" }, icon(overdue ? "warn" : "check", { size: 12 }), `Last backup ${fmt.ago(last)}`)
+          : h("span", { class: "badge badge-attention" }, icon("warn", { size: 12 }), "Never backed up"),
+        centre.last_verified_at
+          ? h("span", { class: verifiedDays > 90 ? "badge badge-attention" : "badge badge-fresh" }, `Last verified ${fmt.ago(centre.last_verified_at)}`)
+          : h("span", { class: "badge badge-muted" }, "Never verified")
+      )
+    ),
+    h("p", { class: "card-text" }, "A backup is a complete, still-encrypted copy of the vault — records, photos, documents and history. It is safe on an external drive or in a synced folder: without your passphrase or recovery key it is unreadable. Verifying one restores it into a scratch folder, decrypts every file, and throws the copy away — the only proof it will open on a new computer."),
+    h("div", { class: "btn-row" }, backupNow, backupElsewhere, verify, restore),
+    h("div", { class: "setting" },
+      h("div", { class: "setting-text" }, h("strong", {}, "Backup folder"), h("p", {}, centre.folder ? h("code", { class: "path" }, centre.folder, centre.folder_available ? "" : " — not available now") : "Not chosen yet. An external drive or a synced folder, away from this computer, is best.")),
+      h("div", { class: "setting-control" }, changeFolder)
+    ),
+    row("Keep in that folder", "Older backups of this vault are removed after each new one. Nothing else in the folder is touched.", keep),
+    row("Remind me to back up", "Shown on the overview while the app is open. Nothing runs when the app is closed.", reminder),
+    history.length
+      ? h("table", { class: "table compact backup-history" }, h("tbody", {}, history))
+      : null,
+    h("details", { class: "disclosure" },
+      h("summary", {}, "Moving to a new computer"),
+      h("ol", { class: "rules" },
+        h("li", {}, "Make a backup, and verify it."),
+        h("li", {}, "Copy the backup folder to the new computer, or plug in the drive it is on."),
+        h("li", {}, "Install Asset Manager there and choose “Restore from a backup”."),
+        h("li", {}, "Give the passphrase or recovery key the backup was made with. The restore checks every file before the vault opens.")
+      )
+    )
   );
+}
+
+/** Prove a backup restores: the credential it opens with, then a full check. */
+function verifyDialog(centre, ctx, presetPath = null) {
+  let directory = presetPath ?? centre.history.find((b) => b.present && !b.pruned)?.path ?? null;
+  let useRecovery = false;
+  const folderLabel = h("code", { class: "path" }, directory ?? "No folder chosen");
+  const choose = h("button", { type: "button", class: "btn btn-secondary btn-sm", onclick: async () => {
+    const picked = await openDialog({ directory: true, title: "Choose a backup folder" });
+    if (picked) { directory = picked; folderLabel.textContent = picked; }
+  } }, "Choose another…");
+  const secret = passField("Passphrase the backup opens with", "verify-secret", "off");
+  const label = secret.el.querySelector("label");
+  const switcher = h("button", { type: "button", class: "link", onclick: () => {
+    useRecovery = !useRecovery;
+    label.textContent = useRecovery ? "Recovery key the backup opens with" : "Passphrase the backup opens with";
+    switcher.textContent = useRecovery ? "Use the passphrase instead" : "Use the recovery key instead";
+    secret.input.value = "";
+  } }, "Use the recovery key instead");
+  const result = h("div", { "aria-live": "polite" });
+  const run = h("button", { class: "btn btn-primary", type: "submit", form: "verify-form" }, "Verify");
+  modal({
+    title: "Verify a backup",
+    size: "md",
+    body: h("form", { id: "verify-form", class: "stack", onsubmit: async (e) => {
+      e.preventDefault();
+      if (!directory) return mount(result, h("p", { class: "form-error" }, "Choose the backup folder."));
+      mount(result);
+      await busy(run, async () => {
+        try {
+          const v = await call("verify_backup", { directory, secret: secret.input.value, useRecoveryKey: useRecovery });
+          secret.input.value = "";
+          mount(result, callout("success",
+            h("strong", {}, "This backup restores. "),
+            `Made ${fmt.date(v.created_at)}: ${v.assets} asset${v.assets === 1 ? "" : "s"}, ${v.decrypted} of ${v.objects} files decrypted and intact.`,
+            v.this_vault ? null : " It is a backup of a different vault than the one open now."
+          ));
+        } catch (err) {
+          mount(result, callout("danger", h("strong", {}, "This backup did not verify. "), describe(err)));
+        }
+        ctx.refresh();
+      }, "Restoring into a scratch folder…");
+    } },
+      h("p", {}, "The backup is restored into a scratch folder, every photo and document is decrypted, and the copy is removed. Your vault is not touched."),
+      h("div", { class: "field" }, h("label", {}, "Backup"), h("div", { class: "btn-row" }, folderLabel, choose)),
+      secret.el,
+      h("div", { class: "form-links" }, switcher),
+      result
+    ),
+    footer: (close) => [h("button", { class: "btn btn-ghost", type: "button", onclick: () => close() }, "Close"), run],
+  });
 }
 
 // ------------------------------------------------------------ trash

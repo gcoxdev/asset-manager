@@ -508,6 +508,11 @@ pub struct RestoreReport {
     pub manifest: BackupManifest,
     /// Photos and documents restored, from the backup's own database.
     pub objects: usize,
+    /// Assets in the backup's catalog (not counting its trash).
+    pub assets: i64,
+    /// Objects decrypted and authenticated, in a full verification. A
+    /// restore checks sizes and digests only, so this is zero there.
+    pub decrypted: usize,
 }
 
 /// Restore into a staging directory, prove the result opens and is complete,
@@ -551,12 +556,58 @@ pub fn stage_restore(
     let mut staged = StagedRestore {
         staging,
         dest: dest.to_path_buf(),
-        report: RestoreReport { manifest, objects: 0 },
+        report: RestoreReport { manifest, objects: 0, assets: 0, decrypted: 0 },
         committed: false,
     };
-    staged.report.objects =
-        fill_staging(backup, &staged.staging, &staged.report.manifest, credential, secret)?;
+    let filled = fill_staging(
+        backup,
+        &staged.staging,
+        &staged.report.manifest,
+        credential,
+        secret,
+        false,
+    )?;
+    staged.report.objects = filled.objects;
+    staged.report.assets = filled.assets;
     Ok(staged)
+}
+
+/// Prove a backup restores, without restoring it: everything a restore
+/// does, into a scratch folder beside `scratch`, plus decrypting every
+/// photo and document — then the copy is removed. The vault in use is not
+/// touched. This is a restore rehearsal, and the only check that says a
+/// backup will actually open on a new machine with the credential given.
+pub fn verify_backup(
+    backup: &Path,
+    scratch: &Path,
+    credential: Credential,
+    secret: &str,
+) -> Result<RestoreReport, VaultError> {
+    let manifest = read_manifest(backup)?;
+    for name in [HEADER_FILE, DB_FILE] {
+        require_regular_file(&backup.join(name)).map_err(|_| {
+            VaultError::Other(format!("backup is missing {name} and cannot be restored"))
+        })?;
+    }
+    let staging = scratch.with_extension("verify-staging");
+    if staging.exists() {
+        fs::remove_dir_all(&staging)?;
+    }
+    let result = fill_staging(backup, &staging, &manifest, credential, secret, true);
+    let _ = fs::remove_dir_all(&staging);
+    let filled = result?;
+    Ok(RestoreReport {
+        manifest,
+        objects: filled.objects,
+        assets: filled.assets,
+        decrypted: filled.decrypted,
+    })
+}
+
+struct Filled {
+    objects: usize,
+    assets: i64,
+    decrypted: usize,
 }
 
 /// A verified copy of a backup, waiting beside the vault it will replace.
@@ -622,7 +673,8 @@ fn fill_staging(
     manifest: &BackupManifest,
     credential: Credential,
     secret: &str,
-) -> Result<usize, VaultError> {
+    decrypt_all: bool,
+) -> Result<Filled, VaultError> {
     fs::create_dir_all(staging.join(OBJECTS_DIR))?;
     fs::create_dir_all(staging.join(CACHE_DIR))?;
     copy_file_synced(&backup.join(HEADER_FILE), &staging.join(HEADER_FILE))?;
@@ -699,7 +751,24 @@ fn fill_staging(
         }
     }
     sync_tree(staging);
-    Ok(objects.len())
+
+    // A size and a digest show the copy is the file that was backed up;
+    // only decrypting it shows that file is intact and belongs to this key.
+    let mut decrypted = 0;
+    if decrypt_all {
+        for (object_id, _) in &objects {
+            crate::objects::load_object(&vault, staging, object_id).map_err(|e| {
+                VaultError::Other(format!("object {object_id} does not decrypt: {e}"))
+            })?;
+            decrypted += 1;
+        }
+    }
+    let assets: i64 = vault.conn.query_row(
+        "SELECT count(*) FROM assets WHERE deleted_at IS NULL",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(Filled { objects: objects.len(), assets, decrypted })
 }
 
 /// Read and validate a manifest before anything is copied: a backup folder
@@ -1462,6 +1531,54 @@ mod tests {
         let v = Vault::unlock(&elsewhere, Credential::Passphrase, PASS).unwrap();
         let loaded = crate::objects::load_object(&v, &elsewhere, &object_id).unwrap();
         assert_eq!(loaded.as_slice(), photo.as_slice());
+    }
+
+    #[test]
+    fn verification_decrypts_everything_and_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("backup");
+        let root = dir.path().join("vault");
+        backed_up_photo(&root, &backup);
+
+        let report =
+            verify_backup(&backup, &dir.path().join("scratch"), Credential::Passphrase, PASS)
+                .unwrap();
+        assert_eq!((report.objects, report.decrypted), (1, 1));
+        assert!(
+            !dir.path().join("scratch.verify-staging").exists(),
+            "the rehearsal is cleaned up"
+        );
+        assert!(root.join(HEADER_FILE).exists(), "the vault in use is untouched");
+        assert!(verify_backup(
+            &backup,
+            &dir.path().join("scratch"),
+            Credential::Passphrase,
+            "wrong"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn only_verification_catches_an_object_altered_along_with_its_checksum() {
+        // Someone (or something) rewrote both the file and the manifest: the
+        // copy checks pass, but the content is not what was encrypted.
+        let dir = tempfile::tempdir().unwrap();
+        let backup = dir.path().join("backup");
+        let (_photo, object_id) = backed_up_photo(&dir.path().join("vault"), &backup);
+        let copy = object_path(&backup.join(OBJECTS_DIR), &object_id);
+        let mut bytes = fs::read(&copy).unwrap();
+        let middle = bytes.len() / 2;
+        bytes[middle] ^= 0x01;
+        fs::write(&copy, &bytes).unwrap();
+        let mut manifest = read_manifest(&backup).unwrap();
+        manifest.objects[0].ciphertext_sha256 = Some(sha256_hex(&bytes));
+        fs::write(backup.join(MANIFEST_FILE), serde_json::to_string(&manifest).unwrap())
+            .unwrap();
+
+        let err =
+            verify_backup(&backup, &dir.path().join("scratch"), Credential::Passphrase, PASS)
+                .unwrap_err();
+        assert!(err.to_string().contains("does not decrypt"), "got: {err}");
     }
 
     #[test]

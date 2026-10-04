@@ -533,6 +533,36 @@ fn the_frontend_contract_holds_end_to_end() {
     );
     assert_eq!(ok(&w, "get_settings", json!({}))["last_backup_at"], backup["created_at"]);
 
+    // The backup centre remembers it, and can prove it restores.
+    let centre = ok(&w, "backup_centre", json!({}));
+    assert_eq!(centre["history"][0]["path"], backup["path"]);
+    assert_eq!(centre["folder"], backups.to_str().unwrap(), "the folder is remembered");
+    assert_eq!(centre["reminder_days"], 30);
+    let failed = invoke(
+        &w,
+        "verify_backup",
+        json!({ "directory": backup["path"], "secret": "not it", "useRecoveryKey": false }),
+    );
+    assert!(failed.is_err());
+    let centre = ok(&w, "backup_centre", json!({}));
+    assert_eq!(centre["history"][0]["verified_ok"], false, "a failed check is recorded too");
+    let verified = ok(
+        &w,
+        "verify_backup",
+        json!({ "directory": backup["path"], "secret": "another long passphrase",
+                "useRecoveryKey": false }),
+    );
+    assert_eq!(verified["this_vault"], true);
+    assert_eq!(verified["objects"], verified["decrypted"]);
+    assert_eq!(ok(&w, "backup_centre", json!({}))["last_verified_at"], verified["verified_at"]);
+    // Backing up again goes to the remembered folder.
+    ok(
+        &w,
+        "update_backup_preferences",
+        json!({ "preferences": { "folder": backups.to_str().unwrap(), "keep": 0, "reminder_days": 14 } }),
+    );
+    assert_eq!(ok(&w, "get_settings", json!({}))["backup_reminder_days"], 14);
+
     // Delete an asset after the backup; restoring must bring it back.
     ok(&w, "delete_asset", json!({ "assetId": comic }));
     assert_eq!(ok(&w, "list_assets", json!({})).as_array().unwrap().len(), 1);

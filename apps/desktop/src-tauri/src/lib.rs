@@ -1,6 +1,7 @@
 //! Asset Manager desktop shell.
 
 pub mod asset_commands;
+pub mod backup_commands;
 pub mod balance_provider;
 pub mod collectible_commands;
 pub mod commands;
@@ -93,7 +94,10 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             commands::keep_alive,
             commands::change_passphrase,
             commands::rotate_recovery_key,
-            commands::backup_vault,
+            backup_commands::backup_vault,
+            backup_commands::backup_centre,
+            backup_commands::update_backup_preferences,
+            backup_commands::verify_backup,
             commands::restore_vault,
             commands::confirm_recovery_saved,
             commands::get_settings,

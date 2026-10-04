@@ -29,6 +29,7 @@ export async function renderOverview(root, _params, ctx) {
   mount(
     root,
     header,
+    backupReminder(ctx),
     hero(d),
     tiles(d, ctx),
     chartCard(d),
@@ -36,6 +37,26 @@ export async function renderOverview(root, _params, ctx) {
     attentionCard(d, ctx),
     recentCard(d, ctx)
   );
+}
+
+/**
+ * Overdue for a backup, by the owner's own reminder interval. Shown only
+ * while the app is open — nothing runs when it is closed.
+ */
+function backupReminder(ctx) {
+  const box = h("div");
+  store.settings().then((s) => {
+    if (!s?.backup_reminder_days) return;
+    const days = s.last_backup_at ? fmt.daysSince(s.last_backup_at) : null;
+    if (days !== null && days <= s.backup_reminder_days) return;
+    mount(box, h("div", { class: "callout callout-warning reminder-banner" },
+      icon("archive", { size: 18 }),
+      h("div", {}, h("strong", {}, days === null ? "This vault has never been backed up. " : `Last backup ${days} days ago. `),
+        "A disk failure or a lost laptop would take the whole catalog with it."),
+      h("button", { class: "btn btn-secondary btn-sm", onclick: () => ctx.navigate("settings", { section: "backup" }) }, "Back up")
+    ));
+  }).catch(() => {});
+  return box;
 }
 
 function welcomeEmpty(ctx) {

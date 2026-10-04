@@ -363,6 +363,14 @@ whose credential is not known — never displaces the vault in place, and its
 staging folder is removed. The desktop app keeps the current session open
 until step 5, then opens the restored vault with the same credential.
 
+### Verification
+
+A restore rehearsal: everything a restore does (above), into a scratch
+folder beside the vault, plus **decrypting every object** — then the scratch
+copy is removed. Sizes and digests show a copy is the file that was backed
+up; only decryption shows that file is intact and opens under the backup's
+key. The result, good or bad, is recorded in the vault's backup history.
+
 ### Process lock
 
 `vault.lock` is held with an OS file lock (`flock` / `LockFileEx`) for as long

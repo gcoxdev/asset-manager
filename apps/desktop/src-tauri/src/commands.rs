@@ -265,59 +265,7 @@ pub fn rotate_recovery_key(
 
 // ------------------------------------------------------------ backup
 
-const LAST_BACKUP_SETTING: &str = "last_backup_at";
-
-#[derive(Serialize)]
-pub struct BackupResult {
-    pub path: String,
-    pub created_at: String,
-    pub objects: usize,
-}
-
-/// A folder name for a new backup, dated so a directory of them sorts.
-fn backup_folder_name(now: &str) -> String {
-    let stamp: String = now[..19].chars().map(|c| if c == ':' { '-' } else { c }).collect();
-    format!("Asset Manager backup {}", stamp.replace('T', " "))
-}
-
-/// Back up the vault into a new folder inside `directory`.
-///
-/// The copy is ciphertext throughout — header, database and objects — so it
-/// is as safe to keep on an external drive or a synced folder as the vault
-/// itself. It opens with the passphrase or recovery key that were current
-/// when it was made.
-#[tauri::command]
-pub fn backup_vault<R: Runtime>(
-    app: AppHandle<R>,
-    session: State<'_, Session>,
-    directory: String,
-) -> IpcResult<BackupResult> {
-    session.touch();
-    let root = vault_root(&app).map_err(other)?;
-    let parent = PathBuf::from(&directory);
-    if !parent.is_dir() {
-        return Err(bad_input("choose an existing folder for the backup"));
-    }
-    if parent.starts_with(&root) {
-        return Err(bad_input("choose a folder outside the vault itself"));
-    }
-
-    let timestamp = now();
-    let dest = parent.join(backup_folder_name(&timestamp));
-    let manifest = session.backup(&dest, &timestamp).map_err(IpcError::from)?;
-
-    // Recorded so settings can say how long it has been. Best effort: the
-    // backup itself already succeeded.
-    let _ = session.with_vault(|vault| {
-        am_storage::settings::set(vault, LAST_BACKUP_SETTING, &timestamp).map_err(storage)
-    });
-
-    Ok(BackupResult {
-        path: dest.display().to_string(),
-        created_at: manifest.created_at,
-        objects: manifest.objects.len(),
-    })
-}
+pub(crate) const LAST_BACKUP_SETTING: &str = "last_backup_at";
 
 #[derive(Serialize)]
 pub struct RestoreResult {
@@ -401,6 +349,9 @@ pub struct Settings {
     /// saved. See [`RECOVERY_UNCONFIRMED_SETTING`].
     #[serde(default)]
     pub recovery_unconfirmed: bool,
+    /// Read-only here; set from the backup centre. 0 turns reminders off.
+    #[serde(default)]
+    pub backup_reminder_days: u32,
 }
 
 #[tauri::command]
@@ -419,6 +370,7 @@ pub fn get_settings(session: State<'_, Session>) -> IpcResult<Settings> {
                 last_backup_at: get(LAST_BACKUP_SETTING),
                 recovery_unconfirmed: get(RECOVERY_UNCONFIRMED_SETTING).as_deref()
                     == Some("true"),
+                backup_reminder_days: crate::backup_commands::reminder_days(vault),
             })
         })
         .map_err(IpcError::from)
@@ -505,13 +457,6 @@ pub fn is_backup_folder(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn backup_folders_are_dated_and_filesystem_safe() {
-        let name = backup_folder_name("2026-09-22T14:03:11Z");
-        assert_eq!(name, "Asset Manager backup 2026-09-22 14-03-11");
-        assert!(!name.contains(':'), "colons are invalid in Windows paths");
-    }
 
     #[test]
     fn short_passphrases_are_refused_in_the_backend() {
