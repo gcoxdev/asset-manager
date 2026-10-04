@@ -225,6 +225,18 @@ export const EVENT_LABELS = {
   correct: "Corrected count",
 };
 
+export const DOC_KINDS = ["receipt", "appraisal", "certificate", "warranty", "manual", "other"];
+
+export const DOC_KIND_LABELS = {
+  photo: "Photo",
+  receipt: "Receipt",
+  appraisal: "Appraisal",
+  certificate: "Certificate",
+  warranty: "Warranty",
+  manual: "Manual",
+  other: "Document",
+};
+
 export const STATUS_LABELS = { active: "Held", sold: "Sold", lost: "Lost", retired: "Retired" };
 
 /** "player_or_character" → "Player or character". */

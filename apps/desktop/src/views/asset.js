@@ -8,7 +8,7 @@ import { h, mount } from "../lib/dom.js";
 import { icon, typeIcon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
 import * as store from "../lib/store.js";
-import { busy, toast, confirmDialog, menuButton, sourceBadge, statusBadge, toggle, callout, modal, field } from "../ui/components.js";
+import { busy, toast, confirmDialog, menuButton, sourceBadge, statusBadge, toggle, callout, modal, field, select } from "../ui/components.js";
 import { valueChart } from "../ui/chart.js";
 import { openEditAsset, openUpdateValue, openRecordChange } from "./asset-forms.js";
 
@@ -55,7 +55,7 @@ export async function renderAsset(root, params, ctx) {
       actions
     ),
     h("div", { class: "asset-layout" },
-      h("div", { class: "asset-main" }, gallery(a, detail.photos, reload), detailsCard(a, detail), notesCard(a)),
+      h("div", { class: "asset-main" }, gallery(a, detail.photos, reload), documentsCard(a, detail.photos, reload), detailsCard(a, detail), notesCard(a)),
       h("div", { class: "asset-side" }, valueCard(a, detail, reload), historyCard(a, detail, reload), eventsCard(detail))
     )
   );
@@ -64,7 +64,7 @@ export async function renderAsset(root, params, ctx) {
 // ------------------------------------------------------------ photos
 
 async function addPhotos(a, reload) {
-  const selected = await openDialog({ multiple: true, filters: [{ name: "Photos and PDFs", extensions: ["jpg", "jpeg", "png", "webp", "pdf"] }] });
+  const selected = await openDialog({ multiple: true, filters: [{ name: "Photos", extensions: ["jpg", "jpeg", "png", "webp"] }] });
   if (!selected) return;
   const paths = Array.isArray(selected) ? selected : [selected];
   const progress = toast(`Encrypting ${paths.length} file${paths.length === 1 ? "" : "s"}…`, { timeout: 0 });
@@ -88,14 +88,13 @@ async function addPhotos(a, reload) {
 }
 
 function gallery(a, photos, reload) {
-  const images = photos.filter((p) => p.media_type.startsWith("image/"));
-  const docs = photos.filter((p) => !p.media_type.startsWith("image/"));
-  if (!photos.length) {
+  const images = photos.filter((p) => p.doc_kind === "photo" && p.media_type.startsWith("image/"));
+  if (!images.length) {
     return h("section", { class: "card gallery-empty" },
       h("button", { class: "drop-zone", onclick: () => addPhotos(a, reload) },
         icon("camera", { size: 28 }),
         h("strong", {}, "Add photos"),
-        h("span", {}, "JPEG, PNG, WebP or PDF. Encrypted before they touch the disk.")
+        h("span", {}, "JPEG, PNG or WebP. Encrypted before they touch the disk. Receipts and certificates go under Documents.")
       )
     );
   }
@@ -132,10 +131,6 @@ function gallery(a, photos, reload) {
           h("img", { src: mediaUrl(p.object_id, 256), alt: "", loading: "lazy" })
         )
       ),
-      docs.map((p) => h("div", { class: "strip-doc", title: p.media_type },
-        h("button", { class: "strip-doc-open", "aria-label": "Save a copy of this document", title: "Save a copy…", onclick: () => saveAttachmentCopy(a, p) },
-          icon("reports", { size: 18 }), h("span", {}, "PDF"), icon("download", { size: 12 })),
-        h("button", { class: "icon-btn", "aria-label": "Remove document", onclick: () => removePhoto(a, p, reload) }, icon("x", { size: 14 })))),
       h("button", { class: "strip-add", onclick: () => addPhotos(a, reload), "aria-label": "Add photos" }, icon("plus"))
     );
   };
@@ -171,6 +166,91 @@ async function saveAttachmentCopy(a, attachment) {
   } catch (e) {
     toast(describe(e), { kind: "error" });
   }
+}
+
+// ------------------------------------------------------------ documents
+
+/**
+ * Receipts, appraisals, certificates, warranties: evidence, listed by what
+ * it is and when, so it can be found and handed over when it matters.
+ */
+function documentsCard(a, attachments, reload) {
+  const docs = attachments.filter((p) => p.doc_kind !== "photo" || !p.media_type.startsWith("image/"));
+  const add = h("button", { class: "btn btn-secondary btn-sm", onclick: () => addDocument(a, reload) }, icon("plus", { size: 14 }), "Add document…");
+  return h("section", { class: "card" },
+    h("div", { class: "card-head" }, h("h2", {}, "Documents"), add),
+    docs.length
+      ? h("ul", { class: "doc-list" }, docs.map((d) => h("li", {},
+          h("span", { class: "doc-icon" }, icon(d.media_type === "application/pdf" ? "reports" : "image", { size: 18 })),
+          h("div", { class: "doc-text" },
+            h("strong", {}, d.title || fmt.DOC_KIND_LABELS[d.doc_kind] || "Document"),
+            h("span", { class: "muted small" }, [fmt.DOC_KIND_LABELS[d.doc_kind] ?? d.doc_kind, d.doc_date ? fmt.date(d.doc_date) : null, d.media_type === "application/pdf" ? "PDF" : "Image"].filter(Boolean).join(" · ")),
+            d.note ? h("span", { class: "doc-note" }, d.note) : null
+          ),
+          h("div", { class: "doc-actions" },
+            h("button", { class: "icon-btn", title: "Save a copy…", "aria-label": `Save a copy of ${d.title ?? "this document"}`, onclick: () => saveAttachmentCopy(a, d) }, icon("download", { size: 16 })),
+            h("button", { class: "icon-btn", title: "Edit details", "aria-label": `Edit details of ${d.title ?? "this document"}`, onclick: () => documentDetails(a, d, reload) }, icon("edit", { size: 16 })),
+            h("button", { class: "icon-btn", title: "Remove", "aria-label": `Remove ${d.title ?? "this document"}`, onclick: () => removePhoto(a, d, reload) }, icon("trash", { size: 16 }))
+          )
+        )))
+      : h("p", { class: "muted small" }, "No receipts, appraisals or certificates yet. PDFs and photos of paperwork are encrypted like everything else.")
+  );
+}
+
+/** The details form for a document: what it is, its title, date and note. */
+function documentForm(initial) {
+  const kind = select(fmt.DOC_KINDS.map((k) => [k, fmt.DOC_KIND_LABELS[k]]), initial.doc_kind ?? "receipt");
+  const title = h("input", { type: "text", maxlength: 200, value: initial.title ?? "", placeholder: "e.g. Jeweller's invoice" });
+  const date = h("input", { type: "date", value: initial.doc_date ?? "", max: fmt.todayIso() });
+  const note = h("input", { type: "text", maxlength: 2000, value: initial.note ?? "" });
+  return {
+    el: h("div", { class: "form-grid" },
+      field("What it is", kind),
+      field("Date on the document", date),
+      field("Title", title, { span: 2, hint: initial.file ? "Leave blank to use the file name." : null }),
+      field("Note", note, { span: 2 })
+    ),
+    value: () => ({ kind: kind.value, title: title.value.trim() || null, date: date.value || null, note: note.value.trim() }),
+  };
+}
+
+async function addDocument(a, reload) {
+  const path = await openDialog({ filters: [{ name: "Documents", extensions: ["pdf", "jpg", "jpeg", "png", "webp"] }] });
+  if (!path) return;
+  const file = String(path).split(/[\\/]/).pop();
+  const form = documentForm({ file });
+  const save = h("button", { class: "btn btn-primary" }, "Add document");
+  const m = modal({
+    title: "Add a document",
+    subtitle: file,
+    size: "md",
+    body: form.el,
+    footer: (close) => [h("button", { class: "btn btn-ghost", onclick: () => close() }, "Cancel"), save],
+  });
+  save.addEventListener("click", () => busy(save, async () => {
+    await call("import_photo", { assetId: a.asset_id, path, details: form.value() });
+    store.invalidate();
+    m.close();
+    toast("Document added.", { kind: "success" });
+    reload();
+  }, "Encrypting…"));
+}
+
+async function documentDetails(a, d, reload) {
+  const form = documentForm(d);
+  const save = h("button", { class: "btn btn-primary" }, "Save");
+  const m = modal({
+    title: "Document details",
+    size: "md",
+    body: form.el,
+    footer: (close) => [h("button", { class: "btn btn-ghost", onclick: () => close() }, "Cancel"), save],
+  });
+  save.addEventListener("click", () => busy(save, async () => {
+    await call("describe_attachment", { assetId: a.asset_id, objectId: d.object_id, details: form.value() });
+    m.close();
+    toast("Saved.", { kind: "success" });
+    reload();
+  }));
 }
 
 async function removePhoto(a, photo, reload) {

@@ -952,3 +952,12 @@ tr.voided td.num { text-decoration: line-through; }
 .revision-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .revision-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
 .revision-list li:last-child { border-bottom: 0; }
+
+.doc-list { list-style: none; margin: 0; padding: 0; }
+.doc-list li { display: flex; align-items: flex-start; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.doc-list li:last-child { border-bottom: 0; }
+.doc-icon { width: 34px; height: 34px; border-radius: 8px; display: grid; place-items: center; background: var(--surface-3); color: var(--text-2); flex: none; }
+.doc-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.doc-text strong { overflow-wrap: anywhere; }
+.doc-note { font-size: 12.5px; color: var(--text-2); }
+.doc-actions { display: flex; gap: 2px; flex: none; }

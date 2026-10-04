@@ -16,7 +16,7 @@ import { busy, toast, confirmDialog, modal, callout } from "../ui/components.js"
 import { runPrint } from "./onboarding.js";
 
 export async function renderReports(root, _params, ctx) {
-  const options = { include_locations: false, include_notes: false, include_photos: true, include_lost: false };
+  const options = { include_locations: false, include_notes: false, include_photos: true, include_lost: false, include_documents: true };
   const check = (key, label, hint) => {
     const input = h("input", { type: "checkbox", checked: options[key], onchange: () => (options[key] = input.checked) });
     return h("label", { class: "check" }, input, h("span", {}, h("span", {}, label), h("span", { class: "check-hint" }, hint)));
@@ -41,6 +41,7 @@ export async function renderReports(root, _params, ctx) {
       h("div", { class: "card-head" }, h("div", {}, h("h2", {}, "Insurance inventory"), h("p", { class: "card-sub" }, "Every held item with its photos, identifying details, cost and value — and where each value came from, so an assessor can tell a market price from an estimate."))),
       h("div", { class: "check-list" },
         check("include_photos", "Include photos", "Up to four per item, embedded in the document."),
+        check("include_documents", "List documents on file", "Receipts, appraisals and certificates by title and date, so an assessor knows what to ask for. Their contents are not included."),
         check("include_locations", "Include storage locations", "Usually unnecessary for a claim — and a list of where valuables are kept is exactly what should not leak."),
         check("include_notes", "Include notes", "Your free-text notes, as written."),
         check("include_lost", "Include items marked lost", "For a claim: each lost item with the date it was lost and its value from before.")
@@ -106,6 +107,7 @@ function reportSheet(report, { screen } = {}) {
         ];
         if (item.status === "lost") rows.unshift(["Status", `Lost${item.lost_on ? ` on ${fmt.date(item.lost_on)}` : ""}`]);
         if (item.insured) rows.push(["Insured for", fmt.money(item.insured)]);
+        if (item.documents?.length) rows.push(["Documents on file", item.documents.map((d) => [d.title ?? fmt.DOC_KIND_LABELS[d.kind], `${fmt.DOC_KIND_LABELS[d.kind] ?? d.kind}${d.date ? `, ${fmt.date(d.date)}` : ""}`].join(" — ")).join("; ")]);
         if (item.storage_location) rows.push(["Location", item.storage_location]);
         if (item.notes) rows.push(["Notes", item.notes]);
         return h("article", { class: "report-item" },

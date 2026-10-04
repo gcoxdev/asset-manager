@@ -136,6 +136,7 @@ pub fn dashboard(
                     (SELECT m.object_id FROM asset_media m
                        JOIN objects o ON o.object_id = m.object_id
                       WHERE m.asset_id = a.asset_id AND o.gc_state = 'live'
+                        AND m.doc_kind = 'photo' AND o.media_type LIKE 'image/%'
                       ORDER BY m.is_primary DESC, m.sort_order LIMIT 1)
              FROM assets a JOIN asset_types t ON t.type_id = a.type_id
              WHERE a.status = 'active' AND a.deleted_at IS NULL",

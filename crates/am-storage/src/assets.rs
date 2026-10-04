@@ -113,10 +113,11 @@ const SELECT: &str = "
            a.insured_amount_minor, a.insured_currency, a.sold_date, a.sold_amount_minor,
            a.sold_currency, a.attrs, a.pricing, a.review_every_days,
            (SELECT m.object_id FROM asset_media m JOIN objects o ON o.object_id = m.object_id
-             WHERE m.asset_id = a.asset_id AND o.gc_state = 'live'
+             WHERE m.asset_id = a.asset_id AND o.gc_state = 'live' AND m.doc_kind = 'photo'
+               AND o.media_type LIKE 'image/%'
              ORDER BY m.is_primary DESC, m.sort_order, m.created_at LIMIT 1),
            (SELECT count(*) FROM asset_media m JOIN objects o ON o.object_id = m.object_id
-             WHERE m.asset_id = a.asset_id AND o.gc_state = 'live'),
+             WHERE m.asset_id = a.asset_id AND o.gc_state = 'live' AND m.doc_kind = 'photo'),
            a.created_at, a.updated_at, a.cost_complete, a.deleted_at
     FROM assets a JOIN asset_types t ON t.type_id = a.type_id";
 
@@ -848,7 +849,39 @@ pub fn search(vault: &Vault, input: &str) -> Result<Vec<String>, AssetError> {
         "SELECT a.asset_id FROM assets_fts f JOIN assets a ON a.rowid = f.rowid
          WHERE assets_fts MATCH ?1 AND a.deleted_at IS NULL ORDER BY rank LIMIT 1000",
     )?;
-    let rows = stmt.query_map([query], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
+    let mut rows: Vec<String> =
+        stmt.query_map([query], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+
+    // Then assets whose documents match — "receipt", "Bob's appraisal" — by
+    // every word appearing in an attachment's title or note.
+    let words: Vec<String> = input
+        .split_whitespace()
+        .map(|w| {
+            let escaped = w.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+            format!("%{}%", escaped.to_lowercase())
+        })
+        .take(8)
+        .collect();
+    if !words.is_empty() {
+        let clauses = (1..=words.len())
+            .map(|i| format!("lower(coalesce(m.title, '') || ' ' || m.note || ' ' || m.doc_kind) LIKE ?{i} ESCAPE '\\'"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
+        let sql = format!(
+            "SELECT DISTINCT m.asset_id FROM asset_media m JOIN assets a ON a.asset_id = m.asset_id
+             WHERE a.deleted_at IS NULL AND m.doc_kind <> 'photo' AND {clauses} LIMIT 1000"
+        );
+        let mut stmt = vault.conn().prepare(&sql)?;
+        let by_document = stmt
+            .query_map(rusqlite::params_from_iter(words.iter()), |r| r.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        for id in by_document {
+            if !rows.contains(&id) {
+                rows.push(id);
+            }
+        }
+    }
     Ok(rows)
 }
 
@@ -1110,6 +1143,50 @@ mod tests {
         assert_eq!(fts_query("psa 10").as_deref(), Some("\"psa\"* \"10\"*"));
         assert_eq!(fts_query("a\"b").as_deref(), Some("\"a\"* \"b\"*"));
         assert_eq!(fts_query("  -- "), None);
+    }
+
+    #[test]
+    fn documents_are_described_searchable_and_never_the_cover() {
+        use crate::objects::{attach_with, describe_attachment, import_object, AttachmentMeta};
+        let (_d, root, v) = setup();
+        let id = create(&v, &new_asset("Submariner"), NOW).unwrap();
+
+        let pdf = b"%PDF-1.4 a receipt".to_vec();
+        let receipt = import_object(&v, &root, &pdf, NOW).unwrap();
+        let mut meta = AttachmentMeta {
+            kind: "receipt".into(),
+            title: Some("  Jeweller invoice 2024  ".into()),
+            date: Some("2024-03-02".into()),
+            note: "paid by card".into(),
+        };
+        attach_with(&v, &id, &receipt.object_id, &meta, NOW).unwrap();
+        assert_eq!(get(&v, &id).unwrap().primary_photo, None, "a receipt is not a cover photo");
+        assert_eq!(get(&v, &id).unwrap().photo_count, 0);
+
+        assert_eq!(search(&v, "jeweller invoice").unwrap(), vec![id.clone()]);
+        assert_eq!(search(&v, "receipt").unwrap(), vec![id.clone()], "by kind too");
+        assert!(search(&v, "50%_off").unwrap().is_empty(), "wildcards are literal");
+
+        // A PDF cannot be filed as a photo; a bad date is refused.
+        meta.kind = "photo".into();
+        describe_attachment(&v, &id, &receipt.object_id, &meta).unwrap();
+        let kind: String = v
+            .conn()
+            .query_row("SELECT doc_kind FROM asset_media WHERE asset_id = ?1", [&id], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(kind, "other");
+        meta.date = Some("2024-02-30".into());
+        assert!(describe_attachment(&v, &id, &receipt.object_id, &meta).is_err());
+
+        // A photo attached afterwards is still the first photo, so the cover.
+        let photo = import_object(&v, &root, &png(9), NOW).unwrap();
+        crate::objects::attach_to_asset(&v, &id, &photo.object_id, NOW).unwrap();
+        assert_eq!(
+            get(&v, &id).unwrap().primary_photo.as_deref(),
+            Some(photo.object_id.as_str())
+        );
     }
 
     #[test]

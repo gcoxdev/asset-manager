@@ -122,6 +122,7 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             asset_commands::read_text_file,
             asset_commands::write_text_file,
             asset_commands::export_attachment,
+            asset_commands::describe_attachment,
             // Valuation
             valuation_commands::set_prices,
             valuation_commands::portfolio_total,

@@ -354,6 +354,28 @@ fn the_frontend_contract_holds_end_to_end() {
     let first =
         ok(&w, "import_photo", json!({ "assetId": btc, "path": photo_path.to_str().unwrap() }));
     assert_eq!(first["media_type"], "image/png");
+    // A document is described, kept out of the gallery, and found by title.
+    let pdf_path = dir.path().join("Purchase receipt.pdf");
+    std::fs::write(&pdf_path, b"%PDF-1.4 receipt").unwrap();
+    let receipt = ok(
+        &w,
+        "import_photo",
+        json!({ "assetId": btc, "path": pdf_path.to_str().unwrap(),
+                "details": { "kind": "receipt", "date": "2024-01-02" } }),
+    );
+    let attached = ok(&w, "list_photos", json!({ "assetId": btc }));
+    let doc =
+        attached.as_array().unwrap().iter().find(|p| p["object_id"] == receipt["object_id"]);
+    assert_eq!(doc.unwrap()["title"], "Purchase receipt", "titled from the file name");
+    assert_eq!(ok(&w, "search_assets", json!({ "query": "purchase receipt" })), json!([btc]));
+    ok(
+        &w,
+        "describe_attachment",
+        json!({ "assetId": btc, "objectId": receipt["object_id"],
+                "details": { "kind": "appraisal", "title": "Appraisal", "note": "" } }),
+    );
+    ok(&w, "remove_photo", json!({ "assetId": btc, "objectId": receipt["object_id"] }));
+
     // An attachment can be taken back out, decrypted — but only from the
     // asset it belongs to.
     let copy = dir.path().join("copy.png");

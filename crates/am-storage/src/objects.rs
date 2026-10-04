@@ -36,6 +36,8 @@ pub enum ObjectError {
     Missing(String),
     #[error("object {0} failed to decrypt — it may be corrupt or from another vault")]
     Corrupt(String),
+    #[error("{0}")]
+    Invalid(String),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -197,28 +199,133 @@ pub fn load_object(
     .map_err(|_| ObjectError::Corrupt(object_id.to_string()))
 }
 
-/// Attach an object to an asset, incrementing its reference count.
+/// What an attachment is. Photos make up the gallery and can be the cover;
+/// the rest are documents.
+pub const DOC_KINDS: &[&str] =
+    &["photo", "receipt", "appraisal", "certificate", "warranty", "manual", "other"];
+
+/// The descriptive details of an attachment.
+#[derive(Debug, Clone, Default)]
+pub struct AttachmentMeta {
+    /// One of [`DOC_KINDS`]. A file that is not an image is never a photo.
+    pub kind: String,
+    pub title: Option<String>,
+    /// The document's own date — when the receipt was issued, the appraisal
+    /// made — not when it was attached.
+    pub date: Option<String>,
+    pub note: String,
+}
+
+impl AttachmentMeta {
+    pub fn photo() -> Self {
+        AttachmentMeta { kind: "photo".into(), ..Default::default() }
+    }
+
+    fn validated(&self, media_type: &str) -> Result<Self, ObjectError> {
+        let mut meta = self.clone();
+        if !DOC_KINDS.contains(&meta.kind.as_str()) {
+            return Err(ObjectError::Invalid(format!(
+                "unknown kind of document: {}",
+                meta.kind
+            )));
+        }
+        if meta.kind == "photo" && !media_type.starts_with("image/") {
+            meta.kind = "other".into();
+        }
+        meta.title = meta.title.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+        if meta.title.as_ref().is_some_and(|t| t.chars().count() > 200) {
+            return Err(ObjectError::Invalid("a title is limited to 200 characters".into()));
+        }
+        if meta.note.chars().count() > 2_000 {
+            return Err(ObjectError::Invalid("a note is limited to 2,000 characters".into()));
+        }
+        meta.date = match meta.date.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(d) => Some(
+                crate::events::normalize_date(d)
+                    .map_err(|e| ObjectError::Invalid(e.to_string()))?,
+            ),
+        };
+        Ok(meta)
+    }
+}
+
+/// Attach an object to an asset as a photo, incrementing its reference count.
 pub fn attach_to_asset(
     vault: &Vault,
     asset_id: &str,
     object_id: &str,
     now: &str,
 ) -> Result<(), ObjectError> {
-    let tx = crate::atomic::begin(vault.conn())?;
+    attach_with(vault, asset_id, object_id, &AttachmentMeta::photo(), now)
+}
 
-    let is_first: i64 = tx.query_row(
-        "SELECT count(*) FROM asset_media WHERE asset_id = ?1",
+/// Attach an object to an asset with its details. The first photo becomes
+/// the cover; a document never does.
+pub fn attach_with(
+    vault: &Vault,
+    asset_id: &str,
+    object_id: &str,
+    meta: &AttachmentMeta,
+    now: &str,
+) -> Result<(), ObjectError> {
+    let tx = crate::atomic::begin(vault.conn())?;
+    let media_type: String = tx.query_row(
+        "SELECT media_type FROM objects WHERE object_id = ?1",
+        [object_id],
+        |r| r.get(0),
+    )?;
+    let meta = meta.validated(&media_type)?;
+
+    let photos: i64 = tx.query_row(
+        "SELECT count(*) FROM asset_media WHERE asset_id = ?1 AND doc_kind = 'photo'",
         [asset_id],
         |r| r.get(0),
     )?;
+    let primary = meta.kind == "photo" && photos == 0;
 
     tx.execute(
-        "INSERT INTO asset_media (asset_id, object_id, is_primary, created_at)
-         VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![asset_id, object_id, i64::from(is_first == 0), now],
+        "INSERT INTO asset_media
+           (asset_id, object_id, is_primary, doc_kind, title, doc_date, note, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        rusqlite::params![
+            asset_id,
+            object_id,
+            i64::from(primary),
+            &meta.kind,
+            &meta.title,
+            &meta.date,
+            &meta.note,
+            now
+        ],
     )?;
     tx.execute("UPDATE objects SET refcount = refcount + 1 WHERE object_id = ?1", [object_id])?;
     tx.commit()?;
+    Ok(())
+}
+
+/// Change an attachment's details. Turning a photo into a document drops it
+/// as the cover.
+pub fn describe_attachment(
+    vault: &Vault,
+    asset_id: &str,
+    object_id: &str,
+    meta: &AttachmentMeta,
+) -> Result<(), ObjectError> {
+    let media_type: String = vault.conn().query_row(
+        "SELECT o.media_type FROM asset_media m JOIN objects o ON o.object_id = m.object_id
+         WHERE m.asset_id = ?1 AND m.object_id = ?2",
+        [asset_id, object_id],
+        |r| r.get(0),
+    )?;
+    let meta = meta.validated(&media_type)?;
+    vault.conn().execute(
+        "UPDATE asset_media
+         SET doc_kind = ?1, title = ?2, doc_date = ?3, note = ?4,
+             is_primary = CASE WHEN ?1 = 'photo' THEN is_primary ELSE 0 END
+         WHERE asset_id = ?5 AND object_id = ?6",
+        rusqlite::params![&meta.kind, &meta.title, &meta.date, &meta.note, asset_id, object_id],
+    )?;
     Ok(())
 }
 

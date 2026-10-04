@@ -48,6 +48,16 @@ pub struct ReportItem {
     pub notes: Option<String>,
     /// Object IDs, resolved to embedded images by the caller.
     pub photo_ids: Vec<String>,
+    /// Receipts, appraisals and other documents on file, by title — so an
+    /// assessor knows what evidence exists to ask for. Not their contents.
+    pub documents: Vec<ReportDocument>,
+}
+
+#[derive(Serialize)]
+pub struct ReportDocument {
+    pub kind: String,
+    pub title: Option<String>,
+    pub date: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -92,6 +102,10 @@ pub struct ReportOptions {
     /// what a claim is made from. Off unless asked for.
     #[serde(default)]
     pub include_lost: bool,
+    /// List each item's documents by title and date. Off unless asked for:
+    /// a title can say more than intended ("Safe deposit box 114 receipt").
+    #[serde(default)]
+    pub include_documents: bool,
 }
 
 impl Default for ReportOptions {
@@ -101,6 +115,7 @@ impl Default for ReportOptions {
             include_notes: false,
             include_photos: true,
             include_lost: false,
+            include_documents: false,
         }
     }
 }
@@ -248,7 +263,7 @@ pub fn insurance_report(
                             "SELECT m.object_id FROM asset_media m
                              JOIN objects o ON o.object_id = m.object_id
                              WHERE m.asset_id = ?1 AND o.gc_state = 'live'
-                               AND o.media_type LIKE 'image/%'
+                               AND o.media_type LIKE 'image/%' AND m.doc_kind = 'photo'
                              ORDER BY m.is_primary DESC, m.sort_order LIMIT 4",
                         )
                         .map_err(storage)?;
@@ -262,6 +277,32 @@ pub fn insurance_report(
                     Vec::new()
                 };
 
+                let documents = if options.include_documents {
+                    let mut stmt = vault
+                        .conn()
+                        .prepare(
+                            "SELECT m.doc_kind, m.title, m.doc_date FROM asset_media m
+                             JOIN objects o ON o.object_id = m.object_id
+                             WHERE m.asset_id = ?1 AND o.gc_state = 'live'
+                               AND m.doc_kind <> 'photo'
+                             ORDER BY coalesce(m.doc_date, m.created_at)",
+                        )
+                        .map_err(storage)?;
+                    let docs = stmt
+                        .query_map([&r.asset_id], |row| {
+                            Ok(ReportDocument {
+                                kind: row.get(0)?,
+                                title: row.get(1)?,
+                                date: row.get(2)?,
+                            })
+                        })
+                        .map_err(storage)?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(storage)?;
+                    docs
+                } else {
+                    Vec::new()
+                };
                 let lost_on = if r.status == "lost" {
                     lost += 1;
                     am_storage::lifecycle::history(vault, &r.asset_id)
@@ -309,6 +350,7 @@ pub fn insurance_report(
                     value_source: r.value_source,
                     value_asof: r.value_asof,
                     photo_ids,
+                    documents,
                 });
             }
 

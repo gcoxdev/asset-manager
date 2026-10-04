@@ -168,6 +168,11 @@ pub struct PhotoRef {
     pub object_id: String,
     pub media_type: String,
     pub is_primary: bool,
+    /// "photo" for the gallery; otherwise what kind of document it is.
+    pub doc_kind: String,
+    pub title: Option<String>,
+    pub doc_date: Option<String>,
+    pub note: String,
 }
 
 #[derive(Serialize)]
@@ -199,11 +204,11 @@ fn photos_of(vault: &Vault, asset_id: &str) -> Result<Vec<PhotoRef>, SessionErro
     let mut stmt = vault
         .conn()
         .prepare(
-            "SELECT m.object_id, o.media_type, m.is_primary
+            "SELECT m.object_id, o.media_type, m.is_primary, m.doc_kind, m.title, m.doc_date, m.note
              FROM asset_media m
              JOIN objects o ON o.object_id = m.object_id
              WHERE m.asset_id = ?1 AND o.gc_state = 'live'
-             ORDER BY m.is_primary DESC, m.sort_order, m.created_at",
+             ORDER BY m.is_primary DESC, coalesce(m.doc_date, m.created_at) DESC, m.sort_order",
         )
         .map_err(storage)?;
     let rows = stmt
@@ -212,6 +217,10 @@ fn photos_of(vault: &Vault, asset_id: &str) -> Result<Vec<PhotoRef>, SessionErro
                 object_id: r.get(0)?,
                 media_type: r.get(1)?,
                 is_primary: r.get::<_, i64>(2)? == 1,
+                doc_kind: r.get(3)?,
+                title: r.get(4)?,
+                doc_date: r.get(5)?,
+                note: r.get(6)?,
             })
         })
         .map_err(storage)?
@@ -836,10 +845,25 @@ pub fn import_photo<R: Runtime>(
     session: State<'_, Session>,
     asset_id: String,
     path: String,
+    details: Option<AttachmentDetails>,
 ) -> IpcResult<ImportedPhoto> {
     session.touch();
     let root = vault_root(&app).map_err(other)?;
     let timestamp = now();
+    // A document is titled from its file name unless given one: "Receipt
+    // March 2024.pdf" is how a person will look for it later.
+    let file_stem =
+        std::path::Path::new(&path).file_stem().map(|s| s.to_string_lossy().into_owned());
+    let meta = match details {
+        None => am_storage::objects::AttachmentMeta::photo(),
+        Some(d) => {
+            let mut meta = d.into_meta();
+            if meta.title.is_none() && meta.kind != "photo" {
+                meta.title = file_stem;
+            }
+            meta
+        }
+    };
 
     let size = std::fs::metadata(&path)
         .map_err(|e| IpcError { kind: "unreadable_file".into(), message: e.to_string() })?
@@ -871,10 +895,11 @@ pub fn import_photo<R: Runtime>(
                 )
                 .map_err(storage)?;
             if already == 0 {
-                am_storage::objects::attach_to_asset(
+                am_storage::objects::attach_with(
                     vault,
                     &asset_id,
                     &stored.object_id,
+                    &meta,
                     &timestamp,
                 )
                 .map_err(storage)?;
@@ -965,6 +990,56 @@ pub fn export_attachment<R: Runtime>(
     // Written outside the vault lock: a slow disk must not hold the session.
     std::fs::write(&target, bytes.as_slice())
         .map_err(|e| IpcError { kind: "unwritable_file".into(), message: e.to_string() })
+}
+
+/// What an attachment is, as the frontend sends it.
+#[derive(Deserialize)]
+pub struct AttachmentDetails {
+    pub kind: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub date: Option<String>,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+impl AttachmentDetails {
+    fn into_meta(self) -> am_storage::objects::AttachmentMeta {
+        am_storage::objects::AttachmentMeta {
+            kind: self.kind,
+            title: self.title,
+            date: self.date,
+            note: self.note.unwrap_or_default(),
+        }
+    }
+}
+
+/// Change what an attachment is called, what kind it is, its date or note.
+#[tauri::command]
+pub fn describe_attachment(
+    session: State<'_, Session>,
+    asset_id: String,
+    object_id: String,
+    details: AttachmentDetails,
+) -> IpcResult<()> {
+    session.touch();
+    session
+        .with_vault(|vault| {
+            am_storage::objects::describe_attachment(
+                vault,
+                &asset_id,
+                &object_id,
+                &details.into_meta(),
+            )
+            .map_err(|e| match e {
+                am_storage::objects::ObjectError::Invalid(m) => {
+                    SessionError::Vault(am_storage::vault::VaultError::Other(m))
+                }
+                other => storage(other),
+            })
+        })
+        .map_err(IpcError::from)
 }
 
 #[tauri::command]
