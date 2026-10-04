@@ -1,6 +1,6 @@
 // Shared UI pieces: toasts, modals, confirm, menus, form fields, badges.
 
-import { h, clear } from "../lib/dom.js";
+import { h, clear, mount } from "../lib/dom.js";
 import { icon } from "../lib/icons.js";
 import { describe } from "../lib/api.js";
 
@@ -308,6 +308,57 @@ export function segmented(options, value, onChange) {
     )
   );
   return { el: h("div", { class: "segmented", role: "group" }, buttons), value: () => current };
+}
+
+/**
+ * Tags as removable pills, with an input that adds one on Enter or comma and
+ * suggests tags already in use. Returns {el, input, value()}.
+ */
+let tagListSeq = 0;
+export function tagsInput(initial = [], suggestions = [], { label = "Tags" } = {}) {
+  const tags = [...initial];
+  const listId = `tag-suggestions-${++tagListSeq}`;
+  const pills = h("div", { class: "tag-pills" });
+  const input = h("input", { type: "text", list: listId, maxlength: 60, autocomplete: "off", placeholder: tags.length ? "Add another…" : "Type a tag, then Enter", "aria-label": `Add to ${label.toLowerCase()}` });
+  const datalist = h("datalist", { id: listId }, suggestions.map((s) => h("option", { value: s })));
+  const has = (name) => tags.some((t) => t.toLowerCase() === name.toLowerCase());
+  const draw = () => mount(pills, tags.map((t, i) =>
+    h("span", { class: "tag-pill" }, t,
+      h("button", { type: "button", class: "tag-remove", "aria-label": `Remove tag ${t}`, onclick: () => { tags.splice(i, 1); draw(); } }, icon("x", { size: 12 })))
+  ));
+  const commit = () => {
+    for (const part of input.value.split(",")) {
+      const name = part.trim().replace(/\s+/g, " ");
+      if (name && !has(name)) tags.push(name);
+    }
+    input.value = "";
+    draw();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      commit();
+    } else if (e.key === "Backspace" && !input.value && tags.length) {
+      tags.pop();
+      draw();
+    }
+  });
+  input.addEventListener("change", () => { if (input.value.includes(",") || suggestions.includes(input.value)) commit(); });
+  draw();
+  return {
+    el: h("div", { class: "tag-input" }, pills, input, datalist),
+    input,
+    // A tag typed but not yet committed still counts.
+    value: () => { commit(); return [...tags]; },
+  };
+}
+
+/** A text input that suggests values already in use. */
+let suggestSeq = 0;
+export function suggestInput(props, suggestions) {
+  const id = `suggest-${++suggestSeq}`;
+  const input = h("input", { type: "text", autocomplete: "off", list: id, ...props });
+  return { input, el: h("span", { class: "suggest" }, input, h("datalist", { id }, suggestions.map((s) => h("option", { value: s })))) };
 }
 
 // ------------------------------------------------------------------ badges

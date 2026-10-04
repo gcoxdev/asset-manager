@@ -961,3 +961,25 @@ tr.voided td.num { text-decoration: line-through; }
 .doc-text strong { overflow-wrap: anywhere; }
 .doc-note { font-size: 12.5px; color: var(--text-2); }
 .doc-actions { display: flex; gap: 2px; flex: none; }
+
+.tag-input { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 5px 6px; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); background: var(--surface); min-height: 36px; }
+.tag-input:focus-within { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); }
+.tag-input input { border: 0; box-shadow: none; height: 26px; padding: 0 4px; flex: 1; min-width: 120px; width: auto; }
+.tag-input input:focus { box-shadow: none; }
+.tag-pills { display: contents; }
+.tag-pill { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 9px; border-radius: 999px; background: var(--info-bg); color: var(--info-ink); font-size: 12.5px; font-weight: 600; }
+.tag-remove { all: unset; cursor: pointer; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; }
+.tag-remove:hover, .tag-remove:focus-visible { background: color-mix(in srgb, var(--info-ink) 15%, transparent); }
+.tag-list { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.tag-chip { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); font-size: 11.5px; font-weight: 600; }
+.suggest { display: block; }
+.tag-list-button { all: unset; display: inline-flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; cursor: pointer; }
+.tag-list-button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 6px; }
+
+.toolbar-filters { margin-top: -6px; justify-content: space-between; }
+.toolbar-filters select { width: auto; }
+.col-check { width: 34px; }
+.col-check input { width: 16px; height: 16px; }
+.holdings-table.selecting tr[aria-selected="true"] { background: color-mix(in srgb, var(--info-bg) 70%, transparent); }
+.selection-bar { margin-bottom: 10px; }
+.danger-text { color: var(--bad); }

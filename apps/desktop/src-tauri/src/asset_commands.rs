@@ -409,6 +409,9 @@ pub struct AssetForm {
     /// Edit only: when a change of status took effect. Today if absent.
     #[serde(default)]
     pub status_date: Option<String>,
+    /// The asset's tags, replacing any it had. Absent leaves them alone.
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
 }
 
 /// Validate and clean attributes for a type.
@@ -581,6 +584,10 @@ pub fn create_asset(session: State<'_, Session>, form: AssetForm) -> IpcResult<S
                 )
                 .map_err(storage)?;
 
+                if let Some(tags) = &form.tags {
+                    am_storage::organize::set_tags(vault, &asset_id, tags, &timestamp)
+                        .map_err(storage)?;
+                }
                 if let Some(value) = opening {
                     record_manual_value(vault, &asset_id, value, "opening value", &timestamp)?;
                 } else if pricing == Pricing::Market {
@@ -652,6 +659,11 @@ pub fn update_asset(
                     &timestamp,
                 )
                 .map_err(storage)?;
+
+                if let Some(tags) = &form.tags {
+                    am_storage::organize::set_tags(vault, &asset_id, tags, &timestamp)
+                        .map_err(storage)?;
+                }
 
                 // Changed weight or purity on a market holding changes its value.
                 if current.pricing == "market" {
@@ -1306,6 +1318,8 @@ mod tests {
             acquired_currency: None,
             cost_complete: true,
             deleted_at: None,
+            tags: Vec::new(),
+            document_count: 0,
             acquired_from: None,
             storage_location: None,
             notes: String::new(),

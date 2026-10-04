@@ -184,6 +184,31 @@ fn the_frontend_contract_holds_end_to_end() {
     ok(&w, "delete_asset", json!({ "assetId": rifle }));
     ok(&w, "purge_trash", json!({ "assetId": rifle }));
 
+    // Organizing: tags, a location move, a bulk change, a duplicate, a view.
+    ok(&w, "set_asset_tags", json!({ "assetId": comic, "tags": ["Key issues", "Insured"] }));
+    assert_eq!(ok(&w, "list_tags", json!({})).as_array().unwrap().len(), 2);
+    let changed = ok(
+        &w,
+        "bulk_edit",
+        json!({ "assetIds": [comic, eagles], "change": {
+            "storage_location": "Safe / Top shelf", "add_tags": ["Vault 1"] } }),
+    );
+    assert_eq!(changed, 2);
+    assert_eq!(ok(&w, "rename_location", json!({ "from": "Safe", "to": "Bank box" })), 2);
+    let detail = ok(&w, "get_asset", json!({ "assetId": eagles }));
+    assert_eq!(detail["asset"]["storage_location"], "Bank box / Top shelf");
+    assert_eq!(detail["asset"]["tags"], json!(["Vault 1"]));
+    let copy = ok(&w, "duplicate_asset", json!({ "assetId": comic }));
+    let copied = ok(&w, "get_asset", json!({ "assetId": copy }));
+    assert!(copied["asset"]["attrs"]["cert_number"].is_null(), "identifiers are not copied");
+    ok(&w, "bulk_trash", json!({ "assetIds": [copy] }));
+    ok(&w, "purge_trash", json!({ "assetId": copy }));
+    ok(&w, "save_view", json!({ "name": "In the bank", "view": { "location": "Bank box" } }));
+    assert_eq!(ok(&w, "list_saved_views", json!({}))[0]["name"], "In the bank");
+    ok(&w, "delete_saved_view", json!({ "name": "In the bank" }));
+    // Put the location back for the checks below.
+    ok(&w, "rename_location", json!({ "from": "Bank box", "to": "Safe" }));
+
     // Search: punctuation is harmless and attributes are indexed.
     assert_eq!(ok(&w, "search_assets", json!({ "query": "#15 cgc" })), json!([comic.clone()]));
     assert_eq!(

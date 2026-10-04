@@ -8,7 +8,7 @@ import { h, mount } from "../lib/dom.js";
 import { icon, typeIcon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
 import * as store from "../lib/store.js";
-import { busy, toast, confirmDialog, menuButton, sourceBadge, statusBadge, toggle, callout, modal, field, select } from "../ui/components.js";
+import { busy, toast, confirmDialog, menuButton, sourceBadge, statusBadge, toggle, callout, modal, field, select, tagsInput } from "../ui/components.js";
 import { valueChart } from "../ui/chart.js";
 import { openEditAsset, openUpdateValue, openRecordChange } from "./asset-forms.js";
 
@@ -35,6 +35,8 @@ export async function renderAsset(root, params, ctx) {
     menuButton(h("button", { class: "btn btn-ghost", "aria-label": "More" }, icon("more")), [
       { label: "Add photos…", icon: "image", onSelect: () => addPhotos(a, reload) },
       "divider",
+      { label: "Edit tags…", icon: "tag", onSelect: () => editTags(a, reload) },
+      { label: "Duplicate", icon: "copy", onSelect: () => duplicateAsset(a, ctx) },
       { label: "Edit history…", icon: "clock", onSelect: () => editHistory(a, reload) },
       "divider",
       { label: "Move to trash…", icon: "trash", danger: true, onSelect: () => deleteAsset(a, ctx) },
@@ -49,7 +51,10 @@ export async function renderAsset(root, params, ctx) {
         h("span", { class: "asset-title-glyph" }, icon(typeIcon(a.type_id, a.category), { size: 22 })),
         h("div", {},
           h("h1", {}, a.name, statusBadge(a.status)),
-          h("p", { class: "page-sub" }, [a.type_label, fmt.categoryLabel(a.category), a.storage_location].filter(Boolean).join(" · "))
+          h("p", { class: "page-sub" }, [a.type_label, fmt.categoryLabel(a.category), a.storage_location].filter(Boolean).join(" · ")),
+          a.tags?.length
+            ? h("button", { class: "tag-list tag-list-button", title: "Edit tags", onclick: () => editTags(a, reload) }, a.tags.map((t) => h("span", { class: "tag-chip" }, t)))
+            : null
         )
       ),
       actions
@@ -478,6 +483,38 @@ async function voidValuation(v, reload) {
 
 function textInputLike() {
   return h("input", { type: "text", maxlength: 200, autocomplete: "off", autofocus: true });
+}
+
+async function editTags(a, reload) {
+  const known = await call("list_tags").catch(() => []);
+  const tags = tagsInput(a.tags ?? [], known.map((t) => t.name));
+  const save = h("button", { class: "btn btn-primary" }, "Save tags");
+  const m = modal({
+    title: "Tags",
+    subtitle: a.name,
+    size: "sm",
+    body: h("div", { class: "stack" }, tags.el, h("p", { class: "field-hint" }, "Enter or comma adds a tag. Tags are searchable and filterable in Holdings.")),
+    footer: (close) => [h("button", { class: "btn btn-ghost", onclick: () => close() }, "Cancel"), save],
+  });
+  requestAnimationFrame(() => tags.input.focus());
+  save.addEventListener("click", () => busy(save, async () => {
+    await call("set_asset_tags", { assetId: a.asset_id, tags: tags.value() });
+    store.invalidate();
+    m.close();
+    reload();
+  }));
+}
+
+/** A new asset described like this one, opened for its differences. */
+async function duplicateAsset(a, ctx) {
+  try {
+    const id = await call("duplicate_asset", { assetId: a.asset_id });
+    store.invalidate();
+    toast("Duplicated — without its serial or certificate number, value, history or files. Edit what differs.", { kind: "success", timeout: 7000 });
+    ctx.navigate("asset", { id });
+  } catch (e) {
+    toast(describe(e), { kind: "error" });
+  }
 }
 
 /** Earlier versions of the record, each restorable. */

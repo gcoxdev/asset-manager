@@ -82,6 +82,6 @@ export async function coins() {
  * with everything else — a search query can itself be sensitive.
  */
 export function ui() {
-  state.ui ??= { query: "", category: "all", status: "active", sort: "updated", layout: "list" };
+  state.ui ??= { query: "", category: "all", status: "active", sort: "updated", layout: "list", tag: "", location: "", missing: "" };
   return state.ui;
 }

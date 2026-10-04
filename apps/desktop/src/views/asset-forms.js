@@ -11,7 +11,7 @@ import { h, mount, debounce } from "../lib/dom.js";
 import { icon } from "../lib/icons.js";
 import * as store from "../lib/store.js";
 import * as fmt from "../lib/format.js";
-import { modal, field, textInput, select, toggle, segmented, callout, busy, toast, confirmDialog } from "../ui/components.js";
+import { modal, field, textInput, select, toggle, segmented, callout, busy, toast, confirmDialog, tagsInput, suggestInput } from "../ui/components.js";
 
 // ------------------------------------------------------------ kinds
 
@@ -62,6 +62,9 @@ const SUGGESTED = {
   cash: ["institution", "account_type", "last_four"],
   generic: ["brand", "model", "serial_number"],
 };
+
+/** Details that identify one particular item, never carried to another. */
+const IDENTIFYING_KEYS = ["serial_number", "cert_number", "watch_address", "lot_number"];
 
 /** Attribute keys that steer pricing rather than describe the item. */
 const INTERNAL_ATTRS = ["metal", "coin_id"];
@@ -161,10 +164,12 @@ export async function openEditAsset(asset, { onSaved } = {}) {
  */
 async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom = null }) {
   const kind = KINDS.find((k) => k.id === kindId) ?? KINDS.at(-1);
-  const [collectibles, graders, settings] = await Promise.all([
+  const [collectibles, graders, settings, knownTags, knownLocations] = await Promise.all([
     store.collectibleTypes(),
     store.graders(),
     store.settings(),
+    call("list_tags").catch(() => []),
+    call("list_locations").catch(() => []),
   ]);
   const currency = settings.currency;
   const schema = collectibles.find((c) => c.id === kindId);
@@ -286,7 +291,13 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
         { hint: "For when the units added without a price cost nothing extra — a gift, or included in this figure." })
     : null;
   const from = textInput({ value: asset?.acquired_from ?? "", placeholder: "Dealer, show, auction, gift…" });
-  const location = textInput({ value: asset?.storage_location ?? "", placeholder: kindId === "crypto" ? "Wallet or exchange" : "Safe, deposit box, shelf…" });
+  // Places already in use are offered, so one safe is not three spellings
+  // of it. "Safe / Top shelf" nests a place inside another.
+  const locationField = suggestInput(
+    { value: asset?.storage_location ?? "", placeholder: kindId === "crypto" ? "Wallet or exchange" : "Safe, deposit box, shelf…", maxlength: 500 },
+    knownLocations.map((l) => l.name)
+  );
+  const location = locationField.input;
 
   sections.push(
     h("section", { class: "form-section" },
@@ -304,7 +315,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
         }),
         coversToggle ? h("div", { class: "span-2" }, coversToggle) : null,
         field("Acquired from", from),
-        field(kindId === "crypto" ? "Held at" : "Storage location", location)
+        field(kindId === "crypto" ? "Held at" : "Storage location", locationField.el, { hint: kindId === "crypto" ? null : "Use “/” for a place inside another: Safe / Top shelf." })
       )
     )
   );
@@ -366,7 +377,12 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
   // --- notes -----------------------------------------------------------
   const notes = h("textarea", { rows: 3, maxlength: 20000, placeholder: "Provenance, condition, anything worth remembering" });
   notes.value = asset?.notes ?? "";
-  sections.push(h("section", { class: "form-section" }, h("h3", {}, "Notes"), notes));
+  const tags = tagsInput(asset?.tags ?? [], knownTags.map((t) => t.name));
+  sections.push(h("section", { class: "form-section" },
+    h("h3", {}, "Notes & tags"),
+    notes,
+    h("div", { class: "form-grid", style: { marginTop: "12px" } }, field("Tags", tags.el, { span: 2, hint: "Anything you will want to find it by: for sale, insurance rider, Grandma's." }))
+  ));
 
   function buildForm() {
     const form = {
@@ -379,6 +395,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
       acquired_from: from.value.trim() || null,
       storage_location: location.value.trim() || null,
       notes: notes.value,
+      tags: tags.value(),
       insured_value: insured.value(),
       acquired_currency: price.currency(),
       insured_currency: insured.currency(),
@@ -440,6 +457,13 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
         chooseNewKind(m, body, { draft, currentKind: kindId, onSaved, retypedFrom: retypedFrom ?? asset.type_label, currentRetyped: Boolean(retypedFrom) });
       } }, "Change type…")
     : null;
+  // "Add and start another" keeps what a set of similar items shares — the
+  // type's details, where they are kept, where they came from, tags — and
+  // clears what makes each one itself.
+  // A plain button, so Enter still means the primary "Add to catalog".
+  let another = false;
+  const saveAnother = editing ? null
+    : h("button", { class: "btn btn-secondary", type: "button", onclick: () => { another = true; formEl.requestSubmit(); } }, "Add and start another");
   const back = editing
     ? h("button", { class: "btn btn-ghost", type: "button", onclick: () => m.close() }, "Cancel")
     : h("button", { class: "btn btn-ghost", type: "button", onclick: () => openAddAssetInPlace(m, body, onSaved) }, icon("back", { size: 16 }), "Other type");
@@ -452,6 +476,8 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
         event.preventDefault();
         error.textContent = "";
         const form = buildForm();
+        const startAnother = another;
+        another = false;
         await busy(save, async () => {
           try {
             if (editing) {
@@ -462,6 +488,20 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
             } else {
               const id = await call("create_asset", { form });
               store.invalidate();
+              if (startAnother) {
+                toast(`Added ${form.name ?? "to your catalog"}. The next one starts from its details.`, { kind: "success" });
+                const seed = {
+                  attrs: Object.fromEntries(Object.entries(form.attrs).filter(([k]) => !IDENTIFYING_KEYS.includes(k))),
+                  storage_location: form.storage_location,
+                  acquired_from: form.acquired_from,
+                  acquired_date: form.acquired_date,
+                  quantity_unit: form.quantity_unit,
+                  review_every_days: form.review_every_days,
+                  tags: form.tags,
+                };
+                renderForm(m, body, { mode: "create", kindId, asset: seed, onSaved });
+                return;
+              }
               toast(`Added ${form.name ?? "to your catalog"}.`, { kind: "success" });
               onSaved(id);
             }
@@ -473,7 +513,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
       },
     },
     sections,
-    h("div", { class: "form-actions" }, error, h("div", { class: "btn-row" }, changeType, back, save))
+    h("div", { class: "form-actions" }, error, h("div", { class: "btn-row" }, changeType, back, saveAnother, save))
   );
   if (retypedFrom) {
     formEl.prepend(callout("info", `Changing from ${retypedFrom.toLowerCase()} to ${kind.label.toLowerCase()}. Details both use carry over; nothing is saved until you choose Save changes.`));

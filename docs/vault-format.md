@@ -288,6 +288,7 @@ the user after the wrong problem. On mismatch, refuse to open and say so.
 | 6 | `status_events` (dated lost / retired / recovered; existing lost and retired items dated from their last edit) and `cost_statements` (cost replayed in effective-date order from the latest statement; every existing cost recorded as a statement so no figure changes) |
 | 7 | `assets.deleted_at` (trash, purged after 30 days), `valuations.voided_at` / `void_reason` (voided values kept, not counted), `asset_revisions` (the record before each edit, last 50 kept) |
 | 8 | Attachment details on `asset_media`: `doc_kind` (photo, receipt, appraisal, certificate, warranty, manual, other), `title`, `doc_date`, `note`; only photos can be the cover |
+| 9 | `tags` and `asset_tags` (many per asset, case-insensitive names); saved holdings views are stored as a setting |
 
 ---
 

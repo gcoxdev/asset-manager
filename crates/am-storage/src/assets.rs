@@ -82,6 +82,10 @@ pub struct AssetRecord {
     pub acquired_from: Option<String>,
     /// When it was moved to the trash; `None` for everything in the catalog.
     pub deleted_at: Option<String>,
+    /// Tags, alphabetically.
+    pub tags: Vec<String>,
+    /// Receipts, appraisals and other documents attached.
+    pub document_count: i64,
     pub storage_location: Option<String>,
     pub notes: String,
     #[serde(serialize_with = "minor_as_string")]
@@ -118,7 +122,11 @@ const SELECT: &str = "
              ORDER BY m.is_primary DESC, m.sort_order, m.created_at LIMIT 1),
            (SELECT count(*) FROM asset_media m JOIN objects o ON o.object_id = m.object_id
              WHERE m.asset_id = a.asset_id AND o.gc_state = 'live' AND m.doc_kind = 'photo'),
-           a.created_at, a.updated_at, a.cost_complete, a.deleted_at
+           a.created_at, a.updated_at, a.cost_complete, a.deleted_at,
+           (SELECT group_concat(t.name, char(31)) FROM asset_tags at
+              JOIN tags t ON t.tag_id = at.tag_id WHERE at.asset_id = a.asset_id),
+           (SELECT count(*) FROM asset_media m JOIN objects o ON o.object_id = m.object_id
+             WHERE m.asset_id = a.asset_id AND o.gc_state = 'live' AND m.doc_kind <> 'photo')
     FROM assets a JOIN asset_types t ON t.type_id = a.type_id";
 
 fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
@@ -154,6 +162,15 @@ fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
         acquired_currency: r.get(11)?,
         cost_complete: r.get::<_, i64>(31)? != 0,
         deleted_at: r.get(32)?,
+        tags: {
+            let joined: Option<String> = r.get(33)?;
+            let mut tags: Vec<String> = joined
+                .map(|j| j.split('\u{1f}').map(str::to_string).collect())
+                .unwrap_or_default();
+            tags.sort_by_key(|t| t.to_lowercase());
+            tags
+        },
+        document_count: r.get(34)?,
         acquired_from: r.get(12)?,
         storage_location: r.get(13)?,
         notes: r.get(14)?,
@@ -677,6 +694,11 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// The editable fields of a record as it stands.
+    pub fn of_record(r: &AssetRecord) -> Self {
+        Self::of(r)
+    }
+
     fn of(r: &AssetRecord) -> Self {
         Snapshot {
             type_id: r.type_id.clone(),
@@ -868,9 +890,18 @@ pub fn search(vault: &Vault, input: &str) -> Result<Vec<String>, AssetError> {
             .map(|i| format!("lower(coalesce(m.title, '') || ' ' || m.note || ' ' || m.doc_kind) LIKE ?{i} ESCAPE '\\'"))
             .collect::<Vec<_>>()
             .join(" AND ");
+        let tag_clauses = (1..=words.len())
+            .map(|i| format!("lower(t.name) LIKE ?{i} ESCAPE '\\'"))
+            .collect::<Vec<_>>()
+            .join(" AND ");
         let sql = format!(
             "SELECT DISTINCT m.asset_id FROM asset_media m JOIN assets a ON a.asset_id = m.asset_id
-             WHERE a.deleted_at IS NULL AND m.doc_kind <> 'photo' AND {clauses} LIMIT 1000"
+             WHERE a.deleted_at IS NULL AND m.doc_kind <> 'photo' AND {clauses}
+             UNION
+             SELECT DISTINCT at.asset_id FROM asset_tags at JOIN tags t ON t.tag_id = at.tag_id
+             JOIN assets a ON a.asset_id = at.asset_id
+             WHERE a.deleted_at IS NULL AND {tag_clauses}
+             LIMIT 1000"
         );
         let mut stmt = vault.conn().prepare(&sql)?;
         let by_document = stmt

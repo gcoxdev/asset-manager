@@ -13,6 +13,7 @@ pub mod header;
 pub mod lifecycle;
 pub mod migrate;
 pub mod objects;
+pub mod organize;
 pub mod pricing;
 pub mod scanning;
 pub mod series;

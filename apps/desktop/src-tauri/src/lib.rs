@@ -9,6 +9,7 @@ pub mod crypto_provider;
 pub mod ipc;
 pub mod metals_commands;
 pub mod metals_provider;
+pub mod organize_commands;
 pub mod paths;
 pub mod protocol;
 pub mod report_commands;
@@ -112,6 +113,18 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             asset_commands::void_valuation,
             asset_commands::asset_revisions,
             asset_commands::restore_revision,
+            // Organizing
+            organize_commands::list_tags,
+            organize_commands::set_asset_tags,
+            organize_commands::rename_tag,
+            organize_commands::list_locations,
+            organize_commands::rename_location,
+            organize_commands::bulk_edit,
+            organize_commands::bulk_trash,
+            organize_commands::duplicate_asset,
+            organize_commands::list_saved_views,
+            organize_commands::save_view,
+            organize_commands::delete_saved_view,
             asset_commands::set_pricing,
             asset_commands::import_photo,
             asset_commands::list_photos,

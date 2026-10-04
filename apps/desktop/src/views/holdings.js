@@ -8,7 +8,7 @@ import { h, mount, debounce } from "../lib/dom.js";
 import { icon, typeIcon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
 import * as store from "../lib/store.js";
-import { sourceBadge, statusBadge, emptyState, select, segmented, busy, toast, toastError, menuButton } from "../ui/components.js";
+import { sourceBadge, statusBadge, emptyState, select, segmented, busy, toast, toastError, menuButton, modal, field, confirmDialog, tagsInput, suggestInput } from "../ui/components.js";
 import { openAddAsset } from "./asset-forms.js";
 import { exportCsv, importCsv } from "./reports.js";
 
@@ -69,10 +69,23 @@ export async function renderHoldings(root, params, ctx) {
   let special = params.filter ?? null; // "unvalued" | "review"
   if (special) prefs.status = "active";
 
-  const [assets, settings] = await Promise.all([store.assets(), store.settings()]);
+  const [assets, settings, tagList, locationList, savedViews] = await Promise.all([
+    store.assets(),
+    store.settings(),
+    call("list_tags"),
+    call("list_locations"),
+    call("list_saved_views"),
+  ]);
   let searchIds = null;
   let bulk = false;
   let shown = PAGE;
+  // Selecting many for one change. Kept across redraws (sorting, filtering)
+  // until the action is done or selection is turned off.
+  let selecting = false;
+  const selected = new Set();
+  // Unsaved bulk values survive a redraw — a sort, a filter — rather than
+  // vanishing; leaving bulk entry with any asks first.
+  const drafts = new Map();
 
   const search = h("input", { type: "search", class: "search-input", placeholder: "Search names, notes, cert numbers…", value: prefs.query, "data-search": "", "aria-label": "Search holdings" });
   const results = h("div", { class: "results" });
@@ -84,6 +97,70 @@ export async function renderHoldings(root, params, ctx) {
   const sortSelect = select(SORTS, prefs.sort, { "aria-label": "Sort" });
   sortSelect.addEventListener("change", () => { prefs.sort = sortSelect.value; draw(); });
   const layout = segmented([["list", "List"], ["grid", "Grid"]], prefs.layout, (v) => { prefs.layout = v; draw(); });
+
+  // --- filters beyond category and status ---------------------------------
+  const tagSelect = select([["", "Any tag"], ...tagList.map((t) => [t.name, `${t.name} (${t.count})`])], prefs.tag, { "aria-label": "Tag" });
+  tagSelect.addEventListener("change", () => { prefs.tag = tagSelect.value; shown = PAGE; draw(); });
+  const locationSelect = select([["", "Any location"], ...locationList.map((l) => [l.name, l.name])], prefs.location, { "aria-label": "Location" });
+  locationSelect.addEventListener("change", () => { prefs.location = locationSelect.value; shown = PAGE; draw(); });
+  const missingSelect = select([
+    ["", "Nothing missing"], ["photo", "No photo"], ["document", "No documents"], ["value", "No value"], ["insurance", "No insured value"], ["review", "Due for review"],
+  ], prefs.missing, { "aria-label": "Missing" });
+  missingSelect.addEventListener("change", () => { prefs.missing = missingSelect.value; shown = PAGE; draw(); });
+
+  // --- saved views ------------------------------------------------------------
+  const VIEW_KEYS = ["query", "category", "status", "sort", "tag", "location", "missing"];
+  const applyView = (view) => {
+    for (const k of VIEW_KEYS) if (k in view) prefs[k] = view[k];
+    ctx.refresh();
+  };
+  const viewsMenu = menuButton(h("button", { class: "btn btn-secondary", "aria-label": "Saved views" }, icon("filter", { size: 16 }), "Views"), [
+    ...savedViews.map((v) => ({ label: v.name, onSelect: () => applyView(v.view) })),
+    savedViews.length ? "divider" : null,
+    { label: "Save this view…", icon: "plus", onSelect: () => saveView() },
+    savedViews.length ? { label: "Delete a view…", icon: "trash", onSelect: () => deleteView() } : null,
+  ]);
+  async function saveView() {
+    const name = h("input", { type: "text", maxlength: 80, autofocus: true, placeholder: "e.g. Uninsured watches in the safe" });
+    const m = modal({
+      title: "Save this view",
+      size: "sm",
+      body: h("div", { class: "stack" },
+        field("Name", name),
+        h("p", { class: "field-hint" }, "Saves the search, filters and sort as they are now. Saved views are kept inside the encrypted vault.")),
+      footer: (close) => [h("button", { class: "btn btn-ghost", onclick: () => close(false) }, "Cancel"), h("button", { class: "btn btn-primary", onclick: () => close(true) }, "Save")],
+    });
+    if (!(await m.done)) return;
+    const view = Object.fromEntries(VIEW_KEYS.map((k) => [k, prefs[k]]));
+    try {
+      await call("save_view", { name: name.value, view });
+      toast("View saved.", { kind: "success" });
+      ctx.refresh();
+    } catch (e) { toastError(e); }
+  }
+  async function deleteView() {
+    const choice = select(savedViews.map((v) => [v.name, v.name]), savedViews[0]?.name);
+    const m = modal({
+      title: "Delete a saved view",
+      size: "sm",
+      body: field("View", choice),
+      footer: (close) => [h("button", { class: "btn btn-ghost", onclick: () => close(false) }, "Cancel"), h("button", { class: "btn btn-danger", onclick: () => close(true) }, "Delete")],
+    });
+    if (!(await m.done)) return;
+    try {
+      await call("delete_saved_view", { name: choice.value });
+      ctx.refresh();
+    } catch (e) { toastError(e); }
+  }
+
+  const selectButton = h("button", { class: "btn btn-secondary", "aria-pressed": "false", onclick: () => {
+    selecting = !selecting;
+    if (!selecting) selected.clear();
+    selectButton.setAttribute("aria-pressed", String(selecting));
+    selectButton.classList.toggle("active", selecting);
+    if (selecting) prefs.layout = "list";
+    draw();
+  } }, icon("check", { size: 16 }), "Select");
 
   // Searches can finish out of order — a short query is slower than the
   // longer one typed after it — so only the latest is applied, and none once
@@ -114,6 +191,7 @@ export async function renderHoldings(root, params, ctx) {
   const addButton = h("button", { class: "btn btn-primary", onclick: () => openAddAsset({ onSaved: (id) => ctx.navigate("asset", { id }) }) }, icon("plus", { size: 16 }), "Add asset");
   const more = menuButton(h("button", { class: "btn btn-secondary", "aria-label": "More actions" }, icon("more")), [
     { label: "Update many values…", icon: "edit", onSelect: () => { bulk = true; prefs.layout = "list"; draw(); } },
+    { label: "Tags & locations…", icon: "tag", onSelect: () => manageNames(tagList, locationList, ctx) },
     "divider",
     { label: "Import CSV…", icon: "upload", onSelect: () => importCsv(() => ctx.refresh()) },
     { label: "Export CSV…", icon: "download", onSelect: () => exportCsv() },
@@ -127,6 +205,17 @@ export async function renderHoldings(root, params, ctx) {
     if (prefs.category !== "all") list = list.filter((a) => a.category === prefs.category);
     if (special === "unvalued") list = list.filter((a) => a.current_amount_minor == null);
     if (special === "review") list = list.filter((a) => a.review_due);
+    if (prefs.tag) list = list.filter((a) => a.tags?.some((t) => t.toLowerCase() === prefs.tag.toLowerCase()));
+    // A location includes the places inside it: "Safe" finds "Safe / Top shelf".
+    if (prefs.location) list = list.filter((a) => a.storage_location === prefs.location || a.storage_location?.startsWith(`${prefs.location} / `));
+    switch (prefs.missing) {
+      case "photo": list = list.filter((a) => !a.primary_photo); break;
+      case "document": list = list.filter((a) => !a.document_count); break;
+      case "value": list = list.filter((a) => a.current_amount_minor == null); break;
+      case "insurance": list = list.filter((a) => a.insured_amount_minor == null); break;
+      case "review": list = list.filter((a) => a.review_due); break;
+      default: break;
+    }
 
     if (searchIds) {
       const rank = new Map(searchIds.map((id, i) => [id, i]));
@@ -196,9 +285,16 @@ export async function renderHoldings(root, params, ctx) {
       ? h("button", { class: "btn btn-secondary load-more", onclick: () => { shown = list.length; draw(); } }, `Show all ${list.length}`)
       : null;
 
-    if (bulk) mount(results, bulkTable(page, settings, () => { bulk = false; ctx.refresh(); }, () => { bulk = false; draw(); }), moreButton);
+    const leaveBulk = async () => {
+      const unsaved = [...drafts.values()].filter((d) => d.value !== d.original).length;
+      if (unsaved && !(await confirmDialog({ title: "Discard unsaved values?", message: `${unsaved} value${unsaved === 1 ? " has" : "s have"} not been saved.`, confirmLabel: "Discard", danger: true }))) return;
+      drafts.clear();
+      bulk = false;
+      draw();
+    };
+    if (bulk) mount(results, bulkTable(page, settings, drafts, () => { bulk = false; drafts.clear(); ctx.refresh(); }, leaveBulk), moreButton);
     else if (prefs.layout === "grid") mount(results, grid(page, ctx), moreButton);
-    else mount(results, table(page, ctx), moreButton);
+    else mount(results, selecting ? selectionBar(list, page) : null, table(page, ctx, selecting ? { selected, onToggle: () => draw() } : null), moreButton);
   }
 
   mount(
@@ -211,10 +307,83 @@ export async function renderHoldings(root, params, ctx) {
       h("div", { class: "search" }, icon("search", { size: 17 }), search),
       h("div", { class: "toolbar-right" }, statusSelect, sortSelect, layout.el)
     ),
+    h("div", { class: "toolbar toolbar-filters" },
+      h("div", { class: "toolbar-right" }, tagSelect, locationSelect, missingSelect),
+      h("div", { class: "toolbar-right" }, viewsMenu, selectButton)
+    ),
     chips,
     summary,
     results
   );
+
+  /** What can be done to everything selected. */
+  function selectionBar(list, page) {
+    const ids = () => [...selected];
+    const n = selected.size;
+    const run = async (label, action) => {
+      try {
+        const count = await action();
+        if (count === undefined) return;
+        store.invalidate();
+        toast(`${label} — ${count} asset${count === 1 ? "" : "s"}.`, { kind: "success" });
+        selected.clear();
+        ctx.refresh();
+      } catch (e) { toastError(e); }
+    };
+    const bulkEdit = (label, change) => run(label, () => call("bulk_edit", { assetIds: ids(), change }));
+    const ask = async (title, control, hint) => {
+      const m = modal({
+        title,
+        subtitle: `${n} selected`,
+        size: "sm",
+        body: h("div", { class: "stack" }, control.el ?? control, hint ? h("p", { class: "field-hint" }, hint) : null),
+        footer: (close) => [h("button", { class: "btn btn-ghost", onclick: () => close(false) }, "Cancel"), h("button", { class: "btn btn-primary", onclick: () => close(true) }, "Apply")],
+      });
+      return m.done;
+    };
+    const actions = [
+      h("button", { class: "btn btn-secondary btn-sm", disabled: !n, onclick: async () => {
+        const tags = tagsInput([], tagList.map((t) => t.name), { label: "Tags to add" });
+        if (await ask("Add tags", tags)) bulkEdit("Tagged", { add_tags: tags.value() });
+      } }, "Add tags…"),
+      h("button", { class: "btn btn-secondary btn-sm", disabled: !n, onclick: async () => {
+        const present = [...new Set(assets.filter((a) => selected.has(a.asset_id)).flatMap((a) => a.tags ?? []))];
+        if (!present.length) return toast("None of the selected assets have tags.", { kind: "info" });
+        const choice = select(present.map((t) => [t, t]), present[0]);
+        if (await ask("Remove a tag", field("Tag", choice))) bulkEdit("Untagged", { remove_tags: [choice.value] });
+      } }, "Remove tag…"),
+      h("button", { class: "btn btn-secondary btn-sm", disabled: !n, onclick: async () => {
+        const where = suggestInput({ placeholder: "Leave blank to clear the location", maxlength: 500 }, locationList.map((l) => l.name));
+        if (await ask("Move to", field("Storage location", where.el), "Each item's previous location is kept in its edit history.")) {
+          bulkEdit("Moved", { storage_location: where.input.value.trim() || null });
+        }
+      } }, "Move to…"),
+      h("button", { class: "btn btn-secondary btn-sm", disabled: !n, onclick: async () => {
+        const review = select([["", "Never"], ["30", "Every month"], ["90", "Every 3 months"], ["180", "Every 6 months"], ["365", "Every year"]], "");
+        if (await ask("Revaluation reminder", field("Remind me to revalue", review))) {
+          bulkEdit("Reminder set", { review_every_days: review.value ? Number(review.value) : null });
+        }
+      } }, "Reminder…"),
+      h("button", { class: "btn btn-ghost btn-sm danger-text", disabled: !n, onclick: async () => {
+        const ok = await confirmDialog({ title: `Move ${n} asset${n === 1 ? "" : "s"} to the trash?`, message: "They leave the catalog, totals and reports, and can be restored from Settings → Trash for 30 days.", confirmLabel: "Move to trash", danger: true });
+        if (ok) run("Moved to trash", () => call("bulk_trash", { assetIds: ids() }));
+      } }, "Trash…"),
+    ];
+    const allShown = page.every((a) => selected.has(a.asset_id));
+    return h("div", { class: "bulk-bar selection-bar", role: "region", "aria-label": "Selection" },
+      h("div", {},
+        h("strong", {}, n ? `${n} selected` : "Select assets"),
+        " ",
+        h("button", { class: "link", onclick: () => {
+          if (allShown) for (const a of page) selected.delete(a.asset_id);
+          else for (const a of page) selected.add(a.asset_id);
+          draw();
+        } }, allShown ? "Clear shown" : `Select all ${page.length} shown`),
+        list.length > page.length ? h("span", { class: "muted small" }, ` (of ${list.length} — show all to select the rest)`) : null
+      ),
+      h("div", { class: "bulk-actions" }, actions)
+    );
+  }
 
   if (prefs.query) await runSearch();
   else draw();
@@ -251,10 +420,16 @@ function valueCell(a) {
   );
 }
 
-function table(list, ctx) {
-  const open = (a) => ctx.navigate("asset", { id: a.asset_id });
-  return h("table", { class: "table holdings-table" },
+function table(list, ctx, selection = null) {
+  const toggleRow = (a) => {
+    if (selection.selected.has(a.asset_id)) selection.selected.delete(a.asset_id);
+    else selection.selected.add(a.asset_id);
+    selection.onToggle();
+  };
+  const open = (a) => (selection ? toggleRow(a) : ctx.navigate("asset", { id: a.asset_id }));
+  return h("table", { class: selection ? "table holdings-table selecting" : "table holdings-table" },
     h("thead", {}, h("tr", {},
+      selection ? h("th", { class: "col-check" }, h("span", { class: "sr-only" }, "Selected")) : null,
       h("th", { class: "col-photo" }, h("span", { class: "sr-only" }, "Photo")),
       h("th", {}, "Name"),
       h("th", { class: "num" }, "Quantity"),
@@ -267,14 +442,27 @@ function table(list, ctx) {
         class: "row-link",
         tabindex: "0",
         onclick: () => open(a),
+        "aria-selected": selection ? String(selection.selected.has(a.asset_id)) : null,
         onkeydown: (e) => {
-          if (e.key === "Enter") open(a);
+          if (e.key === "Enter" || (selection && e.key === " ")) { e.preventDefault(); open(a); }
           if (e.key === "ArrowDown") { e.preventDefault(); e.currentTarget.nextElementSibling?.focus(); }
           if (e.key === "ArrowUp") { e.preventDefault(); e.currentTarget.previousElementSibling?.focus(); }
         },
       },
+        selection
+          ? h("td", { class: "col-check" }, h("input", {
+              type: "checkbox",
+              checked: selection.selected.has(a.asset_id),
+              "aria-label": `Select ${a.name}`,
+              onclick: (e) => { e.stopPropagation(); toggleRow(a); },
+            }))
+          : null,
         h("td", { class: "col-photo" }, thumb(a)),
-        h("td", {}, h("div", { class: "name-cell" }, h("span", { class: "name" }, a.name, statusBadge(a.status)), h("span", { class: "sub" }, subtitle(a)))),
+        h("td", {}, h("div", { class: "name-cell" },
+          h("span", { class: "name" }, a.name, statusBadge(a.status)),
+          h("span", { class: "sub" }, subtitle(a)),
+          a.tags?.length ? h("span", { class: "tag-list" }, a.tags.map((t) => h("span", { class: "tag-chip" }, t))) : null
+        )),
         h("td", { class: "num" }, fmt.quantity(a.quantity), h("span", { class: "unit" }, ` ${a.quantity_unit}`)),
         h("td", { class: "num" }, a.acquired_display ? fmt.money(a.acquired_display) : h("span", { class: "muted" }, "—")),
         h("td", { class: "num" }, valueCell(a)),
@@ -309,7 +497,7 @@ function grid(list, ctx) {
  * Bulk value entry. Each row is saved independently and reports back, so
  * one bad cell does not discard the rest.
  */
-function bulkTable(list, settings, onDone, onCancel) {
+function bulkTable(list, settings, drafts, onDone, onCancel) {
   const asof = h("input", { type: "date", value: fmt.todayIso(), max: fmt.todayIso(), "aria-label": "Values as of" });
   const inputs = new Map();
   const errors = new Map();
@@ -323,9 +511,13 @@ function bulkTable(list, settings, onDone, onCancel) {
 
   const rows = list.map((a, index) => {
     const original = a.current_display ? a.current_display.split(" ")[0] : "";
-    const input = h("input", { type: "text", inputmode: "decimal", class: "input-money bulk-input", value: original, placeholder: "—", "aria-label": `Value of ${a.name}` });
+    const draft = drafts.get(a.asset_id);
+    const input = h("input", { type: "text", inputmode: "decimal", class: "input-money bulk-input", value: draft ? draft.value : original, placeholder: "—", "aria-label": `Value of ${a.name}` });
     input.dataset.original = original;
-    input.addEventListener("input", countChanges);
+    input.addEventListener("input", () => {
+      drafts.set(a.asset_id, { value: input.value.trim(), original });
+      countChanges();
+    });
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" || e.key === "ArrowDown") { e.preventDefault(); [...inputs.values()][index + 1]?.focus(); }
       if (e.key === "ArrowUp") { e.preventDefault(); [...inputs.values()][index - 1]?.focus(); }
@@ -362,7 +554,11 @@ function bulkTable(list, settings, onDone, onCancel) {
       const saved = results.length - failed;
       if (failed) {
         toast(`Saved ${saved}; ${failed} need${failed === 1 ? "s" : ""} fixing.`, { kind: "warning" });
-        for (const r of results) if (r.ok) inputs.get(r.asset_id).dataset.original = inputs.get(r.asset_id).value.trim();
+        for (const r of results) {
+          if (!r.ok) continue;
+          inputs.get(r.asset_id).dataset.original = inputs.get(r.asset_id).value.trim();
+          drafts.delete(r.asset_id);
+        }
         countChanges();
       } else {
         toast(`Saved ${saved} value${saved === 1 ? "" : "s"}.`, { kind: "success" });
@@ -381,4 +577,44 @@ function bulkTable(list, settings, onDone, onCancel) {
       h("tbody", {}, rows)
     )
   );
+}
+
+/**
+ * Rename a tag (merging into another of that name), or move a location —
+ * everything stored there, and in places inside it, comes along.
+ */
+function manageNames(tagList, locationList, ctx) {
+  const row = (kind, item) => {
+    const input = h("input", { type: "text", value: item.name, maxlength: kind === "tag" ? 60 : 500, "aria-label": `New name for ${item.name}` });
+    const apply = h("button", { class: "btn btn-secondary btn-sm", onclick: () => busy(apply, async () => {
+      const to = input.value.trim();
+      if (!to || to === item.name) return;
+      if (kind === "tag") {
+        await call("rename_tag", { from: item.name, to });
+        toast(`Renamed tag to “${to}”.`, { kind: "success" });
+      } else {
+        const n = await call("rename_location", { from: item.name, to });
+        toast(`Moved ${n} asset${n === 1 ? "" : "s"} to “${to}”.`, { kind: "success" });
+      }
+      store.invalidate();
+      m.close();
+      ctx.refresh();
+    }) }, kind === "tag" ? "Rename" : "Move");
+    return h("tr", {}, h("td", {}, input), h("td", { class: "num muted small" }, String(item.count)), h("td", { class: "row-action" }, apply));
+  };
+  const section = (title, hint, kind, items) => h("section", { class: "stack" },
+    h("h3", {}, title),
+    h("p", { class: "field-hint" }, hint),
+    items.length
+      ? h("table", { class: "table compact" }, h("tbody", {}, items.map((i) => row(kind, i))))
+      : h("p", { class: "muted small" }, kind === "tag" ? "No tags yet." : "No locations yet.")
+  );
+  const m = modal({
+    title: "Tags & locations",
+    size: "md",
+    body: h("div", { class: "stack" },
+      section("Tags", "Renaming onto an existing tag merges the two.", "tag", tagList),
+      section("Locations", "Moving a location moves everything at it, including places inside it (Safe / Top shelf). Each item's previous location stays in its edit history.", "location", locationList)
+    ),
+  });
 }
