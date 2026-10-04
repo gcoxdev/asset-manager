@@ -43,7 +43,7 @@ rust_decimal = { version = "1", default-features = false, features = ["serde", "
 # links a *system* libcrypto, which would make the AppImage depend on whatever
 # OpenSSL the host happens to have. Vendoring is what makes the bundle
 # self-contained across distros.
-rusqlite = { version = "0.37", features = [
+rusqlite = { version = "0.40", features = [
     "bundled-sqlcipher-vendored-openssl",
     "backup", # SQLCipher-aware online backup; a plain file copy is not crash-safe
 ] }
