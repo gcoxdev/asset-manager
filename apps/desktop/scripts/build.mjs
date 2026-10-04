@@ -13,7 +13,9 @@
 // afterwards as a separate step.
 
 import { spawnSync } from "node:child_process";
-import { chmod, copyFile, readdir, stat, unlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { chmod, copyFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -67,7 +69,21 @@ if (result.status !== 0) {
   process.exit(result.status ?? 1);
 }
 
-await renameOutputs(target);
+const artifacts = await renameOutputs(target);
+for (const file of artifacts) await writeChecksum(file);
+
+/**
+ * `<artifact>.sha256`, in the format `sha256sum -c` reads. Publish these
+ * beside the downloads (and sign them — see docs/releasing.md) so a
+ * download can be checked against what was built.
+ */
+async function writeChecksum(file) {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  const line = `${hash.digest("hex")}  ${path.basename(file)}\n`;
+  await writeFile(`${file}.sha256`, line);
+  console.log(`→ ${file}.sha256`);
+}
 
 /** Give artifacts a stable name so CI and release scripts need not glob. */
 async function renameOutputs({ bundles, targetTriple }) {
@@ -76,6 +92,7 @@ async function renameOutputs({ bundles, targetTriple }) {
     ? path.join(repoRoot, "target", targetTriple, "release")
     : path.join(repoRoot, "target", "release");
 
+  const written = [];
   for (const bundle of bundles) {
     const layout = BUNDLE_LAYOUT[bundle];
     if (!layout) continue;
@@ -95,7 +112,9 @@ async function renameOutputs({ bundles, targetTriple }) {
       await unlink(source);
     }
     console.log(`→ ${destination}`);
+    written.push(destination);
   }
+  return written;
 }
 
 function validateName(value) {

@@ -164,3 +164,9 @@ WebKitGTK/Mesa issue, not a configuration problem.
 [AGPL-3.0](LICENSE). Parts of `am-crypto` are adapted from
 [QiRing](https://github.com/gcoxdev/QiRing); see
 [`crates/am-crypto/VENDOR.md`](crates/am-crypto/VENDOR.md).
+
+## Security and releases
+
+Report vulnerabilities privately — see [SECURITY.md](SECURITY.md). How
+releases are checked and signed, and how to verify a download, is in
+[docs/releasing.md](docs/releasing.md).
