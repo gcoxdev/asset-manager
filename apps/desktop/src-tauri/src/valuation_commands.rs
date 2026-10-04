@@ -5,7 +5,7 @@
 //! pleasant: single edits, bulk edits, and a portfolio view that is honest
 //! about what it could not price.
 
-use am_core::{parse_decimal, Currency, Decimal};
+use am_core::{parse_decimal, Currency, Decimal, Money};
 use am_storage::assets::{self, Pricing};
 use am_storage::events::{self, EventType, NewEvent};
 use am_storage::valuations::{self, Basis, NewValuation, Provenance};
@@ -35,6 +35,122 @@ pub struct PriceEntry {
     pub provenance: Option<String>,
     #[serde(default)]
     pub note: Option<String>,
+    /// Why it is worth this: comparables, a range, a confidence, the
+    /// appraisal. Kept with the valuation so the history explains itself.
+    #[serde(default)]
+    pub evidence: Option<Evidence>,
+}
+
+#[derive(Deserialize, Default)]
+pub struct Evidence {
+    #[serde(default)]
+    pub comparables: Vec<Comparable>,
+    #[serde(default)]
+    pub low: Option<String>,
+    #[serde(default)]
+    pub high: Option<String>,
+    /// "low", "medium" or "high".
+    #[serde(default)]
+    pub confidence: Option<String>,
+    /// An attachment of this asset — the appraisal, a printed listing.
+    #[serde(default)]
+    pub document: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct Comparable {
+    pub description: String,
+    /// Major units as written.
+    pub price: String,
+    /// "sold", "asking" or "auction".
+    pub kind: String,
+    #[serde(default)]
+    pub date: Option<String>,
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// Check evidence and turn it into what is stored in the valuation's inputs:
+/// amounts in minor units with the valuation's currency, dates normalized.
+fn evidence_json(
+    vault: &am_storage::vault::Vault,
+    asset_id: &str,
+    evidence: &Evidence,
+    value: &Money,
+    today: &str,
+) -> Result<serde_json::Value, String> {
+    let currency = value.currency.clone();
+    let money = |text: &str| {
+        parse_money(text, &currency).map(|m| m.amount_minor).map_err(|e| e.message)
+    };
+    if evidence.comparables.len() > 20 {
+        return Err("up to 20 comparables".into());
+    }
+    let mut comparables = Vec::new();
+    for c in &evidence.comparables {
+        let description = c.description.trim();
+        if description.is_empty() || description.chars().count() > 300 {
+            return Err("each comparable needs a short description".into());
+        }
+        if !["sold", "asking", "auction"].contains(&c.kind.as_str()) {
+            return Err(format!("unknown kind of comparable: {}", c.kind));
+        }
+        let date = match c.date.as_deref().map(str::trim) {
+            None | Some("") => None,
+            Some(d) => {
+                let d = events::normalize_date(d).map_err(|e| e.to_string())?;
+                if d.as_str() > today {
+                    return Err("a comparable cannot be dated in the future".into());
+                }
+                Some(d)
+            }
+        };
+        comparables.push(serde_json::json!({
+            "description": description,
+            "price_minor": money(&c.price)?,
+            "kind": c.kind,
+            "date": date,
+            "source": c.source.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+        }));
+    }
+    let low =
+        evidence.low.as_deref().filter(|s| !s.trim().is_empty()).map(money).transpose()?;
+    let high =
+        evidence.high.as_deref().filter(|s| !s.trim().is_empty()).map(money).transpose()?;
+    if let (Some(l), Some(h)) = (low, high) {
+        if l > h {
+            return Err("the low end of the range is above the high end".into());
+        }
+    }
+    if low.is_some_and(|l| l > value.amount_minor)
+        || high.is_some_and(|h| h < value.amount_minor)
+    {
+        return Err("the value is outside the range given for it".into());
+    }
+    let confidence = evidence.confidence.as_deref().filter(|c| !c.is_empty());
+    if confidence.is_some_and(|c| !["low", "medium", "high"].contains(&c)) {
+        return Err("confidence is low, medium or high".into());
+    }
+    if let Some(object_id) = &evidence.document {
+        let attached: i64 = vault
+            .conn()
+            .query_row(
+                "SELECT count(*) FROM asset_media WHERE asset_id = ?1 AND object_id = ?2",
+                [asset_id, object_id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if attached == 0 {
+            return Err("that document is not attached to this asset".into());
+        }
+    }
+    Ok(serde_json::json!({
+        "comparables": comparables,
+        "low_minor": low,
+        "high_minor": high,
+        "confidence": confidence,
+        "document": evidence.document,
+    }))
 }
 
 #[derive(Serialize)]
@@ -105,16 +221,28 @@ pub fn set_prices(
                         &NewValuation {
                             asset_id: entry.asset_id.clone(),
                             quote_id: None,
-                            value: money,
+                            value: money.clone(),
                             quantity_at_time: quantity,
                             basis: basis_from(entry.basis.as_deref()),
                             provenance: match entry.provenance.as_deref() {
                                 Some("appraisal") => Provenance::Appraisal,
                                 _ => Provenance::Manual,
                             },
-                            inputs: serde_json::json!({
-                                "note": entry.note.clone().unwrap_or_default(),
-                            }),
+                            inputs: {
+                                let mut inputs = serde_json::json!({
+                                    "note": entry.note.clone().unwrap_or_default(),
+                                });
+                                if let Some(evidence) = &entry.evidence {
+                                    inputs["evidence"] = evidence_json(
+                                        vault,
+                                        &entry.asset_id,
+                                        evidence,
+                                        &money,
+                                        &today,
+                                    )?;
+                                }
+                                inputs
+                            },
                             asof,
                         },
                         &timestamp,

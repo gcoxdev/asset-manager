@@ -436,7 +436,8 @@ function historyCard(a, detail, reload) {
       h("td", { class: "num" }, fmt.money(v.amount)),
       h("td", {}, h("div", { class: "name-cell" },
         h("span", {}, v.voided_at ? `Voided — ${v.void_reason ?? "no reason given"}` : fmt.PROVENANCE_LABELS[v.provenance] ?? v.provenance),
-        h("span", { class: "sub" }, [fmt.BASIS_LABELS[v.basis] ?? v.basis, `${fmt.quantity(v.quantity_at_time)} held`, v.unit_price ? `at ${fmt.unitPrice(v.unit_price, v.currency)}` : null, v.note].filter(Boolean).join(" · "))
+        h("span", { class: "sub" }, [fmt.BASIS_LABELS[v.basis] ?? v.basis, `${fmt.quantity(v.quantity_at_time)} held`, v.unit_price ? `at ${fmt.unitPrice(v.unit_price, v.currency)}` : null, v.note].filter(Boolean).join(" · ")),
+        v.evidence ? evidenceDetails(v.evidence) : null
       )),
       h("td", { class: "row-action" }, v.voided_at ? null
         : h("button", { class: "icon-btn", title: "Void this value", "aria-label": `Void the value of ${v.amount} on ${v.asof}`, onclick: () => voidValuation(v, reload) }, icon("x", { size: 14 })))
@@ -452,6 +453,26 @@ function historyCard(a, detail, reload) {
     notes.length ? h("p", { class: "chart-notes" }, notes.join(" ")) : null,
     h("table", { class: "table compact" }, h("caption", { class: "sr-only" }, "Every recorded value, newest first"), tbody),
     showAll
+  );
+}
+
+const COMPARABLE_LABELS = { sold: "Sold", auction: "Auction", asking: "Asking" };
+
+/** Why a value is what it is, folded away under the row. */
+function evidenceDetails(e) {
+  const summary = [
+    e.comparables.length ? `${e.comparables.length} comparable${e.comparables.length === 1 ? "" : "s"}` : null,
+    e.range ? `range ${e.range.split(" – ").map((x) => (x.startsWith("from ") || x.startsWith("up to ") ? x : fmt.money(x))).join(" – ")}` : null,
+    e.confidence ? `${e.confidence} confidence` : null,
+  ].filter(Boolean).join(" · ") || "Evidence";
+  return h("details", { class: "evidence" },
+    h("summary", {}, summary),
+    e.comparables.length
+      ? h("ul", {}, e.comparables.map((c) => h("li", {},
+          `${COMPARABLE_LABELS[c.kind] ?? c.kind} ${c.price ? fmt.money(c.price) : ""} — ${c.description}`,
+          c.date ? ` (${fmt.date(c.date)})` : "")))
+      : null,
+    e.document_title ? h("p", { class: "muted small" }, `On file: ${e.document_title}`) : null
   );
 }
 

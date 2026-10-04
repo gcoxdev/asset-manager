@@ -241,6 +241,29 @@ fn the_frontend_contract_holds_end_to_end() {
         ]}),
     );
     assert_eq!(results[0]["ok"], true, "{results}");
+    // A value with its reasons; a range that excludes the value is refused.
+    let explained = ok(
+        &w,
+        "set_prices",
+        json!({ "entries": [
+            { "asset_id": comic, "amount": "1,250,000", "currency": "USD", "asof": null,
+              "basis": "estimated_resale", "provenance": "manual", "note": null,
+              "evidence": { "comparables": [
+                  { "description": "CGC 9.8, Heritage", "price": "1,200,000", "kind": "sold", "date": "2026-06-01" },
+                  { "description": "CGC 9.8, eBay", "price": "1,400,000", "kind": "asking" } ],
+                "low": "1,100,000", "high": "1,400,000", "confidence": "medium" } },
+            { "asset_id": eagles, "amount": "25000", "currency": "USD", "asof": null,
+              "evidence": { "low": "26000" } }
+        ]}),
+    );
+    assert_eq!(explained[0]["ok"], true, "{explained}");
+    assert_eq!(explained[1]["ok"], false, "the value is outside its own range");
+    let why = ok(&w, "get_asset", json!({ "assetId": comic }));
+    let evidence = &why["valuations"][0]["evidence"];
+    assert_eq!(evidence["comparables"][0]["price"], "1200000.00 USD");
+    assert_eq!(evidence["range"], "1100000.00 USD – 1400000.00 USD");
+    assert_eq!(evidence["confidence"], "medium");
+
     let detail = ok(&w, "get_asset", json!({ "assetId": eagles }));
     assert_eq!(detail["asset"]["pricing"], "manual", "a typed price stops market tracking");
     assert_eq!(detail["valuations"][0]["note"], "dealer quote");
@@ -360,8 +383,13 @@ fn the_frontend_contract_holds_end_to_end() {
     // The edit can be undone from its history, and a mistyped value voided.
     let revisions = ok(&w, "asset_revisions", json!({ "assetId": comic }));
     assert_eq!(revisions[0]["snapshot"]["status"], "active");
-    let valuation = detail["valuations"][0]["valuation_id"].clone();
-    ok(&w, "void_valuation", json!({ "valuationId": valuation, "reason": "typo" }));
+    for valuation in detail["valuations"].as_array().unwrap() {
+        ok(
+            &w,
+            "void_valuation",
+            json!({ "valuationId": valuation["valuation_id"], "reason": "typo" }),
+        );
+    }
     let voided = ok(&w, "get_asset", json!({ "assetId": comic }));
     assert_eq!(voided["valuations"][0]["void_reason"], "typo");
     assert_eq!(voided["asset"]["current_display"], Value::Null, "unknown, not zero");

@@ -161,6 +161,77 @@ pub struct ValuationView {
     /// Set when the value was voided as a mistake; it then counts for nothing.
     pub voided_at: Option<String>,
     pub void_reason: Option<String>,
+    /// Why it was valued so, when the owner said.
+    pub evidence: Option<EvidenceView>,
+}
+
+#[derive(Serialize)]
+pub struct EvidenceView {
+    pub comparables: Vec<ComparableView>,
+    /// "4000.00 USD – 5000.00 USD".
+    pub range: Option<String>,
+    pub confidence: Option<String>,
+    pub document: Option<String>,
+    pub document_title: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct ComparableView {
+    pub description: String,
+    pub price: Option<String>,
+    pub kind: String,
+    pub date: Option<String>,
+    pub source: Option<String>,
+}
+
+fn evidence_view(
+    vault: &Vault,
+    asset_id: &str,
+    inputs: &serde_json::Value,
+    currency: &str,
+) -> Option<EvidenceView> {
+    let e = inputs.get("evidence")?;
+    let money = |v: &serde_json::Value| format_money(v.as_i64(), Some(currency));
+    let text = |v: &serde_json::Value| v.as_str().map(str::to_string);
+    let comparables = e
+        .get("comparables")
+        .and_then(|c| c.as_array())
+        .map(|list| {
+            list.iter()
+                .map(|c| ComparableView {
+                    description: text(&c["description"]).unwrap_or_default(),
+                    price: money(&c["price_minor"]),
+                    kind: text(&c["kind"]).unwrap_or_default(),
+                    date: text(&c["date"]),
+                    source: text(&c["source"]),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let range = match (money(&e["low_minor"]), money(&e["high_minor"])) {
+        (Some(l), Some(h)) => Some(format!("{l} – {h}")),
+        (Some(l), None) => Some(format!("from {l}")),
+        (None, Some(h)) => Some(format!("up to {h}")),
+        _ => None,
+    };
+    let document = text(&e["document"]);
+    let document_title = document.as_ref().and_then(|object_id| {
+        vault
+            .conn()
+            .query_row(
+                "SELECT coalesce(title, doc_kind) FROM asset_media WHERE asset_id = ?1 AND object_id = ?2",
+                [asset_id, object_id],
+                |r| r.get(0),
+            )
+            .ok()
+    });
+    Some(EvidenceView {
+        comparables,
+        range,
+        confidence: text(&e["confidence"]),
+        document,
+        document_title,
+    })
 }
 
 #[derive(Serialize)]
@@ -246,10 +317,13 @@ fn valuations_of(vault: &Vault, asset_id: &str) -> Result<Vec<ValuationView>, Se
             let minor: i64 = r.get(2)?;
             let code: String = r.get(3)?;
             let inputs: String = r.get(7)?;
-            let note = serde_json::from_str::<serde_json::Value>(&inputs)
-                .ok()
-                .and_then(|v| v.get("note").and_then(|n| n.as_str()).map(str::to_string))
+            let parsed = serde_json::from_str::<serde_json::Value>(&inputs).unwrap_or_default();
+            let note = parsed
+                .get("note")
+                .and_then(|n| n.as_str())
+                .map(str::to_string)
                 .filter(|n| !n.is_empty());
+            let evidence = evidence_view(vault, asset_id, &parsed, &code);
             Ok(ValuationView {
                 valuation_id: r.get(0)?,
                 asof: r.get(1)?,
@@ -265,6 +339,7 @@ fn valuations_of(vault: &Vault, asset_id: &str) -> Result<Vec<ValuationView>, Se
                 quote_asof: r.get(10)?,
                 voided_at: r.get(11)?,
                 void_reason: r.get::<_, String>(12).ok().filter(|s| !s.is_empty()),
+                evidence,
             })
         })
         .map_err(storage)?

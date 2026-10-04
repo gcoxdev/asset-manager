@@ -836,12 +836,13 @@ export async function openUpdateValue(asset, { onSaved } = {}) {
   const note = textInput({ placeholder: "e.g. three recent sold listings, CGC 9.8", maxlength: 500 });
   const error = h("p", { class: "form-error", role: "alert" });
   amount.input.setAttribute("autofocus", "");
+  const evidence = evidenceFields(asset, asset.current_currency ?? settings.currency);
 
   const save = h("button", { class: "btn btn-primary", type: "submit", form: "value-form" }, "Save value");
   const m = modal({
     title: "Update value",
     subtitle: asset.name,
-    size: "sm",
+    size: "md",
     body: h("form", {
       id: "value-form",
       class: "stack",
@@ -854,7 +855,7 @@ export async function openUpdateValue(asset, { onSaved } = {}) {
         }
         await busy(save, async () => {
           const [result] = await call("set_prices", {
-            entries: [{ asset_id: asset.asset_id, amount: amount.value(), currency: asset.current_currency ?? settings.currency, asof: asof.value, basis: basis.value, provenance: source.value, note: note.value.trim() || null }],
+            entries: [{ asset_id: asset.asset_id, amount: amount.value(), currency: asset.current_currency ?? settings.currency, asof: asof.value, basis: basis.value, provenance: source.value, note: note.value.trim() || null, evidence: evidence.value() }],
           });
           if (!result.ok) {
             error.textContent = describe({ message: result.error ?? "could not save that value" });
@@ -872,11 +873,67 @@ export async function openUpdateValue(asset, { onSaved } = {}) {
       h("div", { class: "form-grid" }, field("As of", asof), field("What it measures", basis)),
       field("Source", source),
       field("Note", note),
+      evidence.el,
       error
     ),
     footer: (close) => [h("button", { class: "btn btn-ghost", onclick: () => close() }, "Cancel"), save],
   });
   return m.done;
+}
+
+/**
+ * Why it is worth this: comparable sales or listings, a range, how sure,
+ * and the appraisal on file. All optional; kept with the valuation so its
+ * history explains itself. Returns {el, value()}; value() is null when
+ * nothing was given.
+ */
+function evidenceFields(asset, currency) {
+  const rows = [];
+  const list = h("div", { class: "stack" });
+  const addRow = () => {
+    const description = h("input", { type: "text", maxlength: 300, placeholder: "e.g. Same grade, Heritage auction", "aria-label": "Comparable" });
+    const kind = select([["sold", "Sold"], ["auction", "Auction result"], ["asking", "Asking"]], "sold", { "aria-label": "Kind" });
+    const price = h("input", { type: "text", inputmode: "decimal", class: "input-money", placeholder: "0.00", "aria-label": "Price" });
+    const date = h("input", { type: "date", max: fmt.todayIso(), "aria-label": "Date" });
+    const row = { description, kind, price, date };
+    const remove = h("button", { type: "button", class: "icon-btn", "aria-label": "Remove comparable", onclick: () => { rows.splice(rows.indexOf(row), 1); el.remove(); } }, icon("x", { size: 14 }));
+    const el = h("div", { class: "comparable-row" }, description, kind, h("div", { class: "input-affix" }, h("span", { class: "affix" }, currency), price), date, remove);
+    rows.push(row);
+    list.append(el);
+    description.focus();
+  };
+  const low = h("input", { type: "text", inputmode: "decimal", class: "input-money", placeholder: "Low" });
+  const high = h("input", { type: "text", inputmode: "decimal", class: "input-money", placeholder: "High" });
+  const confidence = select([["", "Not said"], ["low", "Low — a rough guess"], ["medium", "Medium"], ["high", "High — solid comparables or an appraisal"]], "");
+  const docs = h("select", { "aria-label": "Document" }, h("option", { value: "" }, "None"));
+  call("list_photos", { assetId: asset.asset_id }).then((items) => {
+    for (const d of items.filter((p) => p.doc_kind !== "photo")) docs.append(h("option", { value: d.object_id }, d.title ?? fmt.DOC_KIND_LABELS[d.doc_kind]));
+  }).catch(() => {});
+
+  const el = h("details", { class: "disclosure" },
+    h("summary", {}, "Evidence (optional)"),
+    h("div", { class: "stack" },
+      h("p", { class: "field-hint" }, "What the value is based on. Shown in the value history, and in reports, so the figure can be explained later."),
+      list,
+      h("button", { type: "button", class: "btn btn-ghost btn-sm", onclick: addRow }, icon("plus", { size: 14 }), "Add a comparable"),
+      h("div", { class: "form-grid" },
+        field("Range", h("div", { class: "input-pair" }, low, high)),
+        field("Confidence", confidence),
+        field("Appraisal or listing on file", docs, { span: 2 })
+      )
+    )
+  );
+  return {
+    el,
+    value: () => {
+      const comparables = rows
+        .filter((r) => r.description.value.trim() || r.price.value.trim())
+        .map((r) => ({ description: r.description.value.trim(), kind: r.kind.value, price: r.price.value.trim(), date: r.date.value || null }));
+      const given = comparables.length || low.value.trim() || high.value.trim() || confidence.value || docs.value;
+      if (!given) return null;
+      return { comparables, low: low.value.trim() || null, high: high.value.trim() || null, confidence: confidence.value || null, document: docs.value || null };
+    },
+  };
 }
 
 // ------------------------------------------------------------ record change
