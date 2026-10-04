@@ -15,7 +15,8 @@
     "build:linux-deb": "node scripts/build.mjs deb",
     "build:windows": "node scripts/build.mjs msi",
     "build:macos": "node scripts/build.mjs dmg",
-    "build:macos-universal": "node scripts/build.mjs dmg-universal"
+    "build:macos-universal": "node scripts/build.mjs dmg-universal",
+    "test": "node --test tests/"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

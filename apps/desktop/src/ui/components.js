@@ -41,10 +41,27 @@ export function clearToasts() {
 /** Open modals, in stacking order, each with the close() that disposes it. */
 const openModals = new Map();
 
+const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * Only the topmost dialog can be reached: the page and any dialog beneath
+ * are inert — no focus, no clicks, hidden from assistive technology —
+ * until it closes. `aria-modal` alone only asks screen readers to behave.
+ */
+function syncInert() {
+  const stack = [...openModals.keys()];
+  const top = stack.at(-1);
+  const app = document.getElementById("app");
+  if (app) app.inert = stack.length > 0;
+  for (const backdrop of stack) backdrop.inert = backdrop !== top;
+}
+
 /**
  * Open a modal. `render(close)` returns its body; `footer` is an array of
  * buttons. Resolves when closed, with whatever close() was given.
  */
+let modalSeq = 0;
+
 export function modal({ title, subtitle, body, footer = [], size = "md", onClose, dismissable = true }) {
   let resolve;
   const done = new Promise((r) => (resolve = r));
@@ -55,6 +72,7 @@ export function modal({ title, subtitle, body, footer = [], size = "md", onClose
   const close = (value, { immediate = false } = {}) => {
     if (!openModals.has(backdrop)) return;
     openModals.delete(backdrop);
+    syncInert();
     document.removeEventListener("keydown", onKey, true);
     if (immediate) {
       backdrop.remove();
@@ -68,9 +86,25 @@ export function modal({ title, subtitle, body, footer = [], size = "md", onClose
   };
 
   const onKey = (event) => {
-    if (event.key === "Escape" && dismissable && isTopmost()) {
+    if (!isTopmost()) return;
+    if (event.key === "Escape" && dismissable) {
       event.stopPropagation();
       close(undefined);
+    }
+    // Tab stays inside the dialog, wrapping at either end.
+    if (event.key === "Tab") {
+      const items = [...dialog.querySelectorAll(FOCUSABLE)].filter((el) => el.offsetParent !== null || el === document.activeElement);
+      if (!items.length) return event.preventDefault();
+      const first = items[0];
+      const last = items.at(-1);
+      const inside = dialog.contains(document.activeElement);
+      if (event.shiftKey && (document.activeElement === first || !inside)) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !inside)) {
+        event.preventDefault();
+        first.focus();
+      }
     }
   };
   const isTopmost = () => [...openModals.keys()].at(-1) === backdrop;
@@ -78,13 +112,14 @@ export function modal({ title, subtitle, body, footer = [], size = "md", onClose
   const content = typeof body === "function" ? body(close) : body;
   const buttons = typeof footer === "function" ? footer(close) : footer;
 
+  const titleId = `modal-title-${++modalSeq}`;
   const dialog = h(
     "div",
-    { class: `modal modal-${size}`, role: "dialog", "aria-modal": "true", "aria-label": title },
+    { class: `modal modal-${size}`, role: "dialog", "aria-modal": "true", "aria-labelledby": titleId },
     h(
       "header",
       { class: "modal-head" },
-      h("div", {}, h("h2", { class: "modal-title" }, title), subtitle ? h("p", { class: "modal-subtitle" }, subtitle) : null),
+      h("div", {}, h("h2", { class: "modal-title", id: titleId }, title), subtitle ? h("p", { class: "modal-subtitle" }, subtitle) : null),
       dismissable
         ? h("button", { class: "icon-btn", "aria-label": "Close", onclick: () => close(undefined) }, icon("x"))
         : null
@@ -100,6 +135,7 @@ export function modal({ title, subtitle, body, footer = [], size = "md", onClose
   document.addEventListener("keydown", onKey, true);
   openModals.set(backdrop, close);
   document.body.append(backdrop);
+  syncInert();
 
   // Focus the first field, or the primary button.
   requestAnimationFrame(() => {

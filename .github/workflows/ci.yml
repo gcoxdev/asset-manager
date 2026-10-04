@@ -44,6 +44,9 @@ jobs:
           npm --prefix apps/desktop ci
           npm --prefix apps/desktop run build
 
+      - name: Frontend tests
+        run: npm --prefix apps/desktop test
+
       - name: Format
         run: cargo fmt --all -- --check
 
