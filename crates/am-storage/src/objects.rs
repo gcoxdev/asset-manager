@@ -245,6 +245,16 @@ pub fn detach_from_asset(
          WHERE object_id = ?1 AND refcount = 0 AND gc_state = 'live'",
         [object_id],
     )?;
+    // Removing the primary photo promotes the next one, so the asset's
+    // thumbnail does not silently vanish while it still has photos.
+    tx.execute(
+        "UPDATE asset_media SET is_primary = 1
+         WHERE asset_id = ?1
+           AND NOT EXISTS (SELECT 1 FROM asset_media WHERE asset_id = ?1 AND is_primary = 1)
+           AND object_id = (SELECT object_id FROM asset_media WHERE asset_id = ?1
+                            ORDER BY sort_order, created_at LIMIT 1)",
+        [asset_id],
+    )?;
     tx.commit()?;
     Ok(())
 }

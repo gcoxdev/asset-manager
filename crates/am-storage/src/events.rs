@@ -24,6 +24,8 @@ pub enum EventError {
     UnknownAsset(String),
     #[error("{0:?} is not a valid decimal quantity")]
     BadQuantity(String),
+    #[error("{0:?} is not a date — use YYYY-MM-DD")]
+    BadDate(String),
     #[error(
         "removing {removing} would leave a negative holding (currently {current}) — \
          record a correction instead if the stored quantity is wrong"
@@ -109,11 +111,48 @@ fn uuid_v4() -> String {
     format!("{}-{}-{}-{}-{}", &h[0..8], &h[8..12], &h[12..16], &h[16..20], &h[20..32])
 }
 
+/// Reduce a date or timestamp to the calendar date it names.
+///
+/// Effective dates are compared as text against plain `YYYY-MM-DD` dates
+/// throughout. A full timestamp sorts *after* its own date, so storing one
+/// made a same-day acquisition look not-yet-held — the asset dropped out of
+/// that day's total. Every write path normalizes here so that cannot recur.
+pub fn normalize_date(raw: &str) -> Result<String, EventError> {
+    let trimmed = raw.trim();
+    let date = trimmed.get(..10).ok_or_else(|| EventError::BadDate(raw.to_string()))?;
+    let bytes = date.as_bytes();
+    let shape_ok = bytes.iter().enumerate().all(|(i, b)| match i {
+        4 | 7 => *b == b'-',
+        _ => b.is_ascii_digit(),
+    });
+    let month: u32 = date.get(5..7).and_then(|m| m.parse().ok()).unwrap_or(0);
+    let day: u32 = date.get(8..10).and_then(|d| d.parse().ok()).unwrap_or(0);
+    if !shape_ok || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return Err(EventError::BadDate(raw.to_string()));
+    }
+    Ok(date.to_string())
+}
+
 /// Record an event and refresh the cached quantity.
 ///
 /// Both happen in one transaction: if the cache could drift from the log,
 /// every historical figure would become suspect.
+///
+/// # Cost basis
+///
+/// Decision 2 keeps a single acquisition cost for the whole position, not
+/// lots. Quantity changes keep that one number honest:
+///
+/// - **Add** with a price paid adds it to the position's cost. Without one
+///   the cost is left as it was — the added units have unknown cost, and
+///   inventing zero would overstate the gain.
+/// - **Remove** reduces cost in proportion to what remains (average cost),
+///   so a half-sold position does not keep its full original cost.
+/// - **Dispose** records the sale date and, if given, what it sold for.
+/// - **Correct** fixes the count and leaves cost alone: it is a data fix, not
+///   a trade.
 pub fn record(vault: &Vault, event: &NewEvent, now: &str) -> Result<String, EventError> {
+    let effective_date = normalize_date(&event.effective_date)?;
     let exists: i64 = vault.conn().query_row(
         "SELECT count(*) FROM assets WHERE asset_id = ?1",
         [&event.asset_id],
@@ -138,6 +177,7 @@ pub fn record(vault: &Vault, event: &NewEvent, now: &str) -> Result<String, Even
         }
     }
 
+    let previous = quantity_as_of(vault, &event.asset_id, None)?;
     let event_id = uuid_v4();
     let tx = vault.conn().unchecked_transaction()?;
 
@@ -150,7 +190,7 @@ pub fn record(vault: &Vault, event: &NewEvent, now: &str) -> Result<String, Even
             &event_id,
             &event.asset_id,
             event.event_type.as_str(),
-            &event.effective_date,
+            &effective_date,
             event.quantity_delta.to_string(),
             event.amount_minor,
             &event.currency,
@@ -159,9 +199,77 @@ pub fn record(vault: &Vault, event: &NewEvent, now: &str) -> Result<String, Even
         ],
     )?;
 
-    refresh_quantity_cache_in(&tx, &event.asset_id, now)?;
+    let remaining = refresh_quantity_cache_in(&tx, &event.asset_id, now)?;
+    apply_cost_basis(&tx, event, &effective_date, previous, remaining)?;
+    crate::valuations::refresh_current_value_in(&tx, &event.asset_id, now)
+        .map_err(|e| EventError::BadQuantity(e.to_string()))?;
     tx.commit()?;
     Ok(event_id)
+}
+
+/// Keep the single position cost consistent with a quantity change.
+fn apply_cost_basis(
+    tx: &rusqlite::Transaction<'_>,
+    event: &NewEvent,
+    effective_date: &str,
+    previous: Decimal,
+    remaining: Decimal,
+) -> Result<(), EventError> {
+    let (cost, cost_currency): (Option<i64>, Option<String>) = tx.query_row(
+        "SELECT acquired_amount_minor, acquired_currency FROM assets WHERE asset_id = ?1",
+        [&event.asset_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+
+    match event.event_type {
+        EventType::Add => {
+            let (Some(paid), Some(paid_currency)) = (event.amount_minor, &event.currency)
+            else {
+                return Ok(());
+            };
+            match (cost, cost_currency.as_deref()) {
+                (Some(cost), Some(code)) if code == paid_currency => {
+                    tx.execute(
+                        "UPDATE assets SET acquired_amount_minor = ?1 WHERE asset_id = ?2",
+                        rusqlite::params![cost.saturating_add(paid), &event.asset_id],
+                    )?;
+                }
+                // Unknown prior cost, or a different currency: adding would
+                // produce a figure that looks exact and is not.
+                _ => {}
+            }
+        }
+        EventType::Remove => {
+            if let Some(cost) = cost {
+                if previous > Decimal::ZERO && remaining >= Decimal::ZERO {
+                    let scaled = (Decimal::from(cost) * remaining / previous)
+                        .round_dp_with_strategy(
+                            0,
+                            rust_decimal::RoundingStrategy::MidpointNearestEven,
+                        );
+                    let scaled: i64 = scaled.try_into().unwrap_or(cost);
+                    tx.execute(
+                        "UPDATE assets SET acquired_amount_minor = ?1 WHERE asset_id = ?2",
+                        rusqlite::params![scaled, &event.asset_id],
+                    )?;
+                }
+            }
+        }
+        EventType::Dispose => {
+            tx.execute(
+                "UPDATE assets SET sold_date = ?1, sold_amount_minor = ?2, sold_currency = ?3
+                 WHERE asset_id = ?4",
+                rusqlite::params![
+                    effective_date,
+                    event.amount_minor,
+                    event.amount_minor.and(event.currency.clone()),
+                    &event.asset_id
+                ],
+            )?;
+        }
+        EventType::Acquire | EventType::Correct => {}
+    }
+    Ok(())
 }
 
 /// Quantity held as of a date, by replaying the log.
@@ -218,7 +326,7 @@ pub fn refresh_quantity_cache(
     Ok(total)
 }
 
-fn refresh_quantity_cache_in(
+pub(crate) fn refresh_quantity_cache_in(
     tx: &rusqlite::Transaction<'_>,
     asset_id: &str,
     now: &str,
@@ -482,5 +590,151 @@ mod tests {
             .query_row("SELECT quantity_sort FROM assets WHERE asset_id='a1'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(sort, 100.0);
+    }
+
+    fn cost(v: &Vault) -> Option<i64> {
+        v.conn()
+            .query_row(
+                "SELECT acquired_amount_minor FROM assets WHERE asset_id='a1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    fn set_cost(v: &Vault, minor: i64) {
+        v.conn()
+            .execute(
+                "UPDATE assets SET acquired_amount_minor=?1, acquired_currency='USD'
+                 WHERE asset_id='a1'",
+                [minor],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn timestamps_are_stored_as_the_date_they_name() {
+        // The same-day bug: a stored timestamp sorts after its own date, so
+        // the holding looked absent on the day it was bought.
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "1", "2026-09-22T14:03:11Z"), NOW).unwrap();
+
+        assert_eq!(history(&v, "a1").unwrap()[0].effective_date, "2026-09-22");
+        assert_eq!(
+            quantity_as_of(&v, "a1", Some("2026-09-22")).unwrap(),
+            Decimal::ONE,
+            "held on the day it was acquired"
+        );
+    }
+
+    #[test]
+    fn malformed_dates_are_refused() {
+        assert_eq!(normalize_date("2026-02-03").unwrap(), "2026-02-03");
+        assert_eq!(normalize_date(" 2026-02-03T00:00:00Z ").unwrap(), "2026-02-03");
+        for bad in ["", "yesterday", "2026-13-01", "2026-00-10", "2026/02/03", "26-02-03"] {
+            assert!(normalize_date(bad).is_err(), "accepted {bad:?}");
+        }
+
+        let (_d, v) = setup();
+        assert!(matches!(
+            record(&v, &event(EventType::Acquire, "1", "soon"), NOW),
+            Err(EventError::BadDate(_))
+        ));
+    }
+
+    #[test]
+    fn buying_more_adds_what_was_paid_to_the_cost() {
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "10", "2026-01-01"), NOW).unwrap();
+        set_cost(&v, 30_000);
+
+        let mut add = event(EventType::Add, "5", "2026-02-01");
+        add.amount_minor = Some(16_000);
+        add.currency = Some("USD".into());
+        record(&v, &add, NOW).unwrap();
+
+        assert_eq!(cost(&v), Some(46_000));
+    }
+
+    #[test]
+    fn buying_more_at_an_unknown_price_leaves_the_cost_alone() {
+        // Treating a missing price as zero would overstate the gain.
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "10", "2026-01-01"), NOW).unwrap();
+        set_cost(&v, 30_000);
+        record(&v, &event(EventType::Add, "5", "2026-02-01"), NOW).unwrap();
+        assert_eq!(cost(&v), Some(30_000));
+
+        // Nor does a price in another currency get added as if it were USD.
+        let mut eur = event(EventType::Add, "1", "2026-03-01");
+        eur.amount_minor = Some(5_000);
+        eur.currency = Some("EUR".into());
+        record(&v, &eur, NOW).unwrap();
+        assert_eq!(cost(&v), Some(30_000));
+    }
+
+    #[test]
+    fn a_partial_sale_reduces_cost_in_proportion() {
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "10", "2026-01-01"), NOW).unwrap();
+        set_cost(&v, 30_000);
+        record(&v, &event(EventType::Remove, "-4", "2026-02-01"), NOW).unwrap();
+
+        assert_eq!(cost(&v), Some(18_000), "six of ten remain, so 60% of the cost");
+    }
+
+    #[test]
+    fn a_disposal_records_the_sale() {
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "2", "2026-01-01"), NOW).unwrap();
+
+        let mut sale = event(EventType::Dispose, "-2", "2026-05-04");
+        sale.amount_minor = Some(99_900);
+        sale.currency = Some("USD".into());
+        record(&v, &sale, NOW).unwrap();
+
+        let (date, amount, currency): (String, i64, String) = v
+            .conn()
+            .query_row(
+                "SELECT sold_date, sold_amount_minor, sold_currency FROM assets
+                 WHERE asset_id='a1'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((date.as_str(), amount, currency.as_str()), ("2026-05-04", 99_900, "USD"));
+    }
+
+    #[test]
+    fn a_partial_sale_scales_the_cached_current_value() {
+        use crate::valuations::{record_valuation, Basis, NewValuation, Provenance};
+        use am_core::{Currency, Money};
+
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "10", "2026-01-01"), NOW).unwrap();
+        record_valuation(
+            &v,
+            &NewValuation {
+                asset_id: "a1".into(),
+                quote_id: None,
+                value: Money::new(300_000, Currency::new("USD").unwrap()),
+                quantity_at_time: Decimal::from(10),
+                basis: Basis::EstimatedResale,
+                provenance: Provenance::Manual,
+                inputs: serde_json::json!({}),
+                asof: "2026-01-15".into(),
+            },
+            NOW,
+        )
+        .unwrap();
+        record(&v, &event(EventType::Remove, "-5", "2026-02-01"), NOW).unwrap();
+
+        let current: i64 = v
+            .conn()
+            .query_row("SELECT current_amount_minor FROM assets WHERE asset_id='a1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(current, 150_000, "half the holding is worth half the value");
     }
 }

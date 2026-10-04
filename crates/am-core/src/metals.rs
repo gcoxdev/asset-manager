@@ -164,6 +164,71 @@ pub const PRESETS: &[BullionPreset] = &[
         basis: WeightBasis::Fine,
         purity: "0.9995",
     },
+    BullionPreset {
+        id: "britannia_silver",
+        label: "British Silver Britannia (1 oz)",
+        metal: Metal::Silver,
+        weight: "1",
+        unit: WeightUnit::TroyOunce,
+        basis: WeightBasis::Fine,
+        purity: "0.999",
+    },
+    BullionPreset {
+        id: "silver_round_1oz",
+        label: "Silver round (1 oz, .999)",
+        metal: Metal::Silver,
+        weight: "1",
+        unit: WeightUnit::TroyOunce,
+        basis: WeightBasis::Fine,
+        purity: "0.999",
+    },
+    BullionPreset {
+        id: "silver_bar_100oz",
+        label: "Silver bar (100 oz, .999)",
+        metal: Metal::Silver,
+        weight: "100",
+        unit: WeightUnit::TroyOunce,
+        basis: WeightBasis::Gross,
+        purity: "0.999",
+    },
+    BullionPreset {
+        // Quantity is dollars of face value. The circulated figure, as
+        // dealers quote it — see `junk_silver_fine_oz`.
+        id: "junk_90",
+        label: "90% US silver coins (per $1 face, circulated)",
+        metal: Metal::Silver,
+        weight: "0.715",
+        unit: WeightUnit::TroyOunce,
+        basis: WeightBasis::Fine,
+        purity: "0.9",
+    },
+    BullionPreset {
+        id: "buffalo",
+        label: "American Gold Buffalo (1 oz)",
+        metal: Metal::Gold,
+        weight: "1",
+        unit: WeightUnit::TroyOunce,
+        basis: WeightBasis::Fine,
+        purity: "0.9999",
+    },
+    BullionPreset {
+        id: "gold_bar_10g",
+        label: "Gold bar (10 g, .9999)",
+        metal: Metal::Gold,
+        weight: "10",
+        unit: WeightUnit::Gram,
+        basis: WeightBasis::Gross,
+        purity: "0.9999",
+    },
+    BullionPreset {
+        id: "palladium_maple",
+        label: "Canadian Palladium Maple (1 oz)",
+        metal: Metal::Palladium,
+        weight: "1",
+        unit: WeightUnit::TroyOunce,
+        basis: WeightBasis::Fine,
+        purity: "0.9995",
+    },
 ];
 
 pub fn preset(id: &str) -> Option<&'static BullionPreset> {
@@ -455,5 +520,16 @@ mod tests {
                 preset.id
             );
         }
+    }
+
+    #[test]
+    fn the_junk_silver_preset_matches_the_face_value_convention() {
+        let junk = preset("junk_90").unwrap();
+        let ten_dollars_face = junk.holding(Decimal::from(10));
+        assert_eq!(
+            ten_dollars_face.fine_weight(WeightUnit::TroyOunce).unwrap(),
+            crate::valuation::junk_silver_fine_oz(Decimal::from(10), true),
+            "per-dollar preset and the face-value helper must agree"
+        );
     }
 }

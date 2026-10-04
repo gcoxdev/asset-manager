@@ -115,9 +115,38 @@ impl Vault {
         }
         let lock = ProcessLock::acquire(&root.join(LOCK_FILE))?;
 
-        let header = VaultHeader::from_json(&fs::read_to_string(&header_path)?)?;
-        let data_key = header.unlock(credential, secret)?;
+        let mut header = VaultHeader::from_json(&fs::read_to_string(&header_path)?)?;
+        let (data_key, repaired) = match header.unlock(credential, secret) {
+            Ok(key) => (key, false),
+            // A slot orphaned by an older build's credential change; see
+            // `VaultHeader::unlock_orphaned_slot`. The original error is the
+            // one reported if repair finds nothing.
+            Err(original) => match header.unlock_orphaned_slot(credential, secret) {
+                Ok((key, epoch)) => {
+                    header.pin_slot_epoch_at(credential, epoch);
+                    (key, true)
+                }
+                Err(_) => return Err(original.into()),
+            },
+        };
+        let vault = Self::open_with_key(root, header, data_key, lock)?;
+        // Only after the pairing check has passed: a repaired header is
+        // written back so the credential keeps working without the retry.
+        if repaired {
+            write_header_atomic(root, &vault.header)?;
+        }
+        Ok(vault)
+    }
 
+    /// Open with an already-recovered data key. Shared by unlock and by
+    /// reopening after a backup, so both run the same migration and pairing
+    /// checks.
+    fn open_with_key(
+        root: &Path,
+        header: VaultHeader,
+        data_key: Zeroizing<[u8; KEY_LEN]>,
+        lock: ProcessLock,
+    ) -> Result<Self, VaultError> {
         let conn = open_db(root, &data_key)?;
         migrate(&conn).map_err(|e| VaultError::Other(e.to_string()))?;
 
@@ -148,6 +177,46 @@ impl Vault {
 
     pub fn vault_id(&self) -> [u8; 16] {
         self.header.vault_id
+    }
+
+    /// Check a credential against this vault without reopening it.
+    ///
+    /// Used before sensitive changes, so an unlocked but unattended session
+    /// cannot have its passphrase changed by whoever walks up to it.
+    pub fn verify(&self, credential: Credential, secret: &str) -> bool {
+        self.header.unlock(credential, secret).is_ok()
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Back up, then reopen with the same key.
+    ///
+    /// [`Vault::backup_to`] must close the vault to get a coherent copy. For
+    /// an interactive backup that would lock the owner out mid-session, so
+    /// this keeps the data key across the copy and reopens without asking for
+    /// the passphrase again. The protocol is unchanged: the database is
+    /// checkpointed and *closed* before a single byte is copied.
+    ///
+    /// Returns the reopened vault (if reopening worked) alongside the backup
+    /// result, so a failed copy does not also lose the session.
+    pub fn backup_and_reopen(
+        self,
+        dest: &Path,
+        now: &str,
+    ) -> (Option<Self>, Result<BackupManifest, VaultError>) {
+        let root = self.root.clone();
+        let data_key = Zeroizing::new(*self.data_key);
+
+        let result = self.backup_to(dest, now);
+
+        let reopened = (|| {
+            let lock = ProcessLock::acquire(&root.join(LOCK_FILE))?;
+            let header = VaultHeader::from_json(&fs::read_to_string(root.join(HEADER_FILE))?)?;
+            Self::open_with_key(&root, header, data_key, lock)
+        })();
+        (reopened.ok(), result)
     }
 
     pub fn change_passphrase(
@@ -189,6 +258,20 @@ impl Vault {
     /// Takes `self` by value: the vault is closed, which is what guarantees no
     /// writer is active and the WAL is folded back in.
     pub fn backup_to(self, dest: &Path, now: &str) -> Result<BackupManifest, VaultError> {
+        // Refuse destinations that would corrupt or recurse: inside the vault
+        // (the copy would copy itself), or over an existing backup.
+        if dest.starts_with(&self.root) {
+            return Err(VaultError::Other(
+                "choose a backup location outside the vault folder".into(),
+            ));
+        }
+        if dest.exists() && fs::read_dir(dest)?.next().is_some() {
+            return Err(VaultError::Other(format!(
+                "{} is not empty — choose an empty folder for the backup",
+                dest.display()
+            )));
+        }
+
         // TRUNCATE folds committed transactions out of the WAL. Without it a
         // file copy can silently miss them.
         self.conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
@@ -765,5 +848,108 @@ mod tests {
     fn object_paths_fan_out() {
         let p = object_path(Path::new("/vault/objects"), "3f7a9c02deadbeef");
         assert_eq!(p, Path::new("/vault/objects/3f/7a/3f7a9c02deadbeef"));
+    }
+
+    #[test]
+    fn backup_and_reopen_keeps_the_session_and_produces_a_restorable_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        let (v, recovery) = Vault::create(&root, PASS, &fast(), NOW).unwrap();
+        v.conn()
+            .execute(
+                "INSERT INTO assets (asset_id, type_id, name, created_at, updated_at)
+                 VALUES ('a1','generic','Kept',?1,?1)",
+                [NOW],
+            )
+            .unwrap();
+
+        let dest = dir.path().join("backup");
+        let (reopened, result) = v.backup_and_reopen(&dest, NOW);
+        let manifest = result.unwrap();
+        let v = reopened.expect("the vault must reopen without asking for the passphrase");
+        assert_eq!(manifest.vault_id, hex(&v.vault_id()));
+
+        // Still usable, still the same data.
+        let name: String =
+            v.conn().query_row("SELECT name FROM assets", [], |r| r.get(0)).unwrap();
+        assert_eq!(name, "Kept");
+        drop(v);
+
+        // And the copy restores onto a clean machine with the recovery key.
+        let elsewhere = dir.path().join("new-machine").join("vault");
+        std::fs::create_dir_all(elsewhere.parent().unwrap()).unwrap();
+        restore_from(&dest, &elsewhere).unwrap();
+        let restored = Vault::unlock(&elsewhere, Credential::RecoveryKey, &recovery).unwrap();
+        let name: String =
+            restored.conn().query_row("SELECT name FROM assets", [], |r| r.get(0)).unwrap();
+        assert_eq!(name, "Kept");
+    }
+
+    #[test]
+    fn a_failed_backup_does_not_lose_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        let (v, _r) = Vault::create(&root, PASS, &fast(), NOW).unwrap();
+
+        // Inside the vault: the copy would copy itself.
+        let (reopened, result) = v.backup_and_reopen(&root.join("nested"), NOW);
+        assert!(result.is_err());
+        let v = reopened.expect("still open after a refused backup");
+
+        // A folder that already has something in it.
+        let occupied = dir.path().join("occupied");
+        std::fs::create_dir_all(&occupied).unwrap();
+        std::fs::write(occupied.join("keep.txt"), "mine").unwrap();
+        let (reopened, result) = v.backup_and_reopen(&occupied, NOW);
+        assert!(result.unwrap_err().to_string().contains("not empty"));
+        assert!(reopened.is_some());
+        assert_eq!(std::fs::read_to_string(occupied.join("keep.txt")).unwrap(), "mine");
+    }
+
+    #[test]
+    fn verify_checks_the_credential_without_reopening() {
+        let dir = tempfile::tempdir().unwrap();
+        let (v, recovery) =
+            Vault::create(&dir.path().join("vault"), PASS, &fast(), NOW).unwrap();
+        assert!(v.verify(Credential::Passphrase, PASS));
+        assert!(!v.verify(Credential::Passphrase, "not the passphrase"));
+        assert!(v.verify(Credential::RecoveryKey, &recovery));
+    }
+
+    #[test]
+    fn a_recovery_key_orphaned_by_an_older_build_is_repaired_on_unlock() {
+        // Reproduce the old bug: change the passphrase, then strip the slot
+        // epoch the fixed code records, as a header written by an older
+        // build would lack it.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        let (mut v, recovery) = Vault::create(&root, PASS, &fast(), NOW).unwrap();
+        v.change_passphrase("a different passphrase", &fast()).unwrap();
+        drop(v);
+
+        let path = root.join(HEADER_FILE);
+        let mut header = VaultHeader::from_json(&fs::read_to_string(&path).unwrap()).unwrap();
+        header.recovery_slot.wrapped_at_epoch = None;
+        fs::write(&path, header.to_json().unwrap()).unwrap();
+        assert!(
+            header.unlock(Credential::RecoveryKey, &recovery).is_err(),
+            "the orphaned state the old build left behind"
+        );
+
+        let v = Vault::unlock(&root, Credential::RecoveryKey, &recovery).unwrap();
+        drop(v);
+
+        let repaired = VaultHeader::from_json(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(repaired.recovery_slot.wrapped_at_epoch, Some(1), "written back");
+        assert!(repaired.unlock(Credential::RecoveryKey, &recovery).is_ok());
+        assert!(repaired.unlock(Credential::Passphrase, "a different passphrase").is_ok());
+
+        // And a wrong key is still simply wrong.
+        assert!(Vault::unlock(
+            &root,
+            Credential::RecoveryKey,
+            "AAAA-BBBB-CCCC-DDDD-EEEE-FFFF-GGGG-HHHH"
+        )
+        .is_err());
     }
 }

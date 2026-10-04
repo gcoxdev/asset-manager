@@ -56,3 +56,12 @@ zeroize = { version = "1", features = ["derive"] }
 
 [profile.release]
 strip = false
+
+# Argon2id at 64 MiB is the whole cost of unlocking. Unoptimized, it takes
+# long enough in `tauri dev` and the IPC tests to look like a hang, so the
+# KDF crates are optimized even in debug builds. Nothing else changes.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3

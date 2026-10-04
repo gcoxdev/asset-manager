@@ -168,7 +168,7 @@ pub fn latest_spot(
         .query_row(
             "SELECT unit_quote, currency, source_asof, source FROM quotes
              WHERE instrument_id = ?1
-             ORDER BY source_asof DESC, fetched_at DESC LIMIT 1",
+             ORDER BY source_asof DESC, fetched_at DESC, rowid DESC LIMIT 1",
             [metal.instrument_id()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )

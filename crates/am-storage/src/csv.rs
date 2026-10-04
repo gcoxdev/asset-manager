@@ -441,8 +441,62 @@ pub fn import_assets(
         }
 
         if let Some(q) = row.values.get("quantity").map(|s| s.trim()) {
-            if !q.is_empty() && q != CLEAR_MARKER && q.parse::<f64>().is_err() {
-                preview.errors.push(format!("row {}: quantity is not a number", row.line));
+            if q == CLEAR_MARKER {
+                preview.errors.push(format!(
+                    "row {}: quantity cannot be cleared — enter 0 to record it as gone",
+                    row.line
+                ));
+            } else if !q.is_empty() {
+                match am_core::parse_decimal(q) {
+                    Ok(d) if d.is_sign_negative() => preview
+                        .errors
+                        .push(format!("row {}: quantity cannot be negative", row.line)),
+                    Ok(_) => {}
+                    Err(_) => preview
+                        .errors
+                        .push(format!("row {}: quantity is not a number", row.line)),
+                }
+            }
+        }
+
+        // The schema would reject these at write time with an opaque
+        // constraint error; saying which row and why is the point of a preview.
+        if let Some(t) = cell(row, "type_id").flatten() {
+            let known: i64 = vault.conn().query_row(
+                "SELECT count(*) FROM asset_types WHERE type_id = ?1",
+                [t],
+                |r| r.get(0),
+            )?;
+            if known == 0 {
+                preview.errors.push(format!("row {}: unknown type_id {t:?}", row.line));
+            }
+        }
+        if let Some(status) = cell(row, "status").flatten() {
+            if !["active", "sold", "lost", "retired"].contains(&status) {
+                preview.errors.push(format!(
+                    "row {}: status must be active, sold, lost or retired",
+                    row.line
+                ));
+            }
+        }
+        for date_col in ["acquired_date", "value_asof"] {
+            if let Some(date) = cell(row, date_col).flatten() {
+                if crate::events::normalize_date(date).is_err() {
+                    preview.errors.push(format!(
+                        "row {}: {date_col} must be a date (YYYY-MM-DD)",
+                        row.line
+                    ));
+                }
+            }
+        }
+        for currency_col in ["acquired_currency", "current_currency"] {
+            if let Some(code) = cell(row, currency_col).flatten() {
+                if am_core::Currency::new(code).is_err() {
+                    preview.errors.push(format!(
+                        "row {}: {currency_col} must be a three-letter code such as USD",
+                        row.line
+                    ));
+                }
             }
         }
 
@@ -529,13 +583,19 @@ fn cell<'a>(row: &'a ParsedRow, column: &str) -> Option<Option<&'a str>> {
     }
 }
 
+/// Columns that are caches of other tables. Writing them directly would make
+/// the cache disagree with its source — a quantity with no event behind it, a
+/// value with no valuation — so they are routed through their own paths.
+const DERIVED: &[&str] =
+    &["quantity", "current_amount_minor", "current_currency", "value_asof"];
+
 fn apply_update(
     tx: &rusqlite::Transaction<'_>,
     id: &str,
     row: &ParsedRow,
     now: &str,
 ) -> Result<(), CsvError> {
-    for column in COLUMNS.iter().filter(|c| **c != "asset_id") {
+    for column in COLUMNS.iter().filter(|c| **c != "asset_id" && !DERIVED.contains(c)) {
         let Some(value) = cell(row, column) else { continue };
 
         // Identifiers are validated by CHECK constraints; the column name here
@@ -543,17 +603,111 @@ fn apply_update(
         let sql =
             format!("UPDATE assets SET {column} = ?1, updated_at = ?2 WHERE asset_id = ?3");
         tx.execute(&sql, rusqlite::params![value, now, id])?;
+    }
 
-        if *column == "quantity" {
-            if let Some(q) = value {
-                let sort = q.parse::<f64>().unwrap_or(0.0);
-                tx.execute(
-                    "UPDATE assets SET quantity_sort = ?1 WHERE asset_id = ?2",
-                    rusqlite::params![sort, id],
-                )?;
-            }
+    // Quantity: a changed figure is a correction, recorded as an event so the
+    // history explains it. An unchanged one writes nothing, which is what
+    // keeps a repeated import idempotent.
+    if let Some(Some(incoming)) = cell(row, "quantity") {
+        let incoming = am_core::parse_decimal(incoming).map_err(|_| CsvError::Invalid {
+            line: row.line,
+            reason: "quantity is not a number".into(),
+        })?;
+        let stored: String =
+            tx.query_row("SELECT quantity FROM assets WHERE asset_id = ?1", [id], |r| {
+                r.get(0)
+            })?;
+        if am_core::parse_decimal(&stored).ok() != Some(incoming) {
+            let logged = logged_quantity(tx, id)?;
+            record_event_in(tx, id, "correct", &now[..10], incoming - logged, now)?;
         }
     }
+
+    // Value: a changed price becomes a manual valuation, dated as the file
+    // says. Only a real change is recorded, so reimporting adds nothing.
+    let amount = cell(row, "current_amount_minor");
+    let currency = cell(row, "current_currency");
+    if let (Some(Some(amount)), Some(Some(currency))) = (amount, currency) {
+        let amount: i64 = amount.parse().map_err(|_| CsvError::Invalid {
+            line: row.line,
+            reason: "current_amount_minor must be a whole number".into(),
+        })?;
+        let currency = currency.to_ascii_uppercase();
+        let (stored_amount, stored_currency): (Option<i64>, Option<String>) = tx.query_row(
+            "SELECT current_amount_minor, current_currency FROM assets WHERE asset_id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if stored_amount != Some(amount) || stored_currency.as_deref() != Some(&currency) {
+            let asof = cell(row, "value_asof")
+                .flatten()
+                .map(|d| d[..10.min(d.len())].to_string())
+                .unwrap_or_else(|| now[..10].to_string());
+            record_manual_value_in(tx, id, amount, &currency, &asof, now)?;
+        }
+    }
+    Ok(())
+}
+
+fn logged_quantity(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+) -> Result<am_core::Decimal, CsvError> {
+    let mut stmt = tx.prepare("SELECT quantity_delta FROM asset_events WHERE asset_id = ?1")?;
+    let deltas: Vec<String> = stmt.query_map([id], |r| r.get(0))?.collect::<Result<_, _>>()?;
+    let mut total = am_core::Decimal::ZERO;
+    for d in deltas {
+        total += am_core::parse_decimal(&d).unwrap_or_default();
+    }
+    Ok(total)
+}
+
+fn record_event_in(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    kind: &str,
+    date: &str,
+    delta: am_core::Decimal,
+    now: &str,
+) -> Result<(), CsvError> {
+    tx.execute(
+        "INSERT INTO asset_events
+           (event_id, asset_id, event_type, effective_date, quantity_delta, note, recorded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'CSV import', ?6)",
+        rusqlite::params![uuid_v4(), id, kind, date, delta.to_string(), now],
+    )?;
+    crate::events::refresh_quantity_cache_in(tx, id, now)
+        .map_err(|e| CsvError::Invalid { line: 0, reason: e.to_string() })?;
+    crate::valuations::refresh_current_value_in(tx, id, now)
+        .map_err(|e| CsvError::Invalid { line: 0, reason: e.to_string() })?;
+    Ok(())
+}
+
+/// Record a hand-entered value from the spreadsheet.
+///
+/// Also switches the asset to manual pricing: a value typed into a
+/// spreadsheet is a hand valuation, and the precedence rule says a market
+/// refresh must not overwrite one.
+fn record_manual_value_in(
+    tx: &rusqlite::Transaction<'_>,
+    id: &str,
+    amount_minor: i64,
+    currency: &str,
+    asof: &str,
+    now: &str,
+) -> Result<(), CsvError> {
+    let quantity: String =
+        tx.query_row("SELECT quantity FROM assets WHERE asset_id = ?1", [id], |r| r.get(0))?;
+    tx.execute(
+        "INSERT INTO valuations
+           (valuation_id, asset_id, amount_minor, currency, quantity_at_time, basis,
+            provenance, inputs, asof, recorded_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'estimated_resale', 'manual', '{\"source\":\"csv\"}', ?6, ?7)",
+        rusqlite::params![uuid_v4(), id, amount_minor, currency, quantity, asof, now],
+    )?;
+    tx.execute("UPDATE assets SET pricing = 'manual' WHERE asset_id = ?1", [id])?;
+    crate::valuations::refresh_current_value_in(tx, id, now)
+        .map_err(|e| CsvError::Invalid { line: 0, reason: e.to_string() })?;
     Ok(())
 }
 
@@ -577,15 +731,15 @@ fn apply_insert(
     let name = get("name").unwrap_or("Untitled");
     let type_id = get("type_id").unwrap_or("generic");
     let quantity = get("quantity").unwrap_or("1");
-    let sort = quantity.parse::<f64>().unwrap_or(0.0);
+    let sort = am_core::parse_decimal(quantity).map(am_core::sort_key).unwrap_or(0.0);
+    let acquired_date = get("acquired_date").map(|d| d[..10.min(d.len())].to_string());
 
     tx.execute(
         "INSERT INTO assets
            (asset_id, type_id, name, status, quantity, quantity_sort, quantity_unit,
             acquired_date, acquired_amount_minor, acquired_currency, acquired_from,
-            storage_location, notes, current_amount_minor, current_currency, value_asof,
-            created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17)",
+            storage_location, notes, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
         rusqlite::params![
             &id,
             type_id,
@@ -594,26 +748,40 @@ fn apply_insert(
             quantity,
             sort,
             get("quantity_unit").unwrap_or("item"),
-            get("acquired_date"),
+            &acquired_date,
             get("acquired_amount_minor"),
-            get("acquired_currency"),
+            get("acquired_currency").map(str::to_ascii_uppercase),
             get("acquired_from"),
             get("storage_location"),
             get("notes").unwrap_or(""),
-            get("current_amount_minor"),
-            get("current_currency"),
-            get("value_asof"),
             now,
         ],
     )?;
 
-    // Ownership starts as an event, exactly as it does for the UI path.
+    // Ownership starts as an event, exactly as it does for the UI path —
+    // dated when it was acquired, as a plain date.
+    let effective = acquired_date.unwrap_or_else(|| now[..10].to_string());
     tx.execute(
         "INSERT INTO asset_events
            (event_id, asset_id, event_type, effective_date, quantity_delta, recorded_at)
-         VALUES (?1, ?2, 'acquire', ?3, ?4, ?3)",
-        rusqlite::params![uuid_v4(), &id, now, quantity],
+         VALUES (?1, ?2, 'acquire', ?3, ?4, ?5)",
+        rusqlite::params![uuid_v4(), &id, effective, quantity, now],
     )?;
+
+    // A value in the file is a valuation, not a bare cache entry: without the
+    // row, portfolio totals — which read valuations — would ignore it.
+    if let (Some(amount), Some(currency)) =
+        (get("current_amount_minor"), get("current_currency"))
+    {
+        let amount: i64 = amount.parse().map_err(|_| CsvError::Invalid {
+            line: row.line,
+            reason: "current_amount_minor must be a whole number".into(),
+        })?;
+        let asof = get("value_asof")
+            .map(|d| d[..10.min(d.len())].to_string())
+            .unwrap_or_else(|| now[..10].to_string());
+        record_manual_value_in(tx, &id, amount, &currency.to_ascii_uppercase(), &asof, now)?;
+    }
     Ok(())
 }
 
@@ -928,5 +1096,132 @@ mod tests {
             .unwrap();
         assert_eq!(kind, "acquire");
         assert_eq!(delta, "3");
+    }
+
+    fn count(v: &Vault, sql: &str) -> i64 {
+        v.conn().query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn a_quantity_edit_becomes_a_correction_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir.path().join("vault"));
+        import_assets(
+            &v,
+            "asset_id,name,quantity\nx1,Silver rounds,10\n",
+            ImportMode::Apply,
+            NOW,
+        )
+        .unwrap();
+
+        import_assets(
+            &v,
+            "asset_id,name,quantity\nx1,Silver rounds,7\n",
+            ImportMode::Apply,
+            NOW,
+        )
+        .unwrap();
+
+        let (kind, delta): (String, String) = v
+            .conn()
+            .query_row(
+                "SELECT event_type, quantity_delta FROM asset_events
+                 WHERE asset_id='x1' AND event_type != 'acquire'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((kind.as_str(), delta.as_str()), ("correct", "-3"));
+        assert_eq!(
+            crate::events::quantity_as_of(&v, "x1", None).unwrap(),
+            am_core::Decimal::from(7),
+            "the log, not just the cache, must say 7"
+        );
+    }
+
+    #[test]
+    fn an_imported_price_is_a_valuation_the_portfolio_counts() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir.path().join("vault"));
+        let csv = "asset_id,name,quantity,current_amount_minor,current_currency,value_asof\n\
+                   c1,Comic,1,45000,USD,2026-09-01\n";
+        import_assets(&v, csv, ImportMode::Apply, NOW).unwrap();
+
+        assert_eq!(count(&v, "SELECT count(*) FROM valuations WHERE asset_id='c1'"), 1);
+        let total = crate::valuations::portfolio_total_as_of(
+            &v,
+            "2026-09-19",
+            &am_core::Currency::new("USD").unwrap(),
+        )
+        .unwrap();
+        assert_eq!(total.total.amount_minor, 45_000, "an imported price must count");
+
+        // Updating the price records a second valuation; reimporting the same
+        // file records nothing more.
+        let updated =
+            "asset_id,name,current_amount_minor,current_currency\nc1,Comic,52000,USD\n";
+        for _ in 0..3 {
+            import_assets(&v, updated, ImportMode::Apply, NOW).unwrap();
+        }
+        assert_eq!(count(&v, "SELECT count(*) FROM valuations WHERE asset_id='c1'"), 2);
+        let current: i64 = v
+            .conn()
+            .query_row("SELECT current_amount_minor FROM assets WHERE asset_id='c1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(current, 52_000);
+    }
+
+    #[test]
+    fn an_imported_price_turns_off_market_tracking() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir.path().join("vault"));
+        insert(&v, "m1", "Eagles");
+        v.conn().execute("UPDATE assets SET pricing='market' WHERE asset_id='m1'", []).unwrap();
+
+        let csv = "asset_id,name,current_amount_minor,current_currency\nm1,Eagles,250000,USD\n";
+        import_assets(&v, csv, ImportMode::Apply, NOW).unwrap();
+        let pricing: String = v
+            .conn()
+            .query_row("SELECT pricing FROM assets WHERE asset_id='m1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            pricing, "manual",
+            "a spreadsheet price must not be overwritten by a refresh"
+        );
+    }
+
+    #[test]
+    fn imported_rows_are_held_from_their_acquired_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir.path().join("vault"));
+        let csv = "asset_id,name,quantity,acquired_date\nd1,Old coin,1,2019-04-02\n";
+        import_assets(&v, csv, ImportMode::Apply, NOW).unwrap();
+        let date: String = v
+            .conn()
+            .query_row("SELECT effective_date FROM asset_events WHERE asset_id='d1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(date, "2019-04-02");
+    }
+
+    #[test]
+    fn invalid_types_statuses_and_dates_are_reported_by_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir.path().join("vault"));
+        let csv = "asset_id,name,type_id,status,acquired_date,quantity\n\
+                   ,A,spaceship,active,2026-01-01,1\n\
+                   ,B,generic,misplaced,2026-01-01,1\n\
+                   ,C,generic,active,January,1\n\
+                   ,D,generic,active,2026-01-01,-2\n";
+        let preview = import_assets(&v, csv, ImportMode::Apply, NOW).unwrap();
+        assert_eq!(preview.errors.len(), 4, "{:?}", preview.errors);
+        assert!(preview.errors[0].contains("spaceship"));
+        assert!(preview.errors[1].contains("status"));
+        assert!(preview.errors[2].contains("acquired_date"));
+        assert!(preview.errors[3].contains("negative"));
+        assert_eq!(count(&v, "SELECT count(*) FROM assets"), 0, "nothing written");
     }
 }

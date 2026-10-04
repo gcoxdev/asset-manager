@@ -5,14 +5,18 @@
 //! `tests` are the gate — if one fails, the storage plan is wrong, not the
 //! test.
 
+pub mod assets;
 pub mod csv;
 pub mod events;
 pub mod header;
 pub mod migrate;
 pub mod objects;
+pub mod pricing;
 pub mod scanning;
 pub mod series;
+pub mod settings;
 pub mod spot;
+pub mod summary;
 pub mod thumbs;
 pub mod valuations;
 pub mod vault;

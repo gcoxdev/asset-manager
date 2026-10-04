@@ -7,7 +7,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 struct Migration {
     version: i64,
@@ -17,6 +17,7 @@ struct Migration {
 const MIGRATIONS: &[Migration] = &[
     Migration { version: 1, sql: include_str!("../migrations/001_initial.sql") },
     Migration { version: 2, sql: include_str!("../migrations/002_app_settings.sql") },
+    Migration { version: 3, sql: include_str!("../migrations/003_catalog.sql") },
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -104,7 +105,7 @@ mod tests {
         migrate(&conn).unwrap();
         let n: i64 =
             conn.query_row("SELECT count(*) FROM asset_types", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 6, "seed rows must not be duplicated");
+        assert_eq!(n, 22, "seed rows must not be duplicated");
     }
 
     #[test]
@@ -131,7 +132,7 @@ mod tests {
         migrate(&conn).unwrap();
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, SCHEMA_VERSION);
 
         let name: String = conn
             .query_row("SELECT name FROM assets WHERE asset_id='a1'", [], |r| r.get(0))
@@ -139,6 +140,108 @@ mod tests {
         assert_eq!(name, "Pre-existing", "existing data must survive the migration");
 
         conn.execute("INSERT INTO app_settings (key, value) VALUES ('k','v')", []).unwrap();
+    }
+
+    /// Apply migrations up to and including `version`, as an older build did.
+    fn migrate_to(conn: &Connection, version: i64) {
+        for m in MIGRATIONS.iter().filter(|m| m.version <= version) {
+            let tx = conn.unchecked_transaction().unwrap();
+            tx.execute_batch(m.sql).unwrap();
+            tx.execute_batch(&format!("PRAGMA user_version = {}", m.version)).unwrap();
+            tx.commit().unwrap();
+        }
+    }
+
+    #[test]
+    fn v3_repairs_timestamp_effective_dates() {
+        // The bug v3 exists to fix: a same-day acquire recorded with a full
+        // timestamp compared greater than the plain date, so today's total
+        // left the asset out.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        let conn = open_encrypted(path.to_str().unwrap(), &key()).unwrap();
+        migrate_to(&conn, 2);
+
+        conn.execute_batch(
+            "INSERT INTO assets (asset_id, type_id, name, created_at, updated_at)
+             VALUES ('a1','generic','Coin','2026-09-22T14:03:11Z','2026-09-22T14:03:11Z');
+             INSERT INTO asset_events (event_id, asset_id, event_type, effective_date,
+                                       quantity_delta, recorded_at)
+             VALUES ('e1','a1','acquire','2026-09-22T14:03:11Z','1','2026-09-22T14:03:11Z');",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+
+        let date: String = conn
+            .query_row("SELECT effective_date FROM asset_events WHERE event_id='e1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(date, "2026-09-22");
+        assert!(date.as_str() <= "2026-09-22", "must now compare as held on the day");
+    }
+
+    #[test]
+    fn v3_recovers_collectible_types_saved_as_generic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        let conn = open_encrypted(path.to_str().unwrap(), &key()).unwrap();
+        migrate_to(&conn, 2);
+
+        for (id, attrs) in [
+            ("comic", r#"{"title":"X-Men","issue":"1"}"#),
+            ("card", r#"{"player_or_character":"Jordan","set":"Fleer"}"#),
+            ("tcg", r#"{"name":"Black Lotus","set":"Alpha"}"#),
+            ("coin", r#"{"denomination":"Morgan dollar","year":"1893"}"#),
+            ("plain", r#"{}"#),
+        ] {
+            conn.execute(
+                "INSERT INTO assets (asset_id, type_id, name, attrs, created_at, updated_at)
+                 VALUES (?1, 'generic', ?1, ?2, '2026-09-19', '2026-09-19')",
+                rusqlite::params![id, attrs],
+            )
+            .unwrap();
+        }
+
+        migrate(&conn).unwrap();
+
+        let type_of = |id: &str| -> String {
+            conn.query_row("SELECT type_id FROM assets WHERE asset_id=?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(type_of("comic"), "comic");
+        assert_eq!(type_of("card"), "trading_card");
+        assert_eq!(type_of("tcg"), "tcg_card");
+        assert_eq!(type_of("coin"), "numismatic_coin");
+        assert_eq!(type_of("plain"), "generic", "a plain item must be left alone");
+    }
+
+    #[test]
+    fn v3_search_covers_type_specific_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        let conn = open_encrypted(path.to_str().unwrap(), &key()).unwrap();
+        migrate_to(&conn, 2);
+
+        // Written before v3 existed, so it must be indexed by the rebuild.
+        conn.execute(
+            "INSERT INTO assets (asset_id, type_id, name, attrs, created_at, updated_at)
+             VALUES ('a1','generic','Old slab','{\"cert_number\":\"4417782\"}',
+                     '2026-09-19','2026-09-19')",
+            [],
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+
+        let hits: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM assets_fts WHERE assets_fts MATCH '4417782'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1, "an attribute written before v3 must be searchable after it");
     }
 
     #[test]

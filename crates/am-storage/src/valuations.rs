@@ -194,7 +194,7 @@ pub fn latest_quote(
         .query_row(
             "SELECT quote_id, unit_quote, currency, source_asof FROM quotes
              WHERE instrument_id = ?1
-             ORDER BY source_asof DESC, fetched_at DESC LIMIT 1",
+             ORDER BY source_asof DESC, fetched_at DESC, rowid DESC LIMIT 1",
             [instrument_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
@@ -251,31 +251,74 @@ pub fn record_valuation(
     Ok(valuation_id)
 }
 
+/// Scale a whole-holding valuation to the quantity actually held.
+///
+/// A valuation is the value of the *whole* holding at `quantity_at_time`.
+/// When the quantity has since changed — sold half, bought more — the
+/// figure in effect is that value in proportion, which is what
+/// `docs/chart-semantics.md` means by "steps down proportionally".
+///
+/// Left unscaled when either side is zero: a disposed holding contributes
+/// nothing anyway, and a valuation recorded at quantity zero (written by an
+/// older build's same-day date bug) carries no ratio to apply.
+pub fn scale_to_quantity(
+    value: &Money,
+    quantity_at_time: Decimal,
+    quantity_now: Decimal,
+) -> Result<Money, ValuationError> {
+    if quantity_at_time == quantity_now
+        || quantity_at_time <= Decimal::ZERO
+        || quantity_now <= Decimal::ZERO
+    {
+        return Ok(value.clone());
+    }
+    let scaled = value
+        .to_decimal()
+        .checked_mul(quantity_now)
+        .and_then(|v| v.checked_div(quantity_at_time))
+        .ok_or_else(|| ValuationError::BadDecimal("scaled value overflows".into()))?;
+    Money::from_total_decimal(scaled, value.currency.clone())
+        .map_err(|e| ValuationError::BadDecimal(e.to_string()))
+}
+
 /// Refresh `assets.current_*` from the latest valuation.
 ///
 /// The asset's current value is a **derived cache**, never independently
-/// edited, so the two can never disagree.
-fn refresh_current_value_in(
+/// edited, so the two can never disagree. It is scaled to the quantity held
+/// now, so recording a sale moves the figure without a new valuation.
+pub(crate) fn refresh_current_value_in(
     tx: &rusqlite::Transaction<'_>,
     asset_id: &str,
     now: &str,
 ) -> Result<(), ValuationError> {
-    let latest: Option<(i64, String, String, String)> = tx
+    let latest: Option<(i64, String, String, String, String)> = tx
         .query_row(
-            "SELECT amount_minor, currency, provenance, asof FROM valuations
-             WHERE asset_id = ?1 ORDER BY asof DESC, recorded_at DESC LIMIT 1",
+            "SELECT amount_minor, currency, provenance, asof, quantity_at_time FROM valuations
+             WHERE asset_id = ?1 ORDER BY asof DESC, recorded_at DESC, rowid DESC LIMIT 1",
             [asset_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .ok();
 
-    if let Some((amount, currency, provenance, asof)) = latest {
+    if let Some((amount, currency, provenance, asof, at_time)) = latest {
+        let quantity_now: String =
+            tx.query_row("SELECT quantity FROM assets WHERE asset_id = ?1", [asset_id], |r| {
+                r.get(0)
+            })?;
+        let code =
+            Currency::new(&currency).map_err(|e| ValuationError::BadCurrency(e.to_string()))?;
+        let at_time =
+            parse_decimal(&at_time).map_err(|_| ValuationError::BadDecimal(at_time))?;
+        let quantity_now = parse_decimal(&quantity_now)
+            .map_err(|_| ValuationError::BadDecimal(quantity_now))?;
+        let scaled = scale_to_quantity(&Money::new(amount, code), at_time, quantity_now)?;
+
         tx.execute(
             "UPDATE assets
              SET current_amount_minor = ?1, current_currency = ?2,
                  value_source = ?3, value_asof = ?4, updated_at = ?5
              WHERE asset_id = ?6",
-            rusqlite::params![amount, currency, provenance, asof, now, asset_id],
+            rusqlite::params![scaled.amount_minor, currency, provenance, asof, now, asset_id],
         )?;
     }
     Ok(())
@@ -294,7 +337,7 @@ pub fn valuation_as_of(
                     basis, provenance, asof, recorded_at
              FROM valuations
              WHERE asset_id = ?1 AND asof <= ?2
-             ORDER BY asof DESC, recorded_at DESC LIMIT 1",
+             ORDER BY asof DESC, recorded_at DESC, rowid DESC LIMIT 1",
             rusqlite::params![asset_id, as_of],
             |r| {
                 let amount: i64 = r.get(2)?;
@@ -374,8 +417,12 @@ pub fn portfolio_total_as_of(
                     unvalued += 1;
                     continue;
                 }
+                // The valuation covers the holding as it was then; scale it
+                // to what was held on this date.
+                let held =
+                    scale_to_quantity(&valuation.value, valuation.quantity_at_time, quantity)?;
                 total = total
-                    .checked_add(&valuation.value)
+                    .checked_add(&held)
                     .map_err(|e| ValuationError::BadDecimal(e.to_string()))?;
                 valued += 1;
             }
@@ -716,5 +763,114 @@ mod tests {
         let recorded = valuation_as_of(&v, "a1", "2026-02-01").unwrap().unwrap();
         assert_eq!(recorded.basis, "insured", "insured value is not resale value");
         assert_eq!(recorded.provenance, "appraisal");
+    }
+
+    #[test]
+    fn scaling_follows_the_quantity_held() {
+        let value = Money::new(300_000, usd());
+        let d = |s: &str| Decimal::from_str(s).unwrap();
+
+        assert_eq!(scale_to_quantity(&value, d("10"), d("5")).unwrap().amount_minor, 150_000);
+        assert_eq!(scale_to_quantity(&value, d("10"), d("15")).unwrap().amount_minor, 450_000);
+        assert_eq!(scale_to_quantity(&value, d("10"), d("10")).unwrap().amount_minor, 300_000);
+        // No ratio to apply.
+        assert_eq!(scale_to_quantity(&value, d("0"), d("3")).unwrap().amount_minor, 300_000);
+        // Rounds once, half-even, at the end.
+        assert_eq!(
+            scale_to_quantity(&Money::new(100, usd()), d("3"), d("1")).unwrap().amount_minor,
+            33
+        );
+    }
+
+    #[test]
+    fn an_asset_bought_today_counts_in_todays_total() {
+        // Regression: the acquire event used to carry a timestamp, which
+        // compared after today's date and dropped the asset from the total.
+        let dir = tempfile::tempdir().unwrap();
+        let (v, _r) = Vault::create(&dir.path().join("vault"), PASS, &fast(), NOW).unwrap();
+        v.conn()
+            .execute(
+                "INSERT INTO assets (asset_id, type_id, name, quantity, created_at, updated_at)
+                 VALUES ('a1','generic','Watch','0',?1,?1)",
+                [NOW],
+            )
+            .unwrap();
+        events::record(
+            &v,
+            &NewEvent {
+                asset_id: "a1".into(),
+                event_type: EventType::Acquire,
+                effective_date: "2026-09-19T15:30:00Z".into(),
+                quantity_delta: Decimal::ONE,
+                amount_minor: None,
+                currency: None,
+                note: String::new(),
+            },
+            NOW,
+        )
+        .unwrap();
+        record_valuation(
+            &v,
+            &NewValuation {
+                asset_id: "a1".into(),
+                quote_id: None,
+                value: Money::new(500_000, usd()),
+                quantity_at_time: Decimal::ONE,
+                basis: Basis::EstimatedResale,
+                provenance: Provenance::Manual,
+                inputs: serde_json::json!({}),
+                asof: "2026-09-19".into(),
+            },
+            NOW,
+        )
+        .unwrap();
+
+        let total = portfolio_total_as_of(&v, "2026-09-19", &usd()).unwrap();
+        assert_eq!(total.valued, 1);
+        assert_eq!(total.total.amount_minor, 500_000);
+    }
+
+    #[test]
+    fn a_portfolio_total_scales_a_valuation_to_the_quantity_then_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let (v, _r) = Vault::create(&dir.path().join("vault"), PASS, &fast(), NOW).unwrap();
+        v.conn()
+            .execute(
+                "INSERT INTO assets (asset_id, type_id, name, quantity, created_at, updated_at)
+                 VALUES ('a1','silver_bullion','Eagles','0',?1,?1)",
+                [NOW],
+            )
+            .unwrap();
+        let ev = |kind, delta: &str, date: &str| NewEvent {
+            asset_id: "a1".into(),
+            event_type: kind,
+            effective_date: date.into(),
+            quantity_delta: Decimal::from_str(delta).unwrap(),
+            amount_minor: None,
+            currency: None,
+            note: String::new(),
+        };
+        events::record(&v, &ev(EventType::Acquire, "10", "2026-01-01"), NOW).unwrap();
+        record_valuation(
+            &v,
+            &NewValuation {
+                asset_id: "a1".into(),
+                quote_id: None,
+                value: Money::new(300_000, usd()),
+                quantity_at_time: Decimal::from(10),
+                basis: Basis::EstimatedResale,
+                provenance: Provenance::Manual,
+                inputs: serde_json::json!({}),
+                asof: "2026-01-15".into(),
+            },
+            NOW,
+        )
+        .unwrap();
+        events::record(&v, &ev(EventType::Remove, "-5", "2026-06-01"), NOW).unwrap();
+
+        let march = portfolio_total_as_of(&v, "2026-03-01", &usd()).unwrap();
+        let july = portfolio_total_as_of(&v, "2026-07-01", &usd()).unwrap();
+        assert_eq!(march.total.amount_minor, 300_000, "before the sale, all ten");
+        assert_eq!(july.total.amount_minor, 150_000, "after it, five of ten");
     }
 }

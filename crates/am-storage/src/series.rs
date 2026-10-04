@@ -76,7 +76,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-fn parse_date(iso: &str) -> Option<i64> {
+pub(crate) fn parse_date(iso: &str) -> Option<i64> {
     let date = iso.get(..10)?;
     let mut parts = date.split('-');
     let y: i64 = parts.next()?.parse().ok()?;
@@ -88,7 +88,7 @@ fn parse_date(iso: &str) -> Option<i64> {
     Some(days_from_civil(y, m, d))
 }
 
-fn format_date(day: i64) -> String {
+pub(crate) fn format_date(day: i64) -> String {
     let (y, m, d) = civil_from_days(day);
     format!("{y:04}-{m:02}-{d:02}")
 }
