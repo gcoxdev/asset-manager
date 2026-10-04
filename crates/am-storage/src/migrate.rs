@@ -7,7 +7,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 struct Migration {
     version: i64,
@@ -26,6 +26,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration { version: 9, sql: include_str!("../migrations/009_organize.sql") },
     Migration { version: 10, sql: include_str!("../migrations/010_care.sql") },
     Migration { version: 11, sql: include_str!("../migrations/011_custody.sql") },
+    Migration { version: 12, sql: include_str!("../migrations/012_more_types.sql") },
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -113,7 +114,7 @@ mod tests {
         migrate(&conn).unwrap();
         let n: i64 =
             conn.query_row("SELECT count(*) FROM asset_types", [], |r| r.get(0)).unwrap();
-        assert_eq!(n, 25, "seed rows must not be duplicated");
+        assert_eq!(n, 39, "seed rows must not be duplicated");
         let firearms: i64 = conn
             .query_row(
                 "SELECT count(*) FROM asset_types WHERE category = 'firearms'",

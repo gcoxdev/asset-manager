@@ -195,6 +195,10 @@ export const CATEGORY_LABELS = {
   crypto: "Crypto",
   collectibles: "Collectibles",
   valuables: "Valuables",
+  investments: "Investments",
+  household: "Home & household",
+  vehicles: "Vehicles",
+  property: "Property",
   firearms: "Firearms",
   cash: "Cash & accounts",
   other: "Other",
@@ -272,6 +276,16 @@ export function fieldLabel(key) {
     print_run: "Print run",
     player_or_character: "Player or character",
     box_papers: "Box & papers",
+    vin: "VIN",
+    hull_id: "Hull ID",
+    isbn: "ISBN",
+    isin: "ISIN",
+    ownership_share: "Your share (%)",
+    square_feet: "Square feet",
+    year_built: "Year built",
+    catalogue_number: "Catalogue number",
+    set_number: "Set number",
+    held_at: "Held at",
   };
   if (special[key]) return special[key];
   const words = key.replace(/_/g, " ");

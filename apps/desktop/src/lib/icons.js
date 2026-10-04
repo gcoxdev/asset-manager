@@ -52,6 +52,14 @@ const PATHS = {
   swap: ["M7 4v16", "M3 16l4 4 4-4", "M17 20V4", "M21 8l-4-4-4 4"],
   tag: ["M3 12V3h9l9 9-9 9z", "M7.5 7.5h.01"],
   filter: ["M3 5h18l-7 8.5V19l-4 2v-7.5z"],
+  car: ["M3 13l2-5h14l2 5v4H3z", "M5 17v2", "M19 17v2", "M7 13h.01", "M17 13h.01"],
+  house: ["M3 11l9-7 9 7", "M5 10v10h14V10", "M10 20v-6h4v6"],
+  monitor: ["M3 4h18v12H3z", "M8 20h8", "M12 16v4"],
+  chair: ["M6 10V4h12v6", "M4 10h16v4H4z", "M6 14v6", "M18 14v6"],
+  wrench: ["M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18l3 3 6.3-6.3a4 4 0 0 0 5.4-5.4l-2.6 2.6-2.4-.6-.6-2.4z"],
+  book: ["M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2z", "M4 21V5"],
+  bag: ["M5 8h14l-1 13H6z", "M9 8V6a3 3 0 0 1 6 0v2"],
+  ball: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", "M3 12h18", "M12 3c3 3 3 15 0 18", "M12 3c-3 3-3 15 0 18"],
   // Category and type glyphs.
   metal: ["M3 17l3-7h12l3 7z", "M7 10l2-4h6l2 4"],
   coin: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", "M12 7v10", "M15 9.5c0-1.4-1.3-2.2-3-2.2s-3 .8-3 2.2 1.3 2 3 2.3 3 .9 3 2.3-1.3 2.2-3 2.2-3-.8-3-2.2"],
@@ -123,7 +131,10 @@ export function typeIcon(typeId, category) {
     video_game: "game", vinyl: "vinyl", art: "art", watch: "watch", jewelry: "gem",
     instrument: "music", wine: "wine", cash: "cash", generic: "item",
     firearm: "target", ammunition: "target", firearm_accessory: "target",
+    vehicle: "car", boat: "car", real_estate: "house", land: "house", electronics: "monitor",
+    appliance: "monitor", furniture: "chair", tools: "wrench", sports_gear: "ball", fashion: "bag",
+    books: "book", stamp: "tag", toy: "box", security: "markets",
   };
   if (byType[typeId]) return byType[typeId];
-  return { metals: "metal", crypto: "crypto", collectibles: "card", valuables: "gem", firearms: "target", cash: "cash" }[category] ?? "item";
+  return { metals: "metal", crypto: "crypto", collectibles: "card", valuables: "gem", firearms: "target", cash: "cash", vehicles: "car", property: "house", household: "monitor", investments: "markets" }[category] ?? "item";
 }

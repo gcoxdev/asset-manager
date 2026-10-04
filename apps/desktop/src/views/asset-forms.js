@@ -15,29 +15,86 @@ import { modal, field, textInput, select, toggle, segmented, callout, busy, toas
 
 // ------------------------------------------------------------ kinds
 
-/** What someone can add, in the order they are most likely to reach for. */
+/**
+ * What someone can add, grouped as people think of their things. Within a
+ * group, the most common first.
+ */
 const KINDS = [
-  { id: "metal", label: "Precious metal", glyph: "metal", blurb: "Bullion, rounds and bullion coins — valued from spot" },
-  { id: "crypto", label: "Cryptocurrency", glyph: "crypto", blurb: "Coins and tokens, priced by coin ID" },
-  { id: "comic", type: "comic", label: "Comic book", glyph: "comic", blurb: "Raw or slabbed, with grade" },
-  { id: "trading_card", type: "trading_card", label: "Sports card", glyph: "card", blurb: "Player, set, parallel, grade" },
-  { id: "tcg_card", type: "tcg_card", label: "TCG card", glyph: "card", blurb: "Magic, Pokémon, Yu-Gi-Oh" },
-  { id: "numismatic_coin", type: "numismatic_coin", label: "Collector coin", glyph: "coin", blurb: "Year, mint mark, variety, grade" },
-  { id: "watch", type: "watch", label: "Watch", glyph: "watch", blurb: "Reference, serial, box & papers" },
-  { id: "jewelry", type: "jewelry", label: "Jewelry", glyph: "gem", blurb: "Metal, stones, appraisal" },
-  { id: "art", type: "art", label: "Art & prints", glyph: "art", blurb: "Artist, medium, edition" },
-  { id: "memorabilia", type: "memorabilia", label: "Memorabilia", glyph: "signed", blurb: "Autographs and authenticated items" },
-  { id: "sealed_product", type: "sealed_product", label: "Sealed product", glyph: "box", blurb: "Wax boxes, sealed sets" },
-  { id: "video_game", type: "video_game", label: "Video game", glyph: "game", blurb: "Platform, region, completeness" },
-  { id: "vinyl", type: "vinyl", label: "Vinyl record", glyph: "vinyl", blurb: "Pressing, matrix, condition" },
-  { id: "instrument", type: "instrument", label: "Instrument", glyph: "music", blurb: "Maker, model, serial" },
-  { id: "wine", type: "wine", label: "Wine & spirits", glyph: "wine", blurb: "Producer, vintage, bottle size" },
-  { id: "firearm", type: "firearm", label: "Firearm", glyph: "target", blurb: "Make, model, caliber, serial" },
-  { id: "ammunition", type: "ammunition", label: "Ammunition", glyph: "target", blurb: "Caliber, load, rounds held" },
-  { id: "firearm_accessory", type: "firearm_accessory", label: "Optics & accessories", glyph: "target", blurb: "Scopes, suppressors, parts" },
-  { id: "cash", type: "cash", label: "Cash & accounts", glyph: "cash", blurb: "Balances held for completeness" },
-  { id: "generic", type: "generic", label: "Anything else", glyph: "item", blurb: "A general item with your own details" },
+  { id: "metal", group: "Investments", label: "Precious metal", glyph: "metal", blurb: "Bullion, rounds and bullion coins — valued from spot" },
+  { id: "crypto", group: "Investments", label: "Cryptocurrency", glyph: "crypto", blurb: "Coins and tokens, priced by coin ID" },
+  { id: "security", type: "security", group: "Investments", label: "Stock, bond or fund", glyph: "markets", blurb: "Held directly or in an account — entered by hand" },
+  { id: "watch", type: "watch", group: "Valuables", label: "Watch", glyph: "watch", blurb: "Reference, serial, box & papers" },
+  { id: "jewelry", type: "jewelry", group: "Valuables", label: "Jewelry", glyph: "gem", blurb: "Metal, stones, appraisal" },
+  { id: "art", type: "art", group: "Valuables", label: "Art & prints", glyph: "art", blurb: "Artist, medium, edition" },
+  { id: "fashion", type: "fashion", group: "Valuables", label: "Fashion & accessories", glyph: "bag", blurb: "Handbags, shoes, designer pieces" },
+  { id: "instrument", type: "instrument", group: "Valuables", label: "Instrument", glyph: "music", blurb: "Maker, model, serial" },
+  { id: "wine", type: "wine", group: "Valuables", label: "Wine & spirits", glyph: "wine", blurb: "Producer, vintage, bottle size" },
+  { id: "electronics", type: "electronics", group: "Home", label: "Electronics", glyph: "monitor", blurb: "Computers, phones, cameras, TVs" },
+  { id: "furniture", type: "furniture", group: "Home", label: "Furniture", glyph: "chair", blurb: "Antiques and good pieces" },
+  { id: "appliance", type: "appliance", group: "Home", label: "Appliance", glyph: "monitor", blurb: "Kitchen and laundry" },
+  { id: "tools", type: "tools", group: "Home", label: "Tools & equipment", glyph: "wrench", blurb: "Power tools, workshop, garden" },
+  { id: "sports_gear", type: "sports_gear", group: "Home", label: "Sports & outdoor", glyph: "ball", blurb: "Bikes, golf, camping, fitness" },
+  { id: "vehicle", type: "vehicle", group: "Vehicles & property", label: "Vehicle", glyph: "car", blurb: "Car, truck, motorcycle, RV — VIN and registration" },
+  { id: "boat", type: "boat", group: "Vehicles & property", label: "Boat", glyph: "car", blurb: "Hull ID, registration, length" },
+  { id: "real_estate", type: "real_estate", group: "Vehicles & property", label: "Home or building", glyph: "house", blurb: "Your share of its value — not a mortgage" },
+  { id: "land", type: "land", group: "Vehicles & property", label: "Land", glyph: "house", blurb: "Parcel, acreage, your share" },
+  { id: "comic", type: "comic", group: "Collectibles", label: "Comic book", glyph: "comic", blurb: "Raw or slabbed, with grade" },
+  { id: "trading_card", type: "trading_card", group: "Collectibles", label: "Sports card", glyph: "card", blurb: "Player, set, parallel, grade" },
+  { id: "tcg_card", type: "tcg_card", group: "Collectibles", label: "TCG card", glyph: "card", blurb: "Magic, Pokémon, Yu-Gi-Oh" },
+  { id: "numismatic_coin", type: "numismatic_coin", group: "Collectibles", label: "Collector coin", glyph: "coin", blurb: "Year, mint mark, variety, grade" },
+  { id: "stamp", type: "stamp", group: "Collectibles", label: "Stamp", glyph: "tag", blurb: "Country, catalogue number, condition" },
+  { id: "memorabilia", type: "memorabilia", group: "Collectibles", label: "Memorabilia", glyph: "signed", blurb: "Autographs and authenticated items" },
+  { id: "books", type: "books", group: "Collectibles", label: "Books", glyph: "book", blurb: "Author, edition, condition" },
+  { id: "toy", type: "toy", group: "Collectibles", label: "Toys & figures", glyph: "box", blurb: "LEGO, action figures, die-cast" },
+  { id: "sealed_product", type: "sealed_product", group: "Collectibles", label: "Sealed product", glyph: "box", blurb: "Wax boxes, sealed sets" },
+  { id: "video_game", type: "video_game", group: "Collectibles", label: "Video game", glyph: "game", blurb: "Platform, region, completeness" },
+  { id: "vinyl", type: "vinyl", group: "Collectibles", label: "Vinyl record", glyph: "vinyl", blurb: "Pressing, matrix, condition" },
+  { id: "firearm", type: "firearm", group: "Firearms", label: "Firearm", glyph: "target", blurb: "Make, model, caliber, serial" },
+  { id: "ammunition", type: "ammunition", group: "Firearms", label: "Ammunition", glyph: "target", blurb: "Caliber, load, rounds held" },
+  { id: "firearm_accessory", type: "firearm_accessory", group: "Firearms", label: "Optics & accessories", glyph: "target", blurb: "Scopes, suppressors, parts" },
+  { id: "cash", type: "cash", group: "Other", label: "Cash & accounts", glyph: "cash", blurb: "Balances held for completeness" },
+  { id: "generic", type: "generic", group: "Other", label: "Anything else", glyph: "item", blurb: "A general item with your own details" },
 ];
+
+const KIND_GROUPS = ["Investments", "Valuables", "Home", "Vehicles & property", "Collectibles", "Firearms", "Other"];
+
+/**
+ * The kind picker, grouped and searchable — there are enough kinds now that
+ * scanning a flat grid is slower than typing "car".
+ */
+function kindPicker(onPick, { exclude = [], lede = null } = {}) {
+  const search = h("input", { type: "search", placeholder: "Find a kind — car, watch, comic…", "aria-label": "Find a kind", autofocus: true });
+  const groups = h("div", { class: "kind-groups" });
+  const draw = () => {
+    const q = search.value.trim().toLowerCase();
+    const shown = KINDS.filter((k) => !exclude.includes(k.id) && (!q || `${k.label} ${k.blurb} ${k.group}`.toLowerCase().includes(q)));
+    mount(groups,
+      shown.length ? null : h("p", { class: "muted" }, "Nothing matches — “Anything else” takes any item."),
+      KIND_GROUPS.map((g) => {
+        const kinds = shown.filter((k) => k.group === g);
+        if (!kinds.length) return null;
+        return h("section", { class: "kind-group" },
+          h("h3", { class: "kind-group-title" }, g),
+          h("div", { class: "kind-grid" }, kinds.map((k) =>
+            h("button", { class: "kind", onclick: () => onPick(k.id) },
+              h("span", { class: "kind-icon" }, icon(k.glyph, { size: 22 })),
+              h("strong", {}, k.label),
+              h("span", {}, k.blurb)
+            )))
+        );
+      })
+    );
+  };
+  search.addEventListener("input", draw);
+  search.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      const first = groups.querySelector(".kind");
+      if (first) { e.preventDefault(); first.click(); }
+    }
+  });
+  draw();
+  return h("div", { class: "kind-picker" }, lede ? h("p", { class: "lede" }, lede) : null, search, groups);
+}
 
 /**
  * Suggested fields for types without a validated schema. Stored as ordinary
@@ -59,12 +116,26 @@ const SUGGESTED = {
   firearm: ["manufacturer", "model", "caliber", "serial_number", "action", "barrel_length", "finish", "year", "condition"],
   ammunition: ["manufacturer", "caliber", "grain", "bullet_type", "lot_number"],
   firearm_accessory: ["brand", "model", "serial_number", "fits"],
+  security: ["ticker", "issuer", "isin", "held_at", "account"],
+  vehicle: ["make", "model", "year", "vin", "registration", "mileage", "color"],
+  boat: ["make", "model", "year", "hull_id", "registration", "length"],
+  real_estate: ["address", "property_type", "parcel_number", "ownership_share", "square_feet", "year_built"],
+  land: ["address", "parcel_number", "acreage", "ownership_share"],
+  electronics: ["brand", "model", "serial_number", "condition"],
+  appliance: ["brand", "model", "serial_number", "condition"],
+  furniture: ["maker", "style", "material", "dimensions", "period", "condition"],
+  tools: ["brand", "model", "serial_number", "condition"],
+  sports_gear: ["brand", "model", "size", "serial_number", "condition"],
+  fashion: ["brand", "model", "size", "serial_number", "condition", "authentication"],
+  books: ["author", "title", "publisher", "edition", "year", "isbn", "condition"],
+  stamp: ["country", "catalogue_number", "year", "denomination", "condition", "grade"],
+  toy: ["brand", "line", "set_number", "year", "condition", "packaging"],
   cash: ["institution", "account_type", "last_four"],
   generic: ["brand", "model", "serial_number"],
 };
 
 /** Details that identify one particular item, never carried to another. */
-const IDENTIFYING_KEYS = ["serial_number", "cert_number", "watch_address", "lot_number"];
+const IDENTIFYING_KEYS = ["serial_number", "cert_number", "watch_address", "lot_number", "vin", "hull_id", "registration", "parcel_number"];
 
 /** Attribute keys that steer pricing rather than describe the item. */
 const INTERNAL_ATTRS = ["metal", "coin_id"];
@@ -123,18 +194,7 @@ export function openAddAsset({ onSaved, kind } = {}) {
 
   if (kind) return showForm(kind), m.done;
 
-  mount(
-    body,
-    h("div", { class: "kind-grid" },
-      KINDS.map((k) =>
-        h("button", { class: "kind", onclick: () => showForm(k.id) },
-          h("span", { class: "kind-icon" }, icon(k.glyph, { size: 22 })),
-          h("strong", {}, k.label),
-          h("span", {}, k.blurb)
-        )
-      )
-    )
-  );
+  mount(body, kindPicker(showForm));
   return m.done;
 }
 
@@ -363,6 +423,9 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
   sections.push(
     h("section", { class: "form-section" },
       h("h3", {}, "Value & insurance"),
+      ["real_estate", "land", "vehicle", "boat"].includes(kindId)
+        ? callout("info", "Enter the value of your share. Mortgages and loans are not recorded here, so totals show what you own, not your net worth.")
+        : null,
       pricingToggle,
       h("div", { class: "form-grid" },
         editing ? null : currentValueField,
@@ -528,16 +591,10 @@ function chooseNewKind(m, body, { draft, currentKind, onSaved, retypedFrom, curr
     renderForm(m, body, { mode: "edit", kindId, asset: draft, onSaved, retypedFrom: changed ? retypedFrom : null });
   mount(
     body,
-    h("p", { class: "lede" }, "What is this, really? Details you entered carry over to the new form."),
-    h("div", { class: "kind-grid" },
-      KINDS.filter((k) => !["metal", "crypto", currentKind].includes(k.id)).map((k) =>
-        h("button", { class: "kind", onclick: () => backToForm(k.id, true) },
-          h("span", { class: "kind-icon" }, icon(k.glyph, { size: 22 })),
-          h("strong", {}, k.label),
-          h("span", {}, k.blurb)
-        )
-      )
-    ),
+    kindPicker((kindId) => backToForm(kindId, true), {
+      exclude: ["metal", "crypto", currentKind],
+      lede: "What is this, really? Details both kinds use carry over to the new form.",
+    }),
     h("div", { class: "form-actions" }, h("div", { class: "btn-row" },
       h("button", { class: "btn btn-ghost", type: "button", onclick: () => backToForm(currentKind, currentRetyped) },
         icon("back", { size: 16 }), "Back to the form")
@@ -549,18 +606,7 @@ function openAddAssetInPlace(m, body, onSaved) {
   m.dialog.querySelector(".modal-title").textContent = "Add to your catalog";
   const subtitle = m.dialog.querySelector(".modal-subtitle");
   if (subtitle) subtitle.textContent = "What are you adding?";
-  mount(
-    body,
-    h("div", { class: "kind-grid" },
-      KINDS.map((k) =>
-        h("button", { class: "kind", onclick: () => renderForm(m, body, { mode: "create", kindId: k.id, onSaved }) },
-          h("span", { class: "kind-icon" }, icon(k.glyph, { size: 22 })),
-          h("strong", {}, k.label),
-          h("span", {}, k.blurb)
-        )
-      )
-    )
-  );
+  mount(body, kindPicker((kindId) => renderForm(m, body, { mode: "create", kindId, onSaved })));
 }
 
 /**

@@ -244,8 +244,16 @@ pub fn rename_location(
 /// Keys that identify one particular item. A duplicate is a different item,
 /// so they are never copied: two records with one serial number would claim
 /// to be the same watch.
-pub const IDENTIFYING_KEYS: &[&str] =
-    &["serial_number", "cert_number", "watch_address", "lot_number"];
+pub const IDENTIFYING_KEYS: &[&str] = &[
+    "serial_number",
+    "cert_number",
+    "watch_address",
+    "lot_number",
+    "vin",
+    "hull_id",
+    "registration",
+    "parcel_number",
+];
 
 /// Copy an asset's description into a new asset: type, details, location,
 /// tags — not its history, value, photos, documents or anything that

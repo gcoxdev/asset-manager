@@ -1027,3 +1027,7 @@ details.evidence summary { cursor: pointer; color: var(--text-2); }
 details.evidence ul { margin: 4px 0 0; padding-left: 18px; }
 
 .custody-now { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+
+.kind-picker > input[type="search"] { margin-bottom: 14px; }
+.kind-group + .kind-group { margin-top: 16px; }
+.kind-group-title { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin-bottom: 8px; }

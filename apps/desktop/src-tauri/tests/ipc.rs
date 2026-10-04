@@ -477,7 +477,7 @@ fn the_frontend_contract_holds_end_to_end() {
 
     // --- a household spreadsheet ---------------------------------------------------------
     let household = "Item;Type;Purchase price;Date bought;Where;Serial #;Tags\n\
-                     Grandfather clock;Furniture;1.250,00;15/03/2021;Hall;GC-881;heirloom\n\
+                     Grandfather clock;Heirloom;1.250,00;15/03/2021;Hall;GC-881;heirloom\n\
                      Omega Speedmaster;Watches;4.100,50;02/11/2019;Safe;OM-12;\n\
                      Broken row;;12,00;31/02/2020;;;\n";
     let inspected = ok(&w, "inspect_spreadsheet", json!({ "contents": household }));
@@ -509,7 +509,7 @@ fn the_frontend_contract_holds_end_to_end() {
     assert_eq!((preview["ready"].as_u64(), preview["errors"].as_u64()), (Some(2), Some(1)));
     assert_eq!(preview["rows"][1]["paid"], "4100.50 USD");
     assert_eq!(preview["rows"][1]["type_label"], "Watch");
-    assert!(preview["rows"][0]["warnings"][0].as_str().unwrap().contains("Furniture"));
+    assert!(preview["rows"][0]["warnings"][0].as_str().unwrap().contains("Heirloom"));
     assert!(preview["rows"][2]["error"].as_str().unwrap().contains("not a date"));
     assert_eq!(
         ok(&w, "list_assets", json!({})).as_array().unwrap().len(),
