@@ -3,22 +3,12 @@
 //! Validation happens **here**, in the backend, not only in the form. A form
 //! can be bypassed; this is the path every write actually takes.
 
-use am_core::{collectibles, Attributes, Grader, COLLECTIBLE_TYPES};
-use am_storage::vault::VaultError;
+use am_core::{collectibles, Grader, COLLECTIBLE_TYPES};
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::session::{IpcError, Session, SessionError};
-
-type IpcResult<T> = Result<T, IpcError>;
-
-fn now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-fn storage(e: impl std::fmt::Display) -> SessionError {
-    SessionError::Vault(VaultError::Other(e.to_string()))
-}
+use crate::ipc::IpcResult;
+use crate::session::{IpcError, Session};
 
 #[derive(Serialize)]
 pub struct CollectibleTypeInfo {
@@ -76,9 +66,6 @@ pub fn graders() -> Vec<GraderInfo> {
 pub struct CollectibleInput {
     pub type_id: String,
     pub attrs: std::collections::BTreeMap<String, String>,
-    pub quantity: Option<String>,
-    pub storage_location: Option<String>,
-    pub notes: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -105,73 +92,6 @@ pub fn validate_collectible(input: CollectibleInput) -> ValidationResult {
     }
 }
 
-#[tauri::command]
-pub fn create_collectible(
-    session: State<'_, Session>,
-    input: CollectibleInput,
-) -> IpcResult<String> {
-    session.touch();
-
-    // Validated before anything is written. The form calls this too, but a
-    // form is a convenience, not a control.
-    let cleaned: Attributes = collectibles::validate(&input.type_id, &input.attrs)
-        .map_err(|e| IpcError { kind: "invalid_input".into(), message: e.to_string() })?;
-
-    let label = collectibles::describe(&input.type_id, &cleaned);
-    let attrs_json = serde_json::to_string(&cleaned)
-        .map_err(|e| IpcError { kind: "error".into(), message: e.to_string() })?;
-
-    let asset_id = uuid::Uuid::new_v4().to_string();
-    let timestamp = now();
-    let quantity = input.quantity.clone().unwrap_or_else(|| "1".into());
-
-    session
-        .with_vault(|vault| {
-            let sort = quantity.parse::<f64>().unwrap_or(1.0);
-            let tx = vault.conn().unchecked_transaction().map_err(storage)?;
-
-            tx.execute(
-                "INSERT INTO assets
-                   (asset_id, type_id, name, quantity, quantity_sort, quantity_unit,
-                    storage_location, notes, attrs, schema_version, created_at, updated_at)
-                 VALUES (?1, 'generic', ?2, ?3, ?4, 'item', ?5, ?6, ?7, ?8, ?9, ?9)",
-                rusqlite::params![
-                    &asset_id,
-                    &label,
-                    &quantity,
-                    sort,
-                    &input.storage_location,
-                    input.notes.as_deref().unwrap_or(""),
-                    &attrs_json,
-                    am_core::collectibles::COLLECTIBLE_SCHEMA_VERSION,
-                    &timestamp,
-                ],
-            )
-            .map_err(storage)?;
-
-            // Ownership starts as an event here too, so the history is
-            // uniform regardless of which form created the asset.
-            tx.execute(
-                "INSERT INTO asset_events
-                   (event_id, asset_id, event_type, effective_date, quantity_delta, recorded_at)
-                 VALUES (?1, ?2, 'acquire', ?3, ?4, ?3)",
-                rusqlite::params![
-                    uuid::Uuid::new_v4().to_string(),
-                    &asset_id,
-                    &timestamp,
-                    &quantity
-                ],
-            )
-            .map_err(storage)?;
-
-            tx.commit().map_err(storage)?;
-            Ok(())
-        })
-        .map_err(IpcError::from)?;
-
-    Ok(asset_id)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,9 +100,6 @@ mod tests {
         CollectibleInput {
             type_id: type_id.into(),
             attrs: pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
-            quantity: None,
-            storage_location: None,
-            notes: None,
         }
     }
 

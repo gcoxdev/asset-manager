@@ -1,0 +1,342 @@
+//! End-to-end IPC test on Tauri's mock runtime.
+//!
+//! Drives the real command table through real IPC serialization, with the
+//! argument shapes the frontend sends. The storage layer has its own unit
+//! tests; what this catches is the seam between them — a camelCase argument
+//! that does not match its Rust name, a struct field the UI reads that the
+//! backend renamed, a command that was never registered. Those fail at
+//! runtime in the app and nowhere else.
+//!
+//! One test function, deliberately: the vault location comes from an
+//! environment variable, and parallel tests would race on it.
+
+use serde_json::{json, Value};
+use tauri::ipc::{CallbackFn, InvokeBody};
+use tauri::test::{get_ipc_response, mock_builder, mock_context, noop_assets, INVOKE_KEY};
+use tauri::webview::InvokeRequest;
+use tauri::WebviewWindow;
+
+const PASS: &str = "correct horse battery staple";
+
+fn invoke(
+    webview: &WebviewWindow<tauri::test::MockRuntime>,
+    cmd: &str,
+    args: Value,
+) -> Result<Value, Value> {
+    get_ipc_response(
+        webview,
+        InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        },
+    )
+    .map(|body| body.deserialize::<Value>().unwrap())
+}
+
+/// Invoke and insist on success, with the error in the panic message.
+fn ok(webview: &WebviewWindow<tauri::test::MockRuntime>, cmd: &str, args: Value) -> Value {
+    invoke(webview, cmd, args).unwrap_or_else(|e| panic!("{cmd} failed: {e}"))
+}
+
+#[test]
+fn the_frontend_contract_holds_end_to_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("vault");
+    // Debug builds honour this override; release builds never read it.
+    std::env::set_var("AM_VAULT_DIR", &vault);
+
+    let app = asset_manager_desktop_lib::configure(mock_builder())
+        .build(mock_context(noop_assets()))
+        .expect("app builds");
+    let w = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
+
+    // --- vault lifecycle ---------------------------------------------------
+    assert_eq!(
+        ok(&w, "vault_status", json!({})),
+        json!({ "unlocked": false, "exists": false })
+    );
+    assert!(
+        invoke(&w, "list_assets", json!({})).is_err(),
+        "nothing is readable before a vault exists"
+    );
+
+    let weak = invoke(&w, "create_vault", json!({ "passphrase": "short" })).unwrap_err();
+    assert_eq!(weak["kind"], "weak_passphrase");
+    let created = ok(&w, "create_vault", json!({ "passphrase": PASS }));
+    let recovery = created["recovery_key"].as_str().unwrap().to_string();
+    assert!(!created["fingerprint"].as_str().unwrap().is_empty());
+
+    // --- settings ----------------------------------------------------------
+    let settings = ok(&w, "get_settings", json!({}));
+    assert_eq!(settings["currency"], "USD");
+    ok(
+        &w,
+        "update_settings",
+        json!({ "settings": {
+            "currency": "USD", "auto_lock_minutes": 30, "metals_auto_refresh": false,
+            "balance_lookup": false, "last_backup_at": null
+        }}),
+    );
+    assert_eq!(ok(&w, "session_state", json!({}))["auto_lock_seconds"], 1800);
+
+    // --- a market-priced metal holding --------------------------------------
+    let eagles = ok(
+        &w,
+        "create_asset",
+        json!({ "form": {
+            "type_id": "sovereign_coin", "name": "Gold Eagles", "quantity": "10", "quantity_unit": "coin",
+            "acquired_date": "2024-01-02", "acquired_price": "$20,000.00", "acquired_from": null,
+            "storage_location": "Safe", "notes": "", "insured_value": null, "currency": "USD",
+            "attrs": { "metal": "XAU", "weight_per_item": "1.0909", "weight_unit": "troy_oz",
+                       "weight_basis": "gross", "purity": "0.9167", "preset": "age" },
+            "review_every_days": null, "pricing": "market", "current_value": null
+        }}),
+    );
+    let eagles = eagles.as_str().unwrap().to_string();
+
+    // No spot price yet: counted, never zero.
+    let dash = ok(&w, "dashboard", json!({}));
+    assert_eq!(dash["unvalued"], 1);
+    assert_eq!(dash["total"]["minor"], "0");
+
+    let revalued = ok(
+        &w,
+        "set_spot_price",
+        json!({ "metal": "XAU", "price": "2,000", "currency": "USD" }),
+    );
+    assert_eq!(revalued["updated"], 1, "a spot price must revalue the holding that follows it");
+
+    let detail = ok(&w, "get_asset", json!({ "assetId": eagles }));
+    // 10 × 1.0909 × 0.9167 = 10.0002803 fine oz × $2,000
+    assert_eq!(detail["asset"]["current_display"], "20000.56 USD");
+    assert_eq!(detail["asset"]["value_source"], "manual", "valued from a hand-typed spot");
+    assert_eq!(detail["asset"]["gain_display"], "0.56 USD");
+    assert_eq!(detail["market"]["unit_price"], "2000");
+    assert_eq!(detail["events"][0]["effective_date"], "2024-01-02");
+
+    // --- a collectible, named from its fields --------------------------------
+    let preview = ok(
+        &w,
+        "validate_asset",
+        json!({ "form": {
+            "type_id": "comic", "name": null,
+            "attrs": { "title": "Amazing Fantasy", "issue": "15", "grader": "cgc", "grade": "9.8" }
+        }}),
+    );
+    assert_eq!(preview, "Amazing Fantasy #15 — CGC 9.8");
+    let bad_grade = invoke(&w, "create_asset", json!({ "form": {
+        "type_id": "comic", "attrs": { "title": "X", "issue": "1", "grader": "psa", "grade": "65" }
+    }}))
+    .unwrap_err();
+    assert!(bad_grade["message"].as_str().unwrap().contains("PSA"));
+
+    let comic = ok(
+        &w,
+        "create_asset",
+        json!({ "form": {
+            "type_id": "comic", "name": null, "quantity": "1", "quantity_unit": "item",
+            "attrs": { "title": "Amazing Fantasy", "issue": "15", "grader": "cgc", "grade": "9.8",
+                       "cert_number": "0012345678" },
+            "pricing": "manual", "current_value": "1,250,000", "review_every_days": 90
+        }}),
+    );
+    let comic = comic.as_str().unwrap().to_string();
+
+    let list = ok(&w, "list_assets", json!({}));
+    let row =
+        list.as_array().unwrap().iter().find(|a| a["asset_id"] == comic.as_str()).unwrap();
+    assert_eq!(row["type_id"], "comic", "collectibles keep their type");
+    assert_eq!(row["category"], "collectibles");
+    assert_eq!(row["current_display"], "1250000.00 USD");
+    assert_eq!(row["current_amount_minor"], "125000000", "money crosses IPC as text");
+    assert_eq!(row["next_review"].as_str().map(|d| d.len()), Some(10));
+
+    // Search: punctuation is harmless and attributes are indexed.
+    assert_eq!(ok(&w, "search_assets", json!({ "query": "#15 cgc" })), json!([comic.clone()]));
+    assert_eq!(
+        ok(&w, "search_assets", json!({ "query": "0012345678" })),
+        json!([comic.clone()])
+    );
+
+    // --- valuation precedence and quantity changes ---------------------------
+    let results = ok(
+        &w,
+        "set_prices",
+        json!({ "entries": [
+            { "asset_id": eagles, "amount": "25000", "currency": "USD", "asof": null,
+              "basis": "estimated_resale", "provenance": "manual", "note": "dealer quote" }
+        ]}),
+    );
+    assert_eq!(results[0]["ok"], true, "{results}");
+    let detail = ok(&w, "get_asset", json!({ "assetId": eagles }));
+    assert_eq!(detail["asset"]["pricing"], "manual", "a typed price stops market tracking");
+    assert_eq!(detail["valuations"][0]["note"], "dealer quote");
+
+    ok(
+        &w,
+        "change_quantity",
+        json!({ "change": {
+            "asset_id": eagles, "kind": "correct", "quantity": "8", "effective_date": null,
+            "amount": null, "currency": "USD", "note": null
+        }}),
+    );
+    let detail = ok(&w, "get_asset", json!({ "assetId": eagles }));
+    assert_eq!(detail["asset"]["quantity"], "8", "a correction can reduce the count");
+    assert_eq!(detail["asset"]["current_display"], "20000.00 USD", "8 of 10: value scales");
+
+    ok(&w, "set_pricing", json!({ "assetId": eagles, "pricing": "market" }));
+    let detail = ok(&w, "get_asset", json!({ "assetId": eagles }));
+    assert_eq!(detail["asset"]["current_display"], "16000.45 USD", "back on spot, at 8 coins");
+
+    // --- editing --------------------------------------------------------------
+    ok(
+        &w,
+        "update_asset",
+        json!({ "assetId": comic, "form": {
+            "type_id": "comic", "name": "AF15", "status": "lost", "quantity_unit": "item",
+            "acquired_date": "2010-05-01", "acquired_price": "1100", "storage_location": "",
+            "notes": "Reported to insurer", "insured_value": "1300000", "currency": "USD",
+            "attrs": { "title": "Amazing Fantasy", "issue": "15", "grader": "cgc", "grade": "9.8" },
+            "review_every_days": null
+        }}),
+    );
+    let detail = ok(&w, "get_asset", json!({ "assetId": comic }));
+    assert_eq!(detail["asset"]["name"], "AF15");
+    assert_eq!(detail["asset"]["status"], "lost");
+    assert_eq!(detail["asset"]["insured_display"], "1300000.00 USD");
+    assert_eq!(detail["asset"]["storage_location"], Value::Null, "blank clears");
+
+    // --- reports and charts -----------------------------------------------------
+    let report = ok(
+        &w,
+        "insurance_report",
+        json!({ "options": {
+            "include_locations": false, "include_notes": false, "include_photos": true
+        }}),
+    );
+    assert_eq!(report["items"].as_array().unwrap().len(), 1, "a lost item is not claimed");
+    assert_eq!(report["items"][0]["storage_location"], Value::Null, "locations left out");
+
+    let series = ok(&w, "portfolio_series", json!({ "from": null, "maxPoints": 160 }));
+    assert!(series["points"].as_array().unwrap().len() >= 2);
+
+    let dash = ok(&w, "dashboard", json!({}));
+    assert_eq!(dash["active_count"], 1);
+    assert_eq!(dash["by_category"][0]["category"], "metals");
+
+    let csv = ok(&w, "export_csv", json!({}));
+    assert_eq!(csv["row_count"], 2);
+    let preview = ok(&w, "import_csv", json!({ "contents": csv["csv"], "apply": false }));
+    assert_eq!(preview["updates"], 2);
+    assert_eq!(preview["errors"], json!([]));
+
+    assert!(ok(&w, "bullion_presets", json!({})).as_array().unwrap().len() >= 10);
+    assert!(ok(&w, "crypto_prices", json!({})).as_array().unwrap().is_empty());
+    assert_eq!(ok(&w, "vault_info", json!({}))["asset_count"], 2);
+
+    // --- crypto, priced by hand --------------------------------------------------
+    let btc = ok(
+        &w,
+        "create_asset",
+        json!({ "form": {
+            "type_id": "crypto", "name": "Cold storage", "quantity": "0.12345678", "quantity_unit": "BTC",
+            "attrs": { "coin_id": "bitcoin", "symbol": "BTC", "custody": "self_custody",
+                       "watch_address": "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa", "watch_chain": "bitcoin" },
+            "pricing": "market"
+        }}),
+    );
+    let seed = invoke(
+        &w,
+        "create_asset",
+        json!({ "form": {
+            "type_id": "crypto", "name": "Oops", "attrs": { "coin_id": "bitcoin",
+            "watch_address": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about" }
+        }}),
+    );
+    assert!(seed.is_err(), "a seed phrase must never be stored");
+    let summary = ok(&w, "set_coin_price", json!({ "coinId": "bitcoin", "price": "60,000" }));
+    assert_eq!(summary["updated"], 1);
+    let coins = ok(&w, "crypto_prices", json!({}));
+    assert_eq!(coins[0]["held"], "0.12345678");
+    assert_eq!(coins[0]["unit_price"], "60000");
+    let detail = ok(&w, "get_asset", json!({ "assetId": btc }));
+    assert_eq!(detail["asset"]["current_display"], "7407.41 USD", "0.12345678 × 60,000");
+    ok(&w, "keep_alive", json!({}));
+
+    // --- photos -----------------------------------------------------------------------
+    let photo_path = dir.path().join("slab.png");
+    image::RgbImage::from_fn(64, 48, |x, y| image::Rgb([x as u8 * 3, y as u8 * 4, 90]))
+        .save(&photo_path)
+        .unwrap();
+    let first =
+        ok(&w, "import_photo", json!({ "assetId": btc, "path": photo_path.to_str().unwrap() }));
+    assert_eq!(first["media_type"], "image/png");
+    let again =
+        ok(&w, "import_photo", json!({ "assetId": btc, "path": photo_path.to_str().unwrap() }));
+    assert_eq!(again["deduplicated"], true);
+    let photos = ok(&w, "list_photos", json!({ "assetId": btc }));
+    assert_eq!(photos.as_array().unwrap().len(), 1, "the same file twice is one photo");
+    ok(&w, "set_primary_photo", json!({ "assetId": btc, "objectId": first["object_id"] }));
+    let row = ok(&w, "list_assets", json!({}));
+    let row = row.as_array().unwrap().iter().find(|a| a["asset_id"] == btc).unwrap().clone();
+    assert_eq!(row["primary_photo"], first["object_id"]);
+    ok(&w, "remove_photo", json!({ "assetId": btc, "objectId": first["object_id"] }));
+    assert_eq!(ok(&w, "list_photos", json!({ "assetId": btc })), json!([]));
+    ok(&w, "delete_asset", json!({ "assetId": btc }));
+
+    // --- credentials, backup and restore -------------------------------------------
+    let wrong = invoke(
+        &w,
+        "change_passphrase",
+        json!({ "current": "nope", "newPassphrase": "another long passphrase" }),
+    )
+    .unwrap_err();
+    assert!(wrong["message"].as_str().unwrap().contains("not correct"));
+    ok(
+        &w,
+        "change_passphrase",
+        json!({ "current": PASS, "newPassphrase": "another long passphrase" }),
+    );
+
+    let backups = dir.path().join("backups");
+    std::fs::create_dir_all(&backups).unwrap();
+    let backup = ok(&w, "backup_vault", json!({ "directory": backups.to_str().unwrap() }));
+    assert!(
+        ok(&w, "vault_status", json!({}))["unlocked"].as_bool().unwrap(),
+        "backup keeps the session"
+    );
+    assert_eq!(ok(&w, "get_settings", json!({}))["last_backup_at"], backup["created_at"]);
+
+    // Delete an asset after the backup; restoring must bring it back.
+    ok(&w, "delete_asset", json!({ "assetId": comic }));
+    assert_eq!(ok(&w, "list_assets", json!({})).as_array().unwrap().len(), 1);
+
+    ok(&w, "restore_vault", json!({ "directory": backup["path"] }));
+    assert_eq!(ok(&w, "vault_status", json!({}))["unlocked"], false, "restore locks");
+    assert!(invoke(&w, "list_assets", json!({})).is_err(), "locked means locked");
+
+    let old = invoke(&w, "unlock_vault", json!({ "secret": PASS, "useRecoveryKey": false }))
+        .unwrap_err();
+    assert_eq!(old["kind"], "cannot_unlock", "the backup was made after the change");
+    ok(&w, "unlock_vault", json!({ "secret": recovery, "useRecoveryKey": true }));
+    assert_eq!(
+        ok(&w, "list_assets", json!({})).as_array().unwrap().len(),
+        2,
+        "the deleted asset is back"
+    );
+
+    let rotated =
+        ok(&w, "rotate_recovery_key", json!({ "passphrase": "another long passphrase" }));
+    assert_ne!(rotated["recovery_key"].as_str().unwrap(), recovery);
+
+    ok(&w, "lock_vault", json!({}));
+    let stale =
+        invoke(&w, "unlock_vault", json!({ "secret": recovery, "useRecoveryKey": true }))
+            .unwrap_err();
+    assert_eq!(stale["kind"], "cannot_unlock", "a rotated-out recovery key stops working");
+}

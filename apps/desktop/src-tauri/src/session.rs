@@ -64,16 +64,64 @@ impl From<SessionError> for IpcError {
 /// vault has been opened once.
 pub const AUTO_LOCK_IDLE: Duration = Duration::from_secs(15 * 60);
 
-#[derive(Default)]
+/// Bounds on the owner-chosen auto-lock interval. A minute is the shortest
+/// that still lets someone read a detail page; four hours is long enough for
+/// a cataloguing session and short enough that "left it open overnight"
+/// still ends locked.
+pub const MIN_AUTO_LOCK: Duration = Duration::from_secs(60);
+pub const MAX_AUTO_LOCK: Duration = Duration::from_secs(4 * 60 * 60);
+
 pub struct Session {
     vault: Mutex<Option<Vault>>,
     /// Last time a command touched the vault. `None` while locked.
     last_activity: Mutex<Option<Instant>>,
+    idle_limit: Mutex<Duration>,
+}
+
+impl Default for Session {
+    fn default() -> Self {
+        Self {
+            vault: Mutex::new(None),
+            last_activity: Mutex::new(None),
+            idle_limit: Mutex::new(AUTO_LOCK_IDLE),
+        }
+    }
 }
 
 impl Session {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn idle_limit(&self) -> Duration {
+        *self.idle_limit.lock().expect("session mutex poisoned")
+    }
+
+    /// Change the auto-lock interval, clamped to sane bounds.
+    pub fn set_idle_limit(&self, limit: Duration) {
+        *self.idle_limit.lock().expect("session mutex poisoned") =
+            limit.clamp(MIN_AUTO_LOCK, MAX_AUTO_LOCK);
+    }
+
+    /// Back up the open vault without ending the session.
+    ///
+    /// The vault is taken out of the session for the duration — so no other
+    /// command can write while the files are copied — closed, copied, and
+    /// reopened with the same key. If reopening fails the session ends
+    /// locked, which is the safe direction to fail in.
+    pub fn backup(
+        &self,
+        dest: &std::path::Path,
+        now: &str,
+    ) -> Result<am_storage::vault::BackupManifest, SessionError> {
+        let mut guard = self.vault.lock().expect("session mutex poisoned");
+        let vault = guard.take().ok_or(SessionError::Locked)?;
+        let (reopened, result) = vault.backup_and_reopen(dest, now);
+        if reopened.is_none() {
+            *self.last_activity.lock().expect("session mutex poisoned") = None;
+        }
+        *guard = reopened;
+        Ok(result?)
     }
 
     pub fn is_unlocked(&self) -> bool {

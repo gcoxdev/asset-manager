@@ -14,29 +14,15 @@ use am_core::{
     parse_decimal, valuation::WeightBasis, valuation::WeightUnit, Currency, Metal, PRESETS,
 };
 use am_storage::spot::{self, SpotOrigin, SpotReading};
-use am_storage::vault::VaultError;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::session::{IpcError, Session, SessionError};
-
-type IpcResult<T> = Result<T, IpcError>;
+use crate::ipc::{bad_input, base_currency, currency_or, now, storage, IpcResult};
+use crate::session::{IpcError, Session};
 
 /// The provider whose quota is being tracked. One provider for now; when a
 /// second arrives this becomes a parameter rather than a constant.
-const METALS_PROVIDER: &str = "metals.dev";
-
-fn now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-fn bad_input(message: impl Into<String>) -> IpcError {
-    IpcError { kind: "invalid_input".into(), message: message.into() }
-}
-
-fn storage(e: impl std::fmt::Display) -> SessionError {
-    SessionError::Vault(VaultError::Other(e.to_string()))
-}
+pub const METALS_PROVIDER: &str = "metals.dev";
 
 #[derive(Serialize)]
 pub struct PresetInfo {
@@ -52,24 +38,7 @@ pub struct PresetInfo {
     pub purity: String,
 }
 
-fn unit_name(unit: WeightUnit) -> &'static str {
-    match unit {
-        WeightUnit::TroyOunce => "troy_oz",
-        WeightUnit::Gram => "gram",
-        WeightUnit::Pennyweight => "pennyweight",
-        WeightUnit::Ounce => "ounce",
-    }
-}
-
-fn parse_unit(name: &str) -> Option<WeightUnit> {
-    Some(match name {
-        "troy_oz" => WeightUnit::TroyOunce,
-        "gram" => WeightUnit::Gram,
-        "pennyweight" => WeightUnit::Pennyweight,
-        "ounce" => WeightUnit::Ounce,
-        _ => return None,
-    })
-}
+use am_storage::pricing::{parse_unit, unit_name};
 
 #[tauri::command]
 pub fn bullion_presets() -> Vec<PresetInfo> {
@@ -157,18 +126,19 @@ pub fn set_spot_price(
     metal: String,
     price: String,
     currency: Option<String>,
-) -> IpcResult<()> {
+) -> IpcResult<am_storage::pricing::RevalueSummary> {
     session.touch();
     let timestamp = now();
 
     let metal =
         Metal::parse(&metal).ok_or_else(|| bad_input(format!("unknown metal: {metal}")))?;
-    let price = spot::parse_spot_input(&price).map_err(|e| bad_input(e.to_string()))?;
-    let currency = Currency::new(&currency.unwrap_or_else(|| "USD".into()))
-        .map_err(|e| bad_input(e.to_string()))?;
+    let cleaned: String = price.chars().filter(|c| *c != ',' && *c != '$').collect();
+    let price = spot::parse_spot_input(&cleaned).map_err(|e| bad_input(e.to_string()))?;
 
     session
         .with_vault(|vault| {
+            let currency = currency_or(&currency, &base_currency(vault))
+                .map_err(|e| storage(e.message))?;
             spot::record_spot(
                 vault,
                 SpotReading {
@@ -184,7 +154,10 @@ pub fn set_spot_price(
                 &timestamp,
             )
             .map_err(storage)?;
-            Ok(())
+            // A new spot price is only useful if the holdings follow it.
+            let summary =
+                am_storage::pricing::revalue_all(vault, &timestamp).map_err(storage)?;
+            Ok(summary)
         })
         .map_err(IpcError::from)
 }
@@ -415,6 +388,8 @@ pub struct RefreshResult {
     pub updated: Vec<String>,
     pub source_asof: Option<String>,
     pub quota: am_storage::spot::QuotaStatus,
+    /// What the new prices did to the holdings that follow them.
+    pub revalued: am_storage::pricing::RevalueSummary,
 }
 
 /// Fetch fresh spot prices.
@@ -429,20 +404,28 @@ pub fn refresh_spot_prices(
     automatic: Option<bool>,
 ) -> IpcResult<RefreshResult> {
     session.touch();
+    refresh_metals(&session, automatic.unwrap_or(false))
+}
+
+/// The refresh itself, shared by the command and the background poll.
+///
+/// Deliberately does not `touch` the session: a background refresh must not
+/// hold the vault open by counting as activity.
+pub fn refresh_metals(session: &Session, automatic: bool) -> IpcResult<RefreshResult> {
     let timestamp = now();
-    let automatic = automatic.unwrap_or(false);
 
     // Budget check before the network call, so a refused request costs
     // nothing.
-    let allowed = session
+    let (allowed, currency) = session
         .with_vault(|vault| {
             let status =
                 spot::quota_status(vault, METALS_PROVIDER, &timestamp).map_err(storage)?;
-            Ok(if automatic {
+            let allowed = if automatic {
                 status.may_poll_automatically
             } else {
                 status.may_refresh_manually
-            })
+            };
+            Ok((allowed, base_currency(vault)))
         })
         .map_err(IpcError::from)?;
 
@@ -459,7 +442,7 @@ pub fn refresh_spot_prices(
 
     // The network call happens outside the vault lock: a slow response must
     // not hold the database for its duration.
-    let prices = metals_provider::fetch_spot_prices("USD").map_err(|e| IpcError {
+    let prices = metals_provider::fetch_spot_prices(currency.code()).map_err(|e| IpcError {
         kind: match e {
             metals_provider::ProviderError::NoKey => "no_api_key",
             metals_provider::ProviderError::QuotaExhausted => "quota_exhausted",
@@ -504,11 +487,14 @@ pub fn refresh_spot_prices(
                 updated.push(metal.display_name().to_string());
             }
 
+            let revalued =
+                am_storage::pricing::revalue_all(vault, &timestamp).map_err(storage)?;
             Ok(RefreshResult {
                 updated,
                 source_asof: source_asof.clone(),
                 quota: spot::quota_status(vault, METALS_PROVIDER, &timestamp)
                     .map_err(storage)?,
+                revalued,
             })
         })
         .map_err(IpcError::from)

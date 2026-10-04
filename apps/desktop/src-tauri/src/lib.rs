@@ -1,10 +1,12 @@
 //! Asset Manager desktop shell.
 
+pub mod asset_commands;
 pub mod balance_provider;
 pub mod collectible_commands;
 pub mod commands;
 pub mod crypto_commands;
 pub mod crypto_provider;
+pub mod ipc;
 pub mod metals_commands;
 pub mod metals_provider;
 pub mod paths;
@@ -17,7 +19,7 @@ use std::time::Duration;
 
 use tauri::{Emitter, Manager};
 
-use session::{Session, AUTO_LOCK_IDLE};
+use session::Session;
 
 /// Work around a WebKitGTK/Mesa explicit-sync bug on Wayland.
 ///
@@ -60,36 +62,65 @@ fn apply_wayland_workarounds() {}
 pub fn run() {
     apply_wayland_workarounds();
 
-    tauri::Builder::default()
+    configure(tauri::Builder::default())
         .plugin(tauri_plugin_dialog::init())
-        .register_uri_scheme_protocol("asset", protocol::handle)
-        .manage(Session::new())
         .setup(|app| {
-            spawn_auto_lock(app.handle().clone(), AUTO_LOCK_IDLE);
+            spawn_auto_lock(app.handle().clone());
             Ok(())
         })
+        .run(tauri::generate_context!())
+        .expect("error while running Asset Manager");
+}
+
+/// Everything the app is except its window chrome: session state, the
+/// `asset://` protocol and the command table.
+///
+/// Split out of [`run`] so the integration tests drive exactly the handlers
+/// the app ships, over real IPC serialization, on Tauri's mock runtime.
+pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builder<R> {
+    builder
+        .register_uri_scheme_protocol("asset", protocol::handle)
+        .manage(Session::new())
         .invoke_handler(tauri::generate_handler![
+            // Vault, credentials, backup, settings
             commands::vault_status,
             commands::create_vault,
             commands::unlock_vault,
             commands::lock_vault,
-            commands::list_assets,
-            commands::create_asset,
-            commands::search_assets,
             commands::session_state,
-            commands::import_photo,
-            commands::list_photos,
-            commands::remove_photo,
-            commands::export_csv,
-            commands::import_csv,
-            commands::read_text_file,
-            commands::write_text_file,
+            commands::keep_alive,
+            commands::change_passphrase,
+            commands::rotate_recovery_key,
+            commands::backup_vault,
+            commands::restore_vault,
+            commands::get_settings,
+            commands::update_settings,
+            commands::vault_info,
+            // Assets and photos
+            asset_commands::asset_types,
+            asset_commands::list_assets,
+            asset_commands::search_assets,
+            asset_commands::get_asset,
+            asset_commands::validate_asset,
+            asset_commands::create_asset,
+            asset_commands::update_asset,
+            asset_commands::delete_asset,
+            asset_commands::set_pricing,
+            asset_commands::import_photo,
+            asset_commands::list_photos,
+            asset_commands::remove_photo,
+            asset_commands::set_primary_photo,
+            asset_commands::export_csv,
+            asset_commands::import_csv,
+            asset_commands::read_text_file,
+            asset_commands::write_text_file,
+            // Valuation
             valuation_commands::set_prices,
             valuation_commands::portfolio_total,
-            valuation_commands::valuation_history,
+            valuation_commands::dashboard,
             valuation_commands::change_quantity,
-            valuation_commands::quantity_on,
             valuation_commands::portfolio_series,
+            // Metals
             metals_commands::bullion_presets,
             metals_commands::spot_prices,
             metals_commands::set_spot_price,
@@ -98,23 +129,24 @@ pub fn run() {
             metals_commands::metals_provider_status,
             metals_commands::set_metals_api_key,
             metals_commands::refresh_spot_prices,
+            // Crypto
             crypto_commands::common_coins,
             crypto_commands::crypto_provider_status,
             crypto_commands::set_crypto_api_key,
             crypto_commands::value_crypto_holding,
             crypto_commands::refresh_crypto_prices,
-            collectible_commands::collectible_types,
-            collectible_commands::graders,
-            collectible_commands::validate_collectible,
-            collectible_commands::create_collectible,
-            report_commands::insurance_report,
-            collectible_commands::scan_slab_label,
+            crypto_commands::set_coin_price,
+            crypto_commands::crypto_prices,
             crypto_commands::balance_lookup_status,
             crypto_commands::set_balance_lookup,
             crypto_commands::lookup_balance,
+            // Collectibles and reports
+            collectible_commands::collectible_types,
+            collectible_commands::graders,
+            collectible_commands::validate_collectible,
+            collectible_commands::scan_slab_label,
+            report_commands::insurance_report,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Asset Manager");
 }
 
 /// Lock the vault after an idle period.
@@ -126,15 +158,18 @@ pub fn run() {
 /// The frontend is told so it can leave the catalog screen; the lock itself
 /// has already happened in the backend, so a frontend that ignores the event
 /// still cannot read anything.
-fn spawn_auto_lock<R: tauri::Runtime>(app: tauri::AppHandle<R>, idle_limit: Duration) {
+fn spawn_auto_lock<R: tauri::Runtime>(app: tauri::AppHandle<R>) {
     std::thread::spawn(move || {
         // Poll at a fraction of the limit so the worst-case overshoot is small
         // relative to the timeout itself.
-        let interval = (idle_limit / 30).max(Duration::from_secs(1));
+        //
+        // The limit is re-read every tick, since the owner can change it.
         loop {
-            std::thread::sleep(interval);
             let session = app.state::<Session>();
-            if session.lock_if_idle(idle_limit) {
+            let limit = session.idle_limit();
+            let interval = (limit / 30).clamp(Duration::from_secs(1), Duration::from_secs(10));
+            std::thread::sleep(interval);
+            if session.lock_if_idle(limit) {
                 let _ = app.emit("vault-auto-locked", ());
             }
         }

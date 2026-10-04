@@ -1,27 +1,43 @@
-//! Tauri IPC commands.
+//! Vault lifecycle, credentials, backup and settings.
 //!
 //! Every command that touches vault data goes through [`Session::with_vault`],
 //! which rejects while locked. There is no read path around it.
 
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+
 use am_storage::header::Credential;
-use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Runtime, State};
-
-use crate::paths::vault_root;
 use am_storage::vault::VaultError;
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 
+use crate::ipc::{bad_input, base_currency, now, storage, IpcResult, CURRENCY_SETTING};
+use crate::paths::vault_root;
 use crate::session::{default_params, IpcError, Session, SessionError};
-
-type IpcResult<T> = Result<T, IpcError>;
 
 /// Argon2id slows guessing; it cannot compensate for a short passphrase.
 /// QiRing settled on the same floor.
 pub const MIN_PASSPHRASE_CHARS: usize = 12;
 
-/// ISO-8601 UTC. Stored as text so the format is unambiguous across
-/// platforms and readable in a CSV export.
-fn now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+const AUTO_LOCK_SETTING: &str = "auto_lock_minutes";
+const METALS_AUTO_SETTING: &str = "metals_auto_refresh";
+
+fn other(message: String) -> IpcError {
+    IpcError { kind: "error".into(), message }
+}
+
+fn check_passphrase_strength(passphrase: &str) -> IpcResult<()> {
+    // Enforced in the backend: the UI can be bypassed, this cannot.
+    if passphrase.chars().count() < MIN_PASSPHRASE_CHARS {
+        return Err(IpcError {
+            kind: "weak_passphrase".into(),
+            message: format!(
+                "Use at least {MIN_PASSPHRASE_CHARS} characters. \
+                 Argon2id slows guessing but cannot rescue a short passphrase."
+            ),
+        });
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -35,37 +51,6 @@ pub struct CreatedVault {
     /// Shown once, in the recovery ceremony. Never stored anywhere.
     pub recovery_key: String,
     pub fingerprint: String,
-}
-
-#[derive(Serialize)]
-pub struct AssetSummary {
-    pub asset_id: String,
-    pub type_id: String,
-    pub name: String,
-    pub status: String,
-    pub quantity: String,
-    pub quantity_unit: String,
-    pub storage_location: Option<String>,
-    /// Money crosses IPC as a string: JavaScript `number` is 53-bit and would
-    /// silently corrupt large values.
-    pub current_amount_minor: Option<String>,
-    pub current_currency: Option<String>,
-    /// Display-ready, e.g. "1234.50 USD" or "1000 JPY".
-    ///
-    /// Formatted here rather than in the frontend because the number of minor
-    /// digits is per-currency: JPY has none, so a frontend assuming two would
-    /// render ¥1000 as ¥10.00.
-    pub current_display: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct NewAsset {
-    pub type_id: String,
-    pub name: String,
-    pub quantity: String,
-    pub quantity_unit: String,
-    pub storage_location: Option<String>,
-    pub notes: Option<String>,
 }
 
 #[tauri::command]
@@ -84,17 +69,7 @@ pub fn create_vault<R: Runtime>(
     session: State<'_, Session>,
     passphrase: String,
 ) -> IpcResult<CreatedVault> {
-    // Enforced in the backend: the UI can be bypassed, this cannot.
-    if passphrase.chars().count() < MIN_PASSPHRASE_CHARS {
-        return Err(IpcError {
-            kind: "weak_passphrase".into(),
-            message: format!(
-                "Use at least {MIN_PASSPHRASE_CHARS} characters. \
-                 Argon2id slows guessing but cannot rescue a short passphrase."
-            ),
-        });
-    }
-
+    check_passphrase_strength(&passphrase)?;
     let root = vault_root(&app).map_err(other)?;
     let recovery_key = session
         .create(&root, &passphrase, &default_params(), &now())
@@ -113,173 +88,68 @@ pub fn unlock_vault<R: Runtime>(
     let root = vault_root(&app).map_err(other)?;
     let credential =
         if use_recovery_key { Credential::RecoveryKey } else { Credential::Passphrase };
-    session.unlock(&root, credential, &secret).map_err(IpcError::from)
+    session.unlock(&root, credential, &secret).map_err(IpcError::from)?;
+    apply_session_settings(&session);
+    maybe_poll_metals(app);
+    Ok(())
+}
+
+/// Apply per-vault settings that live in the session, not the database.
+fn apply_session_settings(session: &Session) {
+    let minutes = session
+        .with_vault(|vault| {
+            Ok(am_storage::settings::get(vault, AUTO_LOCK_SETTING).ok().flatten())
+        })
+        .ok()
+        .flatten()
+        .and_then(|m| m.parse::<u64>().ok());
+    session.set_idle_limit(match minutes {
+        Some(m) => Duration::from_secs(m * 60),
+        None => crate::session::AUTO_LOCK_IDLE,
+    });
+}
+
+/// Refresh metal prices in the background after unlock, if the owner opted
+/// in and the budget allows it.
+///
+/// Runs on its own thread so unlock is never slowed by the network, and the
+/// fetch holds no vault lock while it waits. If the vault locks before the
+/// response arrives, the write fails with `Locked` and is simply dropped —
+/// a late result cannot repopulate a locked session.
+fn maybe_poll_metals<R: Runtime>(app: AppHandle<R>) {
+    let session = app.state::<Session>();
+    let wanted = session
+        .with_vault(|vault| {
+            let enabled =
+                am_storage::settings::get(vault, METALS_AUTO_SETTING).ok().flatten().as_deref()
+                    == Some("true");
+            if !enabled || !crate::metals_provider::has_api_key() {
+                return Ok(false);
+            }
+            am_storage::spot::should_poll_automatically(
+                vault,
+                am_core::Metal::Gold,
+                crate::metals_commands::METALS_PROVIDER,
+                &now(),
+            )
+            .map_err(storage)
+        })
+        .unwrap_or(false);
+    if !wanted {
+        return;
+    }
+
+    std::thread::spawn(move || {
+        let session = app.state::<Session>();
+        if crate::metals_commands::refresh_metals(&session, true).is_ok() {
+            let _ = app.emit("prices-updated", ());
+        }
+    });
 }
 
 #[tauri::command]
 pub fn lock_vault(session: State<'_, Session>) {
     session.lock();
-}
-
-#[tauri::command]
-pub fn list_assets(session: State<'_, Session>) -> IpcResult<Vec<AssetSummary>> {
-    session.touch();
-    session
-        .with_vault(|vault| {
-            let mut stmt = vault
-                .conn()
-                .prepare(
-                    "SELECT asset_id, type_id, name, status, quantity, quantity_unit,
-                            storage_location, current_amount_minor, current_currency
-                     FROM assets
-                     ORDER BY updated_at DESC",
-                )
-                .map_err(sqlite)?;
-
-            let rows = stmt
-                .query_map([], |r| {
-                    Ok(AssetSummary {
-                        asset_id: r.get(0)?,
-                        type_id: r.get(1)?,
-                        name: r.get(2)?,
-                        status: r.get(3)?,
-                        quantity: r.get(4)?,
-                        quantity_unit: r.get(5)?,
-                        storage_location: r.get(6)?,
-                        current_amount_minor: r
-                            .get::<_, Option<i64>>(7)?
-                            .map(|v| v.to_string()),
-                        current_currency: r.get(8)?,
-                        current_display: format_money(
-                            r.get::<_, Option<i64>>(7)?,
-                            r.get::<_, Option<String>>(8)?,
-                        ),
-                    })
-                })
-                .map_err(sqlite)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(sqlite)?;
-
-            Ok(rows)
-        })
-        .map_err(IpcError::from)
-}
-
-#[tauri::command]
-pub fn create_asset(session: State<'_, Session>, asset: NewAsset) -> IpcResult<String> {
-    session.touch();
-    let asset_id = uuid::Uuid::new_v4().to_string();
-    let timestamp = now();
-
-    session
-        .with_vault(|vault| {
-            let sort = asset.quantity.parse::<f64>().unwrap_or(0.0);
-
-            let tx = vault.conn().unchecked_transaction().map_err(sqlite)?;
-            tx.execute(
-                "INSERT INTO assets
-                   (asset_id, type_id, name, quantity, quantity_sort, quantity_unit,
-                    storage_location, notes, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
-                rusqlite::params![
-                    &asset_id,
-                    &asset.type_id,
-                    &asset.name,
-                    &asset.quantity,
-                    sort,
-                    &asset.quantity_unit,
-                    &asset.storage_location,
-                    asset.notes.as_deref().unwrap_or(""),
-                    &timestamp
-                ],
-            )
-            .map_err(sqlite)?;
-
-            // Even in Phase 1a, ownership starts as an event. Phase 2 makes
-            // this the source of truth; writing it now means no backfill over
-            // encrypted data later.
-            tx.execute(
-                "INSERT INTO asset_events
-                   (event_id, asset_id, event_type, effective_date, quantity_delta, recorded_at)
-                 VALUES (?1, ?2, 'acquire', ?3, ?4, ?3)",
-                rusqlite::params![
-                    uuid::Uuid::new_v4().to_string(),
-                    asset_id,
-                    timestamp,
-                    asset.quantity
-                ],
-            )
-            .map_err(sqlite)?;
-
-            tx.commit().map_err(sqlite)?;
-            Ok(())
-        })
-        .map_err(IpcError::from)?;
-
-    Ok(asset_id)
-}
-
-#[tauri::command]
-pub fn search_assets(
-    session: State<'_, Session>,
-    query: String,
-) -> IpcResult<Vec<AssetSummary>> {
-    session.touch();
-    session
-        .with_vault(|vault| {
-            let mut stmt = vault
-                .conn()
-                .prepare(
-                    "SELECT a.asset_id, a.type_id, a.name, a.status, a.quantity, a.quantity_unit,
-                            a.storage_location, a.current_amount_minor, a.current_currency
-                     FROM assets_fts f
-                     JOIN assets a ON a.rowid = f.rowid
-                     WHERE assets_fts MATCH ?1
-                     ORDER BY rank",
-                )
-                .map_err(sqlite)?;
-
-            let rows = stmt
-                .query_map([&query], |r| {
-                    Ok(AssetSummary {
-                        asset_id: r.get(0)?,
-                        type_id: r.get(1)?,
-                        name: r.get(2)?,
-                        status: r.get(3)?,
-                        quantity: r.get(4)?,
-                        quantity_unit: r.get(5)?,
-                        storage_location: r.get(6)?,
-                        current_amount_minor: r
-                            .get::<_, Option<i64>>(7)?
-                            .map(|v| v.to_string()),
-                        current_currency: r.get(8)?,
-                        current_display: format_money(
-                            r.get::<_, Option<i64>>(7)?,
-                            r.get::<_, Option<String>>(8)?,
-                        ),
-                    })
-                })
-                .map_err(sqlite)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(sqlite)?;
-
-            Ok(rows)
-        })
-        .map_err(IpcError::from)
-}
-
-/// Format an amount for display using the currency's own minor-digit count.
-fn format_money(amount_minor: Option<i64>, currency: Option<String>) -> Option<String> {
-    let (amount, code) = (amount_minor?, currency?);
-    am_core::Currency::new(&code).ok().map(|c| am_core::Money::new(amount, c).format())
-}
-
-fn other(message: String) -> IpcError {
-    IpcError { kind: "error".into(), message }
-}
-
-fn sqlite(e: rusqlite::Error) -> SessionError {
-    SessionError::Vault(am_storage::vault::VaultError::Sqlite(e))
 }
 
 /// Whether the vault is unlocked, and how long it has been idle. The frontend
@@ -297,223 +167,299 @@ pub fn session_state(session: State<'_, Session>) -> SessionState {
     SessionState {
         unlocked: session.is_unlocked(),
         idle_seconds: session.idle_for().map(|d| d.as_secs()),
-        auto_lock_seconds: crate::session::AUTO_LOCK_IDLE.as_secs(),
+        auto_lock_seconds: session.idle_limit().as_secs(),
     }
 }
 
-#[derive(Serialize)]
-pub struct ImportedPhoto {
-    pub object_id: String,
-    pub media_type: String,
-    /// True when identical bytes were already stored and nothing was written.
-    pub deduplicated: bool,
-}
-
-/// Import a photo from a path the user chose in a file dialog.
-///
-/// The path comes from the frontend, so it is read as the user — this imports
-/// a file they picked, it does not grant the vault arbitrary filesystem reach
-/// beyond what the user already has.
+/// Reset the idle clock on user activity that does not otherwise reach the
+/// backend — scrolling, reading, typing into a form.
 #[tauri::command]
-pub fn import_photo<R: Runtime>(
-    app: AppHandle<R>,
-    session: State<'_, Session>,
-    asset_id: String,
-    path: String,
-) -> IpcResult<ImportedPhoto> {
+pub fn keep_alive(session: State<'_, Session>) {
     session.touch();
-    let root = vault_root(&app).map_err(other)?;
-    let timestamp = now();
-
-    // Read before taking the vault lock: file I/O should not hold it.
-    let bytes = std::fs::read(&path)
-        .map_err(|e| IpcError { kind: "unreadable_file".into(), message: e.to_string() })?;
-
-    let stored = session
-        .with_vault(|vault| {
-            let stored = am_storage::objects::import_object(vault, &root, &bytes, &timestamp)
-                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
-            am_storage::objects::attach_to_asset(
-                vault,
-                &asset_id,
-                &stored.object_id,
-                &timestamp,
-            )
-            .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
-
-            // Thumbnails are generated inline for now. When this moves to a
-            // background worker it must be cancellable on lock, or a late
-            // result could write into a vault that has since closed.
-            let _ = am_storage::thumbs::generate_variants(
-                vault,
-                &root,
-                &stored.object_id,
-                &timestamp,
-            );
-            Ok(stored)
-        })
-        .map_err(IpcError::from)?;
-
-    Ok(ImportedPhoto {
-        object_id: stored.object_id,
-        media_type: stored.media_type,
-        deduplicated: stored.deduplicated,
-    })
 }
 
-#[derive(Serialize)]
-pub struct PhotoRef {
-    pub object_id: String,
-    pub media_type: String,
-    pub is_primary: bool,
-}
+// ------------------------------------------------------------ credentials
 
+/// Change the passphrase. The current one is required even though the vault
+/// is open: an unlocked, unattended session must not be enough to take it
+/// over.
 #[tauri::command]
-pub fn list_photos(session: State<'_, Session>, asset_id: String) -> IpcResult<Vec<PhotoRef>> {
-    session.touch();
-    session
-        .with_vault(|vault| {
-            let mut stmt = vault
-                .conn()
-                .prepare(
-                    "SELECT m.object_id, o.media_type, m.is_primary
-                     FROM asset_media m
-                     JOIN objects o ON o.object_id = m.object_id
-                     WHERE m.asset_id = ?1 AND o.gc_state = 'live'
-                     ORDER BY m.is_primary DESC, m.sort_order, m.created_at",
-                )
-                .map_err(sqlite)?;
-
-            let rows = stmt
-                .query_map([&asset_id], |r| {
-                    Ok(PhotoRef {
-                        object_id: r.get(0)?,
-                        media_type: r.get(1)?,
-                        is_primary: r.get::<_, i64>(2)? == 1,
-                    })
-                })
-                .map_err(sqlite)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(sqlite)?;
-            Ok(rows)
-        })
-        .map_err(IpcError::from)
-}
-
-/// Detach a photo and sweep it if nothing else references it.
-#[tauri::command]
-pub fn remove_photo<R: Runtime>(
-    app: AppHandle<R>,
+pub fn change_passphrase(
     session: State<'_, Session>,
-    asset_id: String,
-    object_id: String,
+    current: String,
+    new_passphrase: String,
 ) -> IpcResult<()> {
     session.touch();
-    let root = vault_root(&app).map_err(other)?;
-
+    check_passphrase_strength(&new_passphrase)?;
+    if current == new_passphrase {
+        return Err(bad_input("the new passphrase is the same as the current one"));
+    }
     session
-        .with_vault(|vault| {
-            am_storage::objects::detach_from_asset(vault, &asset_id, &object_id)
-                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
-            am_storage::objects::sweep_deleted(vault, &root)
-                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
+        .with_vault_mut(|vault| {
+            if !vault.verify(Credential::Passphrase, &current) {
+                return Err(SessionError::Vault(VaultError::Other(
+                    "the current passphrase is not correct".into(),
+                )));
+            }
+            vault.change_passphrase(&new_passphrase, &default_params())?;
             Ok(())
         })
         .map_err(IpcError::from)
 }
 
-#[derive(Serialize)]
-pub struct ExportedCsv {
-    pub csv: String,
-    pub row_count: usize,
-    /// Shown verbatim in the UI before the file is saved. An export leaves the
-    /// vault's protection entirely, and users will not infer that.
-    pub warning: String,
-}
-
+/// Issue a new recovery key. The old one stops working for this vault — but
+/// not for older backups, which still hold the old wrapper.
 #[tauri::command]
-pub fn export_csv(session: State<'_, Session>) -> IpcResult<ExportedCsv> {
-    session.touch();
-    let timestamp = now();
-    session
-        .with_vault(|vault| {
-            let result = am_storage::csv::export_assets(vault, &timestamp)
-                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
-            Ok(ExportedCsv {
-                csv: result.csv,
-                row_count: result.row_count,
-                warning: "This file is not encrypted and is not a backup. It excludes \
-                          photos, documents and valuation history. Anyone who can read \
-                          the file can read your catalog."
-                    .to_string(),
-            })
-        })
-        .map_err(IpcError::from)
-}
-
-#[derive(Serialize)]
-pub struct ImportSummary {
-    pub creates: usize,
-    pub updates: usize,
-    pub errors: Vec<String>,
-}
-
-/// Preview or apply a CSV import.
-///
-/// Always call with `apply = false` first: the preview reports every row-level
-/// problem at once, so the spreadsheet can be fixed in one pass.
-#[tauri::command]
-pub fn import_csv(
+pub fn rotate_recovery_key(
     session: State<'_, Session>,
-    contents: String,
-    apply: bool,
-) -> IpcResult<ImportSummary> {
+    passphrase: String,
+) -> IpcResult<CreatedVault> {
     session.touch();
-    let timestamp = now();
-    let mode = if apply {
-        am_storage::csv::ImportMode::Apply
-    } else {
-        am_storage::csv::ImportMode::Preview
-    };
+    session
+        .with_vault_mut(|vault| {
+            if !vault.verify(Credential::Passphrase, &passphrase) {
+                return Err(SessionError::Vault(VaultError::Other(
+                    "the passphrase is not correct".into(),
+                )));
+            }
+            let recovery_key = vault.rotate_recovery_key(&default_params())?;
+            let fingerprint = am_crypto::recovery_fingerprint(&recovery_key);
+            Ok(CreatedVault { recovery_key, fingerprint })
+        })
+        .map_err(IpcError::from)
+}
 
+// ------------------------------------------------------------ backup
+
+const LAST_BACKUP_SETTING: &str = "last_backup_at";
+
+#[derive(Serialize)]
+pub struct BackupResult {
+    pub path: String,
+    pub created_at: String,
+    pub objects: usize,
+}
+
+/// A folder name for a new backup, dated so a directory of them sorts.
+fn backup_folder_name(now: &str) -> String {
+    let stamp: String = now[..19].chars().map(|c| if c == ':' { '-' } else { c }).collect();
+    format!("Asset Manager backup {}", stamp.replace('T', " "))
+}
+
+/// Back up the vault into a new folder inside `directory`.
+///
+/// The copy is ciphertext throughout — header, database and objects — so it
+/// is as safe to keep on an external drive or a synced folder as the vault
+/// itself. It opens with the passphrase or recovery key that were current
+/// when it was made.
+#[tauri::command]
+pub fn backup_vault<R: Runtime>(
+    app: AppHandle<R>,
+    session: State<'_, Session>,
+    directory: String,
+) -> IpcResult<BackupResult> {
+    session.touch();
+    let root = vault_root(&app).map_err(other)?;
+    let parent = PathBuf::from(&directory);
+    if !parent.is_dir() {
+        return Err(bad_input("choose an existing folder for the backup"));
+    }
+    if parent.starts_with(&root) {
+        return Err(bad_input("choose a folder outside the vault itself"));
+    }
+
+    let timestamp = now();
+    let dest = parent.join(backup_folder_name(&timestamp));
+    let manifest = session.backup(&dest, &timestamp).map_err(IpcError::from)?;
+
+    // Recorded so settings can say how long it has been. Best effort: the
+    // backup itself already succeeded.
+    let _ = session.with_vault(|vault| {
+        am_storage::settings::set(vault, LAST_BACKUP_SETTING, &timestamp).map_err(storage)
+    });
+
+    Ok(BackupResult {
+        path: dest.display().to_string(),
+        created_at: manifest.created_at,
+        objects: manifest.objects.len(),
+    })
+}
+
+#[derive(Serialize)]
+pub struct RestoreResult {
+    pub created_at: String,
+    pub objects: usize,
+}
+
+/// Replace the vault with a backup.
+///
+/// Locks first: restoring underneath an open vault would leave the session
+/// pointing at files that no longer exist. The previous vault is kept beside
+/// it as `vault.pre-restore` until the next restore, so a wrong choice here
+/// is recoverable.
+#[tauri::command]
+pub fn restore_vault<R: Runtime>(
+    app: AppHandle<R>,
+    session: State<'_, Session>,
+    directory: String,
+) -> IpcResult<RestoreResult> {
+    let root = vault_root(&app).map_err(other)?;
+    let backup = PathBuf::from(&directory);
+    if backup.starts_with(&root) || root.starts_with(&backup) {
+        return Err(bad_input("that folder is the vault itself, not a backup of it"));
+    }
+    if !is_backup_folder(&backup) {
+        return Err(bad_input(
+            "that folder is not an Asset Manager backup — choose the folder that \
+             contains manifest.json",
+        ));
+    }
+
+    session.lock();
+    if let Some(parent) = root.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| other(e.to_string()))?;
+    }
+    let manifest = am_storage::vault::restore_from(&backup, &root)
+        .map_err(|e| IpcError::from(SessionError::Vault(e)))?;
+    Ok(RestoreResult { created_at: manifest.created_at, objects: manifest.objects.len() })
+}
+
+// ------------------------------------------------------------ settings
+
+#[derive(Serialize, Deserialize)]
+pub struct Settings {
+    pub currency: String,
+    pub auto_lock_minutes: u64,
+    pub metals_auto_refresh: bool,
+    pub balance_lookup: bool,
+    /// Read-only here; written by `backup_vault`.
+    #[serde(default)]
+    pub last_backup_at: Option<String>,
+}
+
+#[tauri::command]
+pub fn get_settings(session: State<'_, Session>) -> IpcResult<Settings> {
+    session.touch();
+    let limit = session.idle_limit();
     session
         .with_vault(|vault| {
-            let preview = am_storage::csv::import_assets(vault, &contents, mode, &timestamp)
-                .map_err(|e| SessionError::Vault(VaultError::Other(e.to_string())))?;
-            Ok(ImportSummary {
-                creates: preview.creates,
-                updates: preview.updates,
-                errors: preview.errors,
+            let get = |k: &str| am_storage::settings::get(vault, k).ok().flatten();
+            Ok(Settings {
+                currency: base_currency(vault).code().to_string(),
+                auto_lock_minutes: limit.as_secs() / 60,
+                metals_auto_refresh: get(METALS_AUTO_SETTING).as_deref() == Some("true"),
+                balance_lookup: get(crate::crypto_commands::BALANCE_OPT_IN_KEY).as_deref()
+                    == Some("true"),
+                last_backup_at: get(LAST_BACKUP_SETTING),
             })
         })
         .map_err(IpcError::from)
 }
 
-/// Read a user-chosen text file.
-///
-/// Deliberately narrow rather than granting the filesystem plugin: this reads
-/// one path the user picked in a dialog, with a size bound, and nothing else.
-/// A general fs permission would widen the attack surface for no benefit.
 #[tauri::command]
-pub fn read_text_file(path: String) -> IpcResult<String> {
-    let meta = std::fs::metadata(&path)
-        .map_err(|e| IpcError { kind: "unreadable_file".into(), message: e.to_string() })?;
-    if meta.len() as usize > am_storage::csv::MAX_FILE_BYTES {
-        return Err(IpcError {
-            kind: "too_large".into(),
-            message: "file is too large to import".into(),
-        });
+pub fn update_settings(session: State<'_, Session>, settings: Settings) -> IpcResult<()> {
+    session.touch();
+    let currency = am_core::Currency::new(&settings.currency)
+        .map_err(|_| bad_input("currency must be a three-letter code such as USD"))?;
+    let minutes = settings.auto_lock_minutes;
+    let limit = Duration::from_secs(minutes * 60);
+    if limit < crate::session::MIN_AUTO_LOCK || limit > crate::session::MAX_AUTO_LOCK {
+        return Err(bad_input("auto-lock must be between 1 minute and 4 hours"));
     }
-    std::fs::read_to_string(&path)
-        .map_err(|e| IpcError { kind: "unreadable_file".into(), message: e.to_string() })
+
+    session
+        .with_vault(|vault| {
+            let set =
+                |k: &str, v: &str| am_storage::settings::set(vault, k, v).map_err(storage);
+            set(CURRENCY_SETTING, currency.code())?;
+            set(AUTO_LOCK_SETTING, &minutes.to_string())?;
+            set(
+                METALS_AUTO_SETTING,
+                if settings.metals_auto_refresh { "true" } else { "false" },
+            )?;
+            set(
+                crate::crypto_commands::BALANCE_OPT_IN_KEY,
+                if settings.balance_lookup { "true" } else { "false" },
+            )?;
+            Ok(())
+        })
+        .map_err(IpcError::from)?;
+    session.set_idle_limit(limit);
+    Ok(())
 }
 
-/// Write a user-chosen text file.
-///
-/// The caller has already warned that the contents leave the vault's
-/// protection; this only performs the write.
+// ------------------------------------------------------------ vault info
+
+#[derive(Serialize)]
+pub struct VaultInfo {
+    pub location: String,
+    pub created_at: String,
+    pub recovery_fingerprint: String,
+    pub key_epoch: u64,
+    pub schema_version: i64,
+    pub asset_count: i64,
+    pub photo_count: i64,
+    /// Encrypted bytes on disk for photos, as text (JS numbers are 53-bit).
+    pub photo_bytes: String,
+}
+
 #[tauri::command]
-pub fn write_text_file(path: String, contents: String) -> IpcResult<()> {
-    std::fs::write(&path, contents)
-        .map_err(|e| IpcError { kind: "unwritable_file".into(), message: e.to_string() })
+pub fn vault_info(session: State<'_, Session>) -> IpcResult<VaultInfo> {
+    session.touch();
+    session
+        .with_vault(|vault| {
+            let header = vault.header();
+            let count = |sql: &str| -> Result<i64, SessionError> {
+                vault.conn().query_row(sql, [], |r| r.get(0)).map_err(storage)
+            };
+            Ok(VaultInfo {
+                location: vault.root().display().to_string(),
+                created_at: header.created_at.clone(),
+                recovery_fingerprint: header.recovery_fingerprint.clone(),
+                key_epoch: header.key_epoch,
+                schema_version: am_storage::migrate::SCHEMA_VERSION,
+                asset_count: count("SELECT count(*) FROM assets")?,
+                photo_count: count("SELECT count(*) FROM objects WHERE gc_state = 'live'")?,
+                photo_bytes: count(
+                    "SELECT coalesce(sum(ciphertext_bytes), 0) FROM objects WHERE gc_state = 'live'",
+                )?
+                .to_string(),
+            })
+        })
+        .map_err(IpcError::from)
+}
+
+/// Whether a path looks like a backup folder, for the restore picker.
+pub fn is_backup_folder(path: &Path) -> bool {
+    path.join("manifest.json").exists() && path.join(am_storage::vault::HEADER_FILE).exists()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backup_folders_are_dated_and_filesystem_safe() {
+        let name = backup_folder_name("2026-09-22T14:03:11Z");
+        assert_eq!(name, "Asset Manager backup 2026-09-22 14-03-11");
+        assert!(!name.contains(':'), "colons are invalid in Windows paths");
+    }
+
+    #[test]
+    fn short_passphrases_are_refused_in_the_backend() {
+        assert!(check_passphrase_strength("too short").is_err());
+        assert!(check_passphrase_strength("long enough passphrase").is_ok());
+        // Counted in characters, not bytes: "é" is two bytes.
+        assert!(check_passphrase_strength("éééééééééééé").is_ok());
+    }
+
+    #[test]
+    fn a_backup_folder_needs_both_manifest_and_header() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_backup_folder(dir.path()));
+        std::fs::write(dir.path().join("manifest.json"), "{}").unwrap();
+        assert!(!is_backup_folder(dir.path()));
+        std::fs::write(dir.path().join(am_storage::vault::HEADER_FILE), "{}").unwrap();
+        assert!(is_backup_folder(dir.path()));
+    }
 }

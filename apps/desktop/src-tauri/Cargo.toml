@@ -33,4 +33,7 @@ default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
 
 [dev-dependencies]
+image.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = ["test"] }
 tempfile = "3"

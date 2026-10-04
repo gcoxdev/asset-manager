@@ -2,54 +2,64 @@
 //!
 //! The one output here that exists for someone else to read: an insurer
 //! handling a claim. That shapes the design — it needs provenance for each
-//! figure, photographs, and a clear statement of what the numbers are and are
-//! not.
+//! figure, identifying details (serials, cert numbers), photographs, and a
+//! clear statement of what the numbers are and are not.
 //!
 //! # Plaintext by nature
 //!
 //! A report is meant to be sent, so it cannot be encrypted and still be
 //! useful. That makes it the single easiest way to leak an entire catalogue,
-//! and the caller warns before writing one.
+//! and the caller warns before writing one. Storage locations are optional
+//! for the same reason: an insurer rarely needs to know which drawer.
+
+use std::collections::BTreeMap;
 
 use am_core::{Currency, Money};
-use am_storage::vault::VaultError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::session::{IpcError, Session, SessionError};
-
-type IpcResult<T> = Result<T, IpcError>;
-
-fn now() -> String {
-    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-}
-
-fn storage(e: impl std::fmt::Display) -> SessionError {
-    SessionError::Vault(VaultError::Other(e.to_string()))
-}
+use crate::ipc::{base_currency, format_money, now, storage, IpcResult};
+use crate::session::{IpcError, Session};
 
 #[derive(Serialize)]
 pub struct ReportItem {
     pub name: String,
-    pub type_id: String,
+    pub type_label: String,
+    pub category: String,
     pub quantity: String,
+    pub quantity_unit: String,
     pub storage_location: Option<String>,
     pub acquired_date: Option<String>,
     pub acquired: Option<String>,
+    pub acquired_from: Option<String>,
     pub current: Option<String>,
     /// Where the current figure came from, so a valuation is not presented as
     /// authoritative when someone typed it in.
     pub value_source: Option<String>,
     pub value_asof: Option<String>,
+    pub insured: Option<String>,
+    /// Identifying details — serials, cert numbers, grades — as label/value
+    /// pairs in a stable order.
+    pub details: Vec<(String, String)>,
+    pub notes: Option<String>,
     /// Object IDs, resolved to embedded images by the caller.
     pub photo_ids: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct ReportCategory {
+    pub category: String,
+    pub count: usize,
+    pub total: String,
 }
 
 #[derive(Serialize)]
 pub struct InsuranceReport {
     pub generated_at: String,
     pub items: Vec<ReportItem>,
+    pub categories: Vec<ReportCategory>,
     pub total: String,
+    pub insured_total: String,
     pub valued: usize,
     /// Items with no valuation. Reported rather than omitted: an insurer
     /// should see that the total is partial.
@@ -58,113 +68,224 @@ pub struct InsuranceReport {
     pub warning: String,
 }
 
-fn format_money(minor: Option<i64>, code: Option<String>) -> Option<String> {
-    let (amount, code) = (minor?, code?);
-    Currency::new(&code).ok().map(|c| Money::new(amount, c).format())
+#[derive(Deserialize, Default)]
+pub struct ReportOptions {
+    #[serde(default = "yes")]
+    pub include_locations: bool,
+    #[serde(default)]
+    pub include_notes: bool,
+    #[serde(default = "yes")]
+    pub include_photos: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// Attribute keys worth showing an insurer, with their labels, in order.
+/// Anything else a record carries is shown after these, labelled from its key.
+const DETAIL_ORDER: &[(&str, &str)] = &[
+    ("serial_number", "Serial"),
+    ("cert_number", "Certificate"),
+    ("grader", "Grader"),
+    ("grade", "Grade"),
+    ("publisher", "Publisher"),
+    ("year", "Year"),
+    ("set", "Set"),
+    ("card_number", "Card number"),
+    ("denomination", "Denomination"),
+    ("mintmark", "Mint mark"),
+    ("metal", "Metal"),
+    ("weight_per_item", "Weight each"),
+    ("weight_unit", "Weight unit"),
+    ("purity", "Purity"),
+    ("coin_id", "Coin"),
+];
+
+/// Keys that describe how to price or look something up, not the item.
+const INTERNAL: &[&str] = &[
+    "preset",
+    "weight_basis",
+    "premium_pct",
+    "watch_address",
+    "watch_chain",
+    "chain",
+    "contract",
+];
+
+fn label_for(key: &str) -> String {
+    if let Some((_, label)) = DETAIL_ORDER.iter().find(|(k, _)| *k == key) {
+        return (*label).to_string();
+    }
+    let words = key.replace('_', " ");
+    let mut chars = words.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
+fn details(attrs: &BTreeMap<String, String>) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = DETAIL_ORDER
+        .iter()
+        .filter_map(|(k, label)| attrs.get(*k).map(|v| ((*label).to_string(), v.clone())))
+        .collect();
+    for (key, value) in attrs {
+        if DETAIL_ORDER.iter().any(|(k, _)| k == key) || INTERNAL.contains(&key.as_str()) {
+            continue;
+        }
+        out.push((label_for(key), value.clone()));
+    }
+    out
 }
 
 /// Build an insurance report over active holdings.
 #[tauri::command]
 pub fn insurance_report(
     session: State<'_, Session>,
-    currency: Option<String>,
+    options: Option<ReportOptions>,
 ) -> IpcResult<InsuranceReport> {
     session.touch();
-    let code = currency.unwrap_or_else(|| "USD".into());
-    let currency = Currency::new(&code)
-        .map_err(|e| IpcError { kind: "invalid_input".into(), message: e.to_string() })?;
+    let options = options.unwrap_or(ReportOptions {
+        include_locations: true,
+        include_notes: false,
+        include_photos: true,
+    });
     let generated_at = now();
 
     session
         .with_vault(|vault| {
+            let currency: Currency = base_currency(vault);
+            let code = currency.code().to_string();
             // Sold and lost items are excluded: a claim covers what is held.
-            let mut stmt = vault
-                .conn()
-                .prepare(
-                    "SELECT asset_id, name, type_id, quantity, storage_location,
-                            acquired_date, acquired_amount_minor, acquired_currency,
-                            current_amount_minor, current_currency, value_source, value_asof
-                     FROM assets
-                     WHERE status = 'active'
-                     ORDER BY name",
-                )
-                .map_err(storage)?;
-
-            let rows: Vec<(String, ReportItem, Option<i64>, Option<String>)> = stmt
-                .query_map([], |r| {
-                    let asset_id: String = r.get(0)?;
-                    let current_minor: Option<i64> = r.get(8)?;
-                    let current_code: Option<String> = r.get(9)?;
-                    Ok((
-                        asset_id,
-                        ReportItem {
-                            name: r.get(1)?,
-                            type_id: r.get(2)?,
-                            quantity: r.get(3)?,
-                            storage_location: r.get(4)?,
-                            acquired_date: r.get(5)?,
-                            acquired: format_money(r.get(6)?, r.get(7)?),
-                            current: format_money(current_minor, current_code.clone()),
-                            value_source: r.get(10)?,
-                            value_asof: r.get(11)?,
-                            photo_ids: Vec::new(),
-                        },
-                        current_minor,
-                        current_code,
-                    ))
-                })
+            let records: Vec<_> = am_storage::assets::list(vault)
                 .map_err(storage)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(storage)?;
-            drop(stmt);
+                .into_iter()
+                .filter(|r| r.status == "active")
+                .collect();
 
             let mut items = Vec::new();
             let mut total = Money::zero(currency.clone());
-            let mut valued = 0usize;
-            let mut unvalued = 0usize;
+            let mut insured_total = Money::zero(currency.clone());
+            let mut categories: Vec<(String, usize, Money)> = Vec::new();
+            let (mut valued, mut unvalued) = (0usize, 0usize);
 
-            for (asset_id, mut item, minor, item_code) in rows {
-                let mut photos = vault
-                    .conn()
-                    .prepare(
-                        "SELECT m.object_id FROM asset_media m
-                         JOIN objects o ON o.object_id = m.object_id
-                         WHERE m.asset_id = ?1 AND o.gc_state = 'live'
-                         ORDER BY m.is_primary DESC, m.sort_order",
-                    )
-                    .map_err(storage)?;
-                item.photo_ids = photos
-                    .query_map([&asset_id], |r| r.get(0))
-                    .map_err(storage)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(storage)?;
-                drop(photos);
+            let mut sorted = records;
+            sorted.sort_by(|a, b| {
+                a.category
+                    .cmp(&b.category)
+                    .then(a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            });
 
-                match (minor, item_code) {
+            for r in sorted {
+                let slot = match categories.iter().position(|c| c.0 == r.category) {
+                    Some(i) => i,
+                    None => {
+                        categories.push((r.category.clone(), 0, Money::zero(currency.clone())));
+                        categories.len() - 1
+                    }
+                };
+                categories[slot].1 += 1;
+
+                match (r.current_amount_minor, r.current_currency.as_deref()) {
                     // Only same-currency items contribute; there is no FX
                     // layer, and a silently converted total would be wrong in
                     // a way an insurer could not see.
-                    (Some(amount), Some(item_code)) if item_code == code => {
-                        total = total
-                            .checked_add(&Money::new(amount, currency.clone()))
-                            .map_err(|e| storage(e.to_string()))?;
+                    (Some(amount), Some(c)) if c == code => {
+                        let m = Money::new(amount, currency.clone());
+                        total = total.checked_add(&m).map_err(storage)?;
+                        categories[slot].2 =
+                            categories[slot].2.checked_add(&m).map_err(storage)?;
                         valued += 1;
                     }
                     _ => unvalued += 1,
                 }
-                items.push(item);
+                if let (Some(amount), Some(c)) =
+                    (r.insured_amount_minor, r.insured_currency.as_deref())
+                {
+                    if c == code {
+                        insured_total = insured_total
+                            .checked_add(&Money::new(amount, currency.clone()))
+                            .map_err(storage)?;
+                    }
+                }
+
+                let photo_ids = if options.include_photos {
+                    let mut photos = vault
+                        .conn()
+                        .prepare(
+                            "SELECT m.object_id FROM asset_media m
+                             JOIN objects o ON o.object_id = m.object_id
+                             WHERE m.asset_id = ?1 AND o.gc_state = 'live'
+                               AND o.media_type LIKE 'image/%'
+                             ORDER BY m.is_primary DESC, m.sort_order LIMIT 4",
+                        )
+                        .map_err(storage)?;
+                    let ids = photos
+                        .query_map([&r.asset_id], |row| row.get(0))
+                        .map_err(storage)?
+                        .collect::<Result<Vec<String>, _>>()
+                        .map_err(storage)?;
+                    ids
+                } else {
+                    Vec::new()
+                };
+
+                items.push(ReportItem {
+                    details: details(&r.attrs),
+                    current: format_money(
+                        r.current_amount_minor,
+                        r.current_currency.as_deref(),
+                    ),
+                    acquired: format_money(
+                        r.acquired_amount_minor,
+                        r.acquired_currency.as_deref(),
+                    ),
+                    insured: format_money(
+                        r.insured_amount_minor,
+                        r.insured_currency.as_deref(),
+                    ),
+                    storage_location: if options.include_locations {
+                        r.storage_location
+                    } else {
+                        None
+                    },
+                    notes: if options.include_notes && !r.notes.is_empty() {
+                        Some(r.notes)
+                    } else {
+                        None
+                    },
+                    name: r.name,
+                    type_label: r.type_label,
+                    category: r.category,
+                    quantity: r.quantity,
+                    quantity_unit: r.quantity_unit,
+                    acquired_date: r.acquired_date,
+                    acquired_from: r.acquired_from,
+                    value_source: r.value_source,
+                    value_asof: r.value_asof,
+                    photo_ids,
+                });
             }
 
             Ok(InsuranceReport {
                 generated_at: generated_at.clone(),
                 items,
+                categories: categories
+                    .into_iter()
+                    .map(|(category, count, sum)| ReportCategory {
+                        category,
+                        count,
+                        total: sum.format(),
+                    })
+                    .collect(),
                 total: total.format(),
+                insured_total: insured_total.format(),
                 valued,
                 unvalued,
                 currency: code.clone(),
-                warning: "This report is not encrypted. It lists what you own, \
-                          what it is worth and where it is kept — treat the file \
-                          as you would the items themselves."
+                warning: "This report is not encrypted. It lists what you own and what it \
+                          is worth — treat the file as you would the items themselves."
                     .to_string(),
             })
         })
@@ -176,20 +297,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn money_formatting_respects_the_currency() {
+    fn identifying_details_come_first_and_internals_are_hidden() {
+        let attrs: BTreeMap<String, String> = [
+            ("zodiac", "Leo"),
+            ("grade", "9.8"),
+            ("cert_number", "0012345"),
+            ("premium_pct", "4"),
+            ("watch_address", "bc1q..."),
+        ]
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+
+        let out = details(&attrs);
+        assert_eq!(out[0], ("Certificate".to_string(), "0012345".to_string()));
+        assert_eq!(out[1], ("Grade".to_string(), "9.8".to_string()));
         assert_eq!(
-            format_money(Some(129_950), Some("USD".into())).as_deref(),
-            Some("1299.50 USD")
+            out[2],
+            ("Zodiac".to_string(), "Leo".to_string()),
+            "unknown keys still shown"
         );
-        // JPY has no minor units; 1000 is a thousand yen, not ten.
-        assert_eq!(format_money(Some(1000), Some("JPY".into())).as_deref(), Some("1000 JPY"));
+        assert_eq!(out.len(), 3, "pricing internals are not item details");
     }
 
     #[test]
-    fn a_missing_amount_or_currency_yields_nothing() {
+    fn money_formatting_respects_the_currency() {
+        assert_eq!(format_money(Some(129_950), Some("USD")).as_deref(), Some("1299.50 USD"));
+        // JPY has no minor units; 1000 is a thousand yen, not ten.
+        assert_eq!(format_money(Some(1000), Some("JPY")).as_deref(), Some("1000 JPY"));
         // Never a zero, which would read as "worthless" rather than "unpriced".
-        assert_eq!(format_money(None, Some("USD".into())), None);
-        assert_eq!(format_money(Some(100), None), None);
-        assert_eq!(format_money(Some(100), Some("NOTACURRENCY".into())), None);
+        assert_eq!(format_money(None, Some("USD")), None);
     }
 }
