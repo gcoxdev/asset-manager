@@ -34,6 +34,7 @@ const KINDS = [
   { id: "wine", type: "wine", label: "Wine & spirits", glyph: "wine", blurb: "Producer, vintage, bottle size" },
   { id: "firearm", type: "firearm", label: "Firearm", glyph: "target", blurb: "Make, model, caliber, serial" },
   { id: "ammunition", type: "ammunition", label: "Ammunition", glyph: "target", blurb: "Caliber, load, rounds held" },
+  { id: "firearm_accessory", type: "firearm_accessory", label: "Optics & accessories", glyph: "target", blurb: "Scopes, suppressors, parts" },
   { id: "cash", type: "cash", label: "Cash & accounts", glyph: "cash", blurb: "Balances held for completeness" },
   { id: "generic", type: "generic", label: "Anything else", glyph: "item", blurb: "A general item with your own details" },
 ];
@@ -125,13 +126,22 @@ export async function openEditAsset(asset, { onSaved } = {}) {
   return m.done;
 }
 
-async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
+/**
+ * The add/edit form for one kind. The kind decides the type and the fields;
+ * there is no separate type control, because a type the fields were not
+ * built for is how a watch ends up with comic-book fields. To change an
+ * existing asset's type, the edit form goes back to the kind picker
+ * ("Change type…") and comes back with the form for the new kind.
+ *
+ * `retypedFrom`: the type label the asset had, when this form is showing it
+ * as a different kind than it is stored as.
+ */
+async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom = null }) {
   const kind = KINDS.find((k) => k.id === kindId) ?? KINDS.at(-1);
-  const [collectibles, graders, settings, types] = await Promise.all([
+  const [collectibles, graders, settings] = await Promise.all([
     store.collectibleTypes(),
     store.graders(),
     store.settings(),
-    store.types(),
   ]);
   const currency = settings.currency;
   const schema = collectibles.find((c) => c.id === kindId);
@@ -151,7 +161,6 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
   // --- identity -------------------------------------------------------
   const name = textInput({ value: asset?.name ?? "", placeholder: "Name", maxlength: 500 });
   const namePreview = h("p", { class: "field-hint" });
-  let typeSelect = null;
 
   const quantity = textInput({ value: editing ? asset.quantity : "1", inputmode: "decimal", disabled: editing });
   const unitDefault = kindId === "crypto" ? (attrs.symbol || "BTC") : "item";
@@ -181,9 +190,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
     identity = collectibleFields(schema, graders, attrs, collect, () => previewName());
     name.placeholder = "Leave blank to name it from the fields above";
   } else {
-    identity = freeFields(SUGGESTED[asset?.type_id] ?? SUGGESTED[kind.type] ?? SUGGESTED.generic, attrs, collect);
-    const freeTypes = types.filter((t) => !["metals", "crypto"].includes(t.category) && !collectibles.some((c) => c.id === t.type_id));
-    typeSelect = select(freeTypes.map((t) => [t.type_id, t.label]), asset?.type_id ?? kind.type);
+    identity = freeFields(SUGGESTED[kind.type] ?? SUGGESTED.generic, attrs, collect);
   }
   name.addEventListener("input", () => (name.dataset.auto = "0"));
 
@@ -209,8 +216,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
       h("h3", {}, "Details"),
       identity.el,
       h("div", { class: "form-grid" },
-        field("Name", name, { span: typeSelect ? 1 : 2, hint: null }),
-        typeSelect ? field("Type", typeSelect) : null
+        field("Name", name, { span: 2, hint: null })
       ),
       namePreview
     )
@@ -330,7 +336,10 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
       review_every_days: review.value ? Number(review.value) : null,
     };
     for (const fn of collect) fn(form);
-    if (typeSelect) form.type_id = typeSelect.value;
+    // An asset whose type has no form of its own opens in the general form;
+    // saving it there must not quietly turn it into a generic item. Only
+    // "Change type…" changes a type.
+    if (editing && !retypedFrom && !schema && !marketKind && kind.type !== asset.type_id) form.type_id = asset.type_id;
     if (!editing) {
       form.pricing = marketKind && followMarket ? "market" : "manual";
       form.current_value = form.pricing === "manual" ? currentValue.value() : null;
@@ -352,6 +361,31 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
   }
 
   const save = h("button", { class: "btn btn-primary", type: "submit" }, editing ? "Save changes" : "Add to catalog");
+  // Metal and crypto are not offered either way: changing them means
+  // changing how the asset is priced, not just which fields it has.
+  const changeType = editing && !marketKind && asset.status !== "sold"
+    ? h("button", { class: "btn btn-ghost", type: "button", onclick: () => {
+        const form = buildForm();
+        const money = (amount, code) => (amount ? `${amount} ${code}` : null);
+        // What has been typed so far comes along to the new kind's form.
+        const draft = {
+          ...asset,
+          name: form.name ?? asset.name,
+          quantity_unit: form.quantity_unit,
+          acquired_date: form.acquired_date,
+          acquired_from: form.acquired_from,
+          storage_location: form.storage_location,
+          notes: form.notes,
+          review_every_days: form.review_every_days,
+          attrs: { ...asset.attrs, ...form.attrs },
+          acquired_display: money(form.acquired_price, form.acquired_currency),
+          acquired_currency: form.acquired_price ? form.acquired_currency : asset.acquired_currency,
+          insured_display: money(form.insured_value, form.insured_currency),
+          insured_currency: form.insured_value ? form.insured_currency : asset.insured_currency,
+        };
+        chooseNewKind(m, body, { draft, currentKind: kindId, onSaved, retypedFrom: retypedFrom ?? asset.type_label });
+      } }, "Change type…")
+    : null;
   const back = editing
     ? h("button", { class: "btn btn-ghost", type: "button", onclick: () => m.close() }, "Cancel")
     : h("button", { class: "btn btn-ghost", type: "button", onclick: () => openAddAssetInPlace(m, body, onSaved) }, icon("back", { size: 16 }), "Other type");
@@ -385,10 +419,36 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
       },
     },
     sections,
-    h("div", { class: "form-actions" }, error, h("div", { class: "btn-row" }, back, save))
+    h("div", { class: "form-actions" }, error, h("div", { class: "btn-row" }, changeType, back, save))
   );
+  if (retypedFrom) {
+    formEl.prepend(callout("info", `Changing from ${retypedFrom} to ${kind.label.toLowerCase()}. Fields carry over; nothing is saved until you choose Save changes.`));
+  }
   mount(body, formEl);
   requestAnimationFrame(() => formEl.querySelector("input:not([disabled]),select")?.focus());
+}
+
+/** Pick the kind an existing asset should become, then show its form. */
+function chooseNewKind(m, body, { draft, currentKind, onSaved, retypedFrom }) {
+  const backToForm = (kindId, changed) =>
+    renderForm(m, body, { mode: "edit", kindId, asset: draft, onSaved, retypedFrom: changed ? retypedFrom : null });
+  mount(
+    body,
+    h("p", { class: "lede" }, "What is this, really? Details you entered carry over to the new form."),
+    h("div", { class: "kind-grid" },
+      KINDS.filter((k) => !["metal", "crypto", currentKind].includes(k.id)).map((k) =>
+        h("button", { class: "kind", onclick: () => backToForm(k.id, true) },
+          h("span", { class: "kind-icon" }, icon(k.glyph, { size: 22 })),
+          h("strong", {}, k.label),
+          h("span", {}, k.blurb)
+        )
+      )
+    ),
+    h("div", { class: "form-actions" }, h("div", { class: "btn-row" },
+      h("button", { class: "btn btn-ghost", type: "button", onclick: () => backToForm(currentKind, retypedFrom !== draft.type_label) },
+        icon("back", { size: 16 }), "Back to the form")
+    ))
+  );
 }
 
 function openAddAssetInPlace(m, body, onSaved) {
@@ -608,6 +668,16 @@ function collectibleFields(schema, graders, attrs, collect, onChange) {
     inputs.set(key, input);
     return field(fmt.fieldLabel(key), input);
   });
+  // Details the record already has beyond this type's fields — from a CSV, or
+  // from before its type changed. Shown and kept, never dropped on save.
+  const known = new Set([...schema.required, ...schema.optional]);
+  const extras = Object.keys(attrs)
+    .filter((key) => !known.has(key) && !["metal", "coin_id"].includes(key))
+    .map((key) => {
+      const input = textInput({ value: attrs[key] });
+      inputs.set(key, input);
+      return field(fmt.fieldLabel(key), input);
+    });
   setTimeout(constrain);
 
   const scan = h("button", {
@@ -647,7 +717,8 @@ function collectibleFields(schema, graders, attrs, collect, onChange) {
   return {
     el: h("div", {},
       inputs.has("cert_number") ? h("div", { class: "scan-row" }, scan, h("span", { class: "field-hint" }, "Reads the barcode from a photo of the label. It tells you which certificate to look up — it does not verify the item.")) : null,
-      h("div", { class: "form-grid" }, required, optional)
+      h("div", { class: "form-grid" }, required, optional),
+      extras.length ? h("div", {}, h("p", { class: "field-hint" }, "Other details"), h("div", { class: "form-grid" }, extras)) : null
     ),
   };
 }
