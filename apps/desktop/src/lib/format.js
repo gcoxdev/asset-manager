@@ -237,6 +237,19 @@ export const DOC_KIND_LABELS = {
   other: "Document",
 };
 
+export const CARE_KINDS = ["service", "repair", "inspection", "cleaning", "appraisal", "battery", "warranty", "other"];
+
+export const CARE_LABELS = {
+  service: "Service",
+  repair: "Repair",
+  inspection: "Inspection",
+  cleaning: "Cleaning",
+  appraisal: "Appraisal",
+  battery: "Battery",
+  warranty: "Warranty",
+  other: "Other care",
+};
+
 export const STATUS_LABELS = { active: "Held", sold: "Sold", lost: "Lost", retired: "Retired" };
 
 /** "player_or_character" → "Player or character". */

@@ -36,6 +36,7 @@ export async function renderOverview(root, _params, ctx) {
     chartCard(d),
     h("div", { class: "grid-2" }, allocationCard(d, ctx), topCard(d, ctx)),
     attentionCard(d, ctx),
+    careDueCard(ctx),
     healthCard(ctx),
     recentCard(d, ctx)
   );
@@ -59,6 +60,27 @@ function backupReminder(ctx) {
     ));
   }).catch(() => {});
   return box;
+}
+
+/** Services, inspections and warranties due in the next two months. */
+function careDueCard(ctx) {
+  const card = h("section", { class: "card" });
+  call("care_due", { withinDays: 60 }).then((due) => {
+    if (!due.length) return card.remove();
+    mount(card,
+      h("div", { class: "card-head" }, h("h2", {}, "Coming up"), h("span", { class: "muted small" }, "Care and warranties due within 60 days")),
+      h("ul", { class: "brief-list" }, due.slice(0, 8).map((d) =>
+        h("li", { class: "attention-item" },
+          h("button", { class: "brief", onclick: () => ctx.navigate("asset", { id: d.asset_id }) },
+            h("span", { class: "brief-text" },
+              h("strong", {}, d.asset_name),
+              h("span", {}, `${fmt.CARE_LABELS[d.kind] ?? d.kind}${d.provider ? ` — ${d.provider}` : ""}`))),
+          h("span", { class: d.overdue ? "badge badge-attention" : "badge badge-muted" },
+            d.overdue ? `Overdue since ${fmt.date(d.next_due)}` : `${d.kind === "warranty" ? "Ends" : "Due"} ${fmt.date(d.next_due)}`)
+        )))
+    );
+  }).catch(() => card.remove());
+  return card;
 }
 
 /**

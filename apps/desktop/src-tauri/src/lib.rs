@@ -3,6 +3,7 @@
 pub mod asset_commands;
 pub mod backup_commands;
 pub mod balance_provider;
+pub mod care_commands;
 pub mod collectible_commands;
 pub mod commands;
 pub mod crypto_commands;
@@ -118,6 +119,11 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             asset_commands::void_valuation,
             asset_commands::asset_revisions,
             asset_commands::restore_revision,
+            // Care and service
+            care_commands::list_care,
+            care_commands::add_care,
+            care_commands::delete_care,
+            care_commands::care_due,
             // Organizing
             organize_commands::list_tags,
             organize_commands::set_asset_tags,

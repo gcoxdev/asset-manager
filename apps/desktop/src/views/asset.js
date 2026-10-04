@@ -61,7 +61,7 @@ export async function renderAsset(root, params, ctx) {
     ),
     h("div", { class: "asset-layout" },
       h("div", { class: "asset-main" }, gallery(a, detail.photos, reload), documentsCard(a, detail.photos, reload), detailsCard(a, detail), notesCard(a)),
-      h("div", { class: "asset-side" }, valueCard(a, detail, reload), historyCard(a, detail, reload), eventsCard(detail))
+      h("div", { class: "asset-side" }, valueCard(a, detail, reload), historyCard(a, detail, reload), careCard(a, detail, reload), eventsCard(detail))
     )
   );
 }
@@ -567,6 +567,98 @@ async function editHistory(a, reload) {
         )
       : h("p", { class: "muted" }, "No edits yet. Each time you save changes, the version before is kept here."),
   });
+}
+
+// ------------------------------------------------------------ care
+
+/** Services, repairs, inspections, warranties — and when the next is due. */
+function careCard(a, detail, reload) {
+  const card = h("section", { class: "card" });
+  const add = h("button", { class: "btn btn-secondary btn-sm", onclick: () => addCare(a, detail, reload) }, icon("plus", { size: 14 }), "Add…");
+  call("list_care", { assetId: a.asset_id }).then((entries) => {
+    const today = fmt.todayIso();
+    // The latest of each kind is the one whose "next due" counts.
+    const latestOfKind = new Set();
+    const seen = new Set();
+    for (const e of entries) if (!seen.has(e.kind)) { seen.add(e.kind); latestOfKind.add(e.care_id); }
+    mount(card,
+      h("div", { class: "card-head" }, h("h2", {}, "Care & service"), add),
+      entries.length
+        ? h("ul", { class: "doc-list" }, entries.map((e) => {
+            const due = latestOfKind.has(e.care_id) && e.next_due;
+            return h("li", {},
+              h("span", { class: "doc-icon" }, icon("clock", { size: 18 })),
+              h("div", { class: "doc-text" },
+                h("strong", {}, fmt.CARE_LABELS[e.kind] ?? e.kind, e.provider ? ` — ${e.provider}` : ""),
+                h("span", { class: "muted small" }, [e.performed_on ? fmt.date(e.performed_on) : "Not done yet", e.cost_display ? fmt.money(e.cost_display) : null, e.document_title ? `Document: ${e.document_title}` : null].filter(Boolean).join(" · ")),
+                e.note ? h("span", { class: "doc-note" }, e.note) : null,
+                due
+                  ? h("span", { class: e.next_due < today ? "badge badge-attention" : "badge badge-muted" }, `${e.kind === "warranty" ? "Ends" : "Next due"} ${fmt.date(e.next_due)}`)
+                  : null
+              ),
+              h("div", { class: "doc-actions" },
+                h("button", { class: "icon-btn", title: "Remove", "aria-label": "Remove this entry", onclick: async () => {
+                  if (!(await confirmDialog({ title: "Remove this entry?", message: "It is removed from the care history.", confirmLabel: "Remove", danger: true }))) return;
+                  try { await call("delete_care", { careId: e.care_id }); reload(); } catch (err) { toast(describe(err), { kind: "error" }); }
+                } }, icon("trash", { size: 16 }))
+              )
+            );
+          }))
+        : h("p", { class: "muted small" }, "Services, repairs, inspections and warranties, with when the next is due — the history a buyer or insurer asks for.")
+    );
+  }).catch(() => card.remove());
+  return card;
+}
+
+function addCare(a, detail, reload) {
+  const docs = detail.photos.filter((p) => p.doc_kind !== "photo");
+  const kind = select(fmt.CARE_KINDS.map((k) => [k, fmt.CARE_LABELS[k]]), "service");
+  const done = h("input", { type: "date", value: fmt.todayIso(), max: fmt.todayIso() });
+  const provider = h("input", { type: "text", maxlength: 200, placeholder: "Who did it" });
+  const cost = h("input", { type: "text", inputmode: "decimal", class: "input-money", placeholder: "0.00" });
+  const currency = select(fmt.COMMON_CURRENCIES.map((c) => [c, c]), a.current_currency ?? a.acquired_currency ?? "USD", { class: "affix affix-select", "aria-label": "Currency" });
+  const next = h("input", { type: "date" });
+  const invoice = select([["", "None"], ...docs.map((d) => [d.object_id, d.title ?? fmt.DOC_KIND_LABELS[d.doc_kind]])], "");
+  const note = h("input", { type: "text", maxlength: 2000 });
+  const inYears = (n) => {
+    const base = done.value || fmt.todayIso();
+    const [y, m, d] = base.split("-").map(Number);
+    const date = new Date(y + n, m - 1, d);
+    const pad = (x) => String(x).padStart(2, "0");
+    next.value = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  };
+  kind.addEventListener("change", () => {
+    // A warranty is about when it ends; its start may not be known.
+    if (kind.value === "warranty" && done.value === fmt.todayIso()) done.value = "";
+  });
+  const save = h("button", { class: "btn btn-primary" }, "Add");
+  const m = modal({
+    title: "Add care or service",
+    subtitle: a.name,
+    size: "md",
+    body: h("div", { class: "form-grid" },
+      field("What", kind),
+      field("Done on", done, { hint: "Leave blank for something only due, like a warranty's end." }),
+      field("By", provider),
+      field("Cost", h("div", { class: "input-affix" }, currency, cost), { hint: "Not added to what it cost to buy." }),
+      field("Next due", h("div", { class: "stack" }, next,
+        h("div", { class: "btn-row" }, [1, 2, 5].map((n) => h("button", { type: "button", class: "btn btn-ghost btn-sm", onclick: () => inYears(n) }, `+${n} year${n === 1 ? "" : "s"}`)))),
+        { hint: "Shown on the overview as it comes up." }),
+      docs.length ? field("Invoice or document", invoice) : null,
+      field("Note", note, { span: 2 })
+    ),
+    footer: (close) => [h("button", { class: "btn btn-ghost", onclick: () => close() }, "Cancel"), save],
+  });
+  save.addEventListener("click", () => busy(save, async () => {
+    await call("add_care", { entry: {
+      asset_id: a.asset_id, kind: kind.value, performed_on: done.value || null, provider: provider.value.trim() || null,
+      cost: cost.value.trim() || null, currency: currency.value, next_due: next.value || null,
+      object_id: invoice.value || null, note: note.value.trim(),
+    } });
+    m.close();
+    toast("Added to the care history.", { kind: "success" });
+    reload();
+  }));
 }
 
 const STATUS_EVENT_LABELS = { lost: "Marked lost", retired: "Retired", active: "Recovered" };

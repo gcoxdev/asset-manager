@@ -184,6 +184,21 @@ fn the_frontend_contract_holds_end_to_end() {
     ok(&w, "delete_asset", json!({ "assetId": rifle }));
     ok(&w, "purge_trash", json!({ "assetId": rifle }));
 
+    // Care: a service with its cost, and the next one due soon.
+    let care_id = ok(
+        &w,
+        "add_care",
+        json!({ "entry": { "asset_id": comic, "kind": "inspection", "performed_on": "2026-01-02",
+                           "provider": "CGC", "cost": "45", "next_due": "2026-01-03" } }),
+    );
+    let history = ok(&w, "list_care", json!({ "assetId": comic }));
+    assert_eq!(history[0]["cost_display"], "45.00 USD");
+    let due = ok(&w, "care_due", json!({}));
+    assert_eq!(due[0]["overdue"], true);
+    assert_eq!(due[0]["asset_name"], "Amazing Fantasy #15 — CGC 9.8");
+    ok(&w, "delete_care", json!({ "careId": care_id }));
+    assert_eq!(ok(&w, "care_due", json!({})), json!([]));
+
     // Organizing: tags, a location move, a bulk change, a duplicate, a view.
     ok(&w, "set_asset_tags", json!({ "assetId": comic, "tags": ["Key issues", "Insured"] }));
     assert_eq!(ok(&w, "list_tags", json!({})).as_array().unwrap().len(), 2);
