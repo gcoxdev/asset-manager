@@ -933,3 +933,9 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
 }
 
 .inline-form input { width: 120px; }
+
+/* Asset form: details outside a type's own fields, kept apart from them. */
+.carry-over, .other-details { margin-top: 14px; padding: 12px 14px; border: 1px dashed var(--border-strong); border-radius: var(--radius); }
+.carry-over { background: var(--surface-2); }
+.carry-over .kv { margin: 8px 0 10px; }
+.carry-over-head { font-size: 12.5px; font-weight: 600; color: var(--text-2); margin-bottom: 4px; }

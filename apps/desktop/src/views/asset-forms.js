@@ -63,6 +63,28 @@ const SUGGESTED = {
   generic: ["brand", "model", "serial_number"],
 };
 
+/** Attribute keys that steer pricing rather than describe the item. */
+const INTERNAL_ATTRS = ["metal", "coin_id"];
+
+/**
+ * Details a record has beyond its type's own fields — from a CSV import, or
+ * kept on purpose through a type change. Listed apart from the type's
+ * fields so they are never mistaken for part of it, and kept on save.
+ */
+function otherDetails(attrs, known, inputs) {
+  const keys = Object.keys(attrs).filter((key) => !known.includes(key) && !INTERNAL_ATTRS.includes(key));
+  if (!keys.length) return null;
+  return h("div", { class: "other-details" },
+    h("p", { class: "carry-over-head" }, "Other details"),
+    h("p", { class: "field-hint" }, "Not part of this type's fields; kept with the record. Clear one to remove it."),
+    h("div", { class: "form-grid" }, keys.map((key) => {
+      const input = textInput({ value: attrs[key] });
+      inputs.set(key, input);
+      return field(fmt.fieldLabel(key), input);
+    }))
+  );
+}
+
 const COIN_PRESETS = new Set(["ase", "maple_silver", "age", "maple_gold", "krugerrand", "platinum_eagle", "britannia_silver", "buffalo", "palladium_maple"]);
 const METAL_TYPE = { XAU: "gold_bullion", XAG: "silver_bullion", XPT: "platinum_bullion", XPD: "palladium_bullion" };
 
@@ -134,7 +156,8 @@ export async function openEditAsset(asset, { onSaved } = {}) {
  * ("Change type…") and comes back with the form for the new kind.
  *
  * `retypedFrom`: the type label the asset had, when this form is showing it
- * as a different kind than it is stored as.
+ * as a different kind than it is stored as. Details both kinds use carry
+ * over; the rest are listed apart and dropped on save unless kept.
  */
 async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom = null }) {
   const kind = KINDS.find((k) => k.id === kindId) ?? KINDS.at(-1);
@@ -145,8 +168,23 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
   ]);
   const currency = settings.currency;
   const schema = collectibles.find((c) => c.id === kindId);
-  const attrs = { ...(asset?.attrs ?? {}) };
   const editing = mode === "edit";
+
+  // The fields this kind's form is built from.
+  const kindKeys = schema ? [...schema.required, ...schema.optional] : SUGGESTED[kind.type] ?? SUGGESTED.generic;
+  // After a type change, only details the new kind also uses come into its
+  // form. The others are held apart, shown, and kept only if asked.
+  const attrs = { ...(asset?.attrs ?? {}) };
+  const leftovers = {};
+  if (retypedFrom) {
+    for (const key of Object.keys(attrs)) {
+      if (!kindKeys.includes(key) && !INTERNAL_ATTRS.includes(key)) {
+        leftovers[key] = attrs[key];
+        delete attrs[key];
+      }
+    }
+  }
+  let keepLeftovers = false;
 
   // Retitle for the chosen kind.
   const title = m.dialog.querySelector(".modal-title");
@@ -190,9 +228,21 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
     identity = collectibleFields(schema, graders, attrs, collect, () => previewName());
     name.placeholder = "Leave blank to name it from the fields above";
   } else {
-    identity = freeFields(SUGGESTED[kind.type] ?? SUGGESTED.generic, attrs, collect);
+    identity = freeFields(kindKeys, attrs, collect);
   }
   name.addEventListener("input", () => (name.dataset.auto = "0"));
+
+  function leftoverSection() {
+    const keys = Object.keys(leftovers);
+    if (!keys.length) return null;
+    return h("div", { class: "carry-over" },
+      h("p", { class: "carry-over-head" }, `From the ${retypedFrom.toLowerCase()} — not used by ${kind.label.toLowerCase()}`),
+      h("dl", { class: "kv" }, keys.map((key) => [h("dt", {}, fmt.fieldLabel(key)), h("dd", {}, leftovers[key])])),
+      toggle("Keep these as other details", false, (on) => (keepLeftovers = on), {
+        hint: "Off: they are removed when you save. On: they are kept with the record, apart from this type's fields.",
+      })
+    );
+  }
 
   const previewName = debounce(async () => {
     if (!schema) return;
@@ -215,6 +265,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
     h("section", { class: "form-section" },
       h("h3", {}, "Details"),
       identity.el,
+      leftoverSection(),
       h("div", { class: "form-grid" },
         field("Name", name, { span: 2, hint: null })
       ),
@@ -336,6 +387,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
       review_every_days: review.value ? Number(review.value) : null,
     };
     for (const fn of collect) fn(form);
+    if (keepLeftovers) form.attrs = { ...leftovers, ...form.attrs };
     // An asset whose type has no form of its own opens in the general form;
     // saving it there must not quietly turn it into a generic item. Only
     // "Change type…" changes a type.
@@ -377,13 +429,15 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
           storage_location: form.storage_location,
           notes: form.notes,
           review_every_days: form.review_every_days,
-          attrs: { ...asset.attrs, ...form.attrs },
+          // Set-aside details travel too, so changing again — or back —
+          // can still use them; each form decides again what applies.
+          attrs: { ...leftovers, ...form.attrs },
           acquired_display: money(form.acquired_price, form.acquired_currency),
           acquired_currency: form.acquired_price ? form.acquired_currency : asset.acquired_currency,
           insured_display: money(form.insured_value, form.insured_currency),
           insured_currency: form.insured_value ? form.insured_currency : asset.insured_currency,
         };
-        chooseNewKind(m, body, { draft, currentKind: kindId, onSaved, retypedFrom: retypedFrom ?? asset.type_label });
+        chooseNewKind(m, body, { draft, currentKind: kindId, onSaved, retypedFrom: retypedFrom ?? asset.type_label, currentRetyped: Boolean(retypedFrom) });
       } }, "Change type…")
     : null;
   const back = editing
@@ -422,14 +476,14 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved, retypedFrom =
     h("div", { class: "form-actions" }, error, h("div", { class: "btn-row" }, changeType, back, save))
   );
   if (retypedFrom) {
-    formEl.prepend(callout("info", `Changing from ${retypedFrom} to ${kind.label.toLowerCase()}. Fields carry over; nothing is saved until you choose Save changes.`));
+    formEl.prepend(callout("info", `Changing from ${retypedFrom.toLowerCase()} to ${kind.label.toLowerCase()}. Details both use carry over; nothing is saved until you choose Save changes.`));
   }
   mount(body, formEl);
   requestAnimationFrame(() => formEl.querySelector("input:not([disabled]),select")?.focus());
 }
 
 /** Pick the kind an existing asset should become, then show its form. */
-function chooseNewKind(m, body, { draft, currentKind, onSaved, retypedFrom }) {
+function chooseNewKind(m, body, { draft, currentKind, onSaved, retypedFrom, currentRetyped }) {
   const backToForm = (kindId, changed) =>
     renderForm(m, body, { mode: "edit", kindId, asset: draft, onSaved, retypedFrom: changed ? retypedFrom : null });
   mount(
@@ -445,7 +499,7 @@ function chooseNewKind(m, body, { draft, currentKind, onSaved, retypedFrom }) {
       )
     ),
     h("div", { class: "form-actions" }, h("div", { class: "btn-row" },
-      h("button", { class: "btn btn-ghost", type: "button", onclick: () => backToForm(currentKind, retypedFrom !== draft.type_label) },
+      h("button", { class: "btn btn-ghost", type: "button", onclick: () => backToForm(currentKind, currentRetyped) },
         icon("back", { size: 16 }), "Back to the form")
     ))
   );
@@ -668,16 +722,7 @@ function collectibleFields(schema, graders, attrs, collect, onChange) {
     inputs.set(key, input);
     return field(fmt.fieldLabel(key), input);
   });
-  // Details the record already has beyond this type's fields — from a CSV, or
-  // from before its type changed. Shown and kept, never dropped on save.
-  const known = new Set([...schema.required, ...schema.optional]);
-  const extras = Object.keys(attrs)
-    .filter((key) => !known.has(key) && !["metal", "coin_id"].includes(key))
-    .map((key) => {
-      const input = textInput({ value: attrs[key] });
-      inputs.set(key, input);
-      return field(fmt.fieldLabel(key), input);
-    });
+  const extras = otherDetails(attrs, [...schema.required, ...schema.optional], inputs);
   setTimeout(constrain);
 
   const scan = h("button", {
@@ -718,26 +763,26 @@ function collectibleFields(schema, graders, attrs, collect, onChange) {
     el: h("div", {},
       inputs.has("cert_number") ? h("div", { class: "scan-row" }, scan, h("span", { class: "field-hint" }, "Reads the barcode from a photo of the label. It tells you which certificate to look up — it does not verify the item.")) : null,
       h("div", { class: "form-grid" }, required, optional),
-      extras.length ? h("div", {}, h("p", { class: "field-hint" }, "Other details"), h("div", { class: "form-grid" }, extras)) : null
+      extras
     ),
   };
 }
 
 function freeFields(keys, attrs, collect) {
   const inputs = new Map();
-  const allKeys = [...new Set([...keys, ...Object.keys(attrs).filter((k) => !["metal", "coin_id"].includes(k))])];
-  const fields = allKeys.map((key) => {
+  const fields = keys.map((key) => {
     const input = textInput({ value: attrs[key] ?? "" });
     inputs.set(key, input);
     return field(fmt.fieldLabel(key), input);
   });
+  const extras = otherDetails(attrs, keys, inputs);
   collect.push((form) => {
     for (const [key, input] of inputs) {
       const v = input.value.trim();
       if (v) form.attrs[key] = v;
     }
   });
-  return { el: h("div", { class: "form-grid" }, fields) };
+  return { el: h("div", {}, h("div", { class: "form-grid" }, fields), extras) };
 }
 
 // ------------------------------------------------------------ update value
