@@ -14,6 +14,7 @@ import * as fmt from "../lib/format.js";
 import * as store from "../lib/store.js";
 import { busy, toast, confirmDialog, modal, callout } from "../ui/components.js";
 import { runPrint } from "./onboarding.js";
+import { importSpreadsheet, saveTemplate } from "./spreadsheet-import.js";
 
 export async function renderReports(root, _params, ctx) {
   const options = { include_locations: false, include_notes: false, include_photos: true, include_lost: false, include_documents: true };
@@ -50,6 +51,18 @@ export async function renderReports(root, _params, ctx) {
       h("div", { class: "btn-row" }, build)
     ),
     preview,
+    h("section", { class: "card" },
+      h("div", { class: "card-head" }, h("div", {}, h("h2", {}, "Import your own spreadsheet"), h("p", { class: "card-sub" }, "An inventory you already keep — any columns, prices as you wrote them. You say what each column holds and check every row before anything is added."))),
+      h("ul", { class: "rules" },
+        h("li", {}, "Save it as CSV from Excel, Numbers or Google Sheets. Comma, semicolon and tab separated files all work."),
+        h("li", {}, "Prices are read as written — $1,299.50 or 1.299,50 — and dates in the order you choose."),
+        h("li", {}, "Likely duplicates of what is already in your catalog are pointed out before you import.")
+      ),
+      h("div", { class: "btn-row" },
+        h("button", { class: "btn btn-primary", onclick: () => importSpreadsheet(() => ctx.refresh()) }, icon("upload", { size: 16 }), "Import a spreadsheet…"),
+        h("button", { class: "btn btn-ghost", onclick: () => saveTemplate() }, icon("download", { size: 16 }), "Save a template…")
+      )
+    ),
     h("section", { class: "card" },
       h("div", { class: "card-head" }, h("div", {}, h("h2", {}, "Spreadsheet round trip"), h("p", { class: "card-sub" }, "For a few hundred items, export → edit in a spreadsheet → import beats any form."))),
       h("ul", { class: "rules" },

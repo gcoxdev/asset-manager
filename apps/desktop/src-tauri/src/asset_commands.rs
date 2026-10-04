@@ -530,74 +530,88 @@ pub fn validate_asset(session: State<'_, Session>, form: AssetForm) -> IpcResult
 pub fn create_asset(session: State<'_, Session>, form: AssetForm) -> IpcResult<String> {
     session.touch();
     let timestamp = now();
-    let (attrs, derived) = prepare_attrs(&form.type_id, &form.attrs)?;
-    let name = pick_name(&form.name, derived)?;
+    session
+        .with_vault(|vault| atomically(vault, || create_from_form(vault, &form, &timestamp)))
+        .map_err(IpcError::from)
+}
+
+/// A form's rejection, carried as a session error so it can unwind a unit.
+fn invalid(e: IpcError) -> SessionError {
+    SessionError::Vault(am_storage::vault::VaultError::Other(e.message))
+}
+
+/// Validate a form and create the asset in whatever unit is open. The one
+/// path for a new asset, shared by the add form and the spreadsheet import,
+/// so an imported row obeys exactly the rules a typed one does.
+pub(crate) fn create_from_form(
+    vault: &Vault,
+    form: &AssetForm,
+    timestamp: &str,
+) -> Result<String, SessionError> {
+    let timestamp = timestamp.to_string();
+    let (attrs, derived) = prepare_attrs(&form.type_id, &form.attrs).map_err(invalid)?;
+    let name = pick_name(&form.name, derived).map_err(invalid)?;
     let quantity = match form.quantity.as_deref().map(str::trim) {
         None | Some("") => Decimal::ONE,
-        Some(q) => assets::parse_quantity(q).map_err(asset_err)?,
+        Some(q) => assets::parse_quantity(q).map_err(asset_err).map_err(invalid)?,
     };
     let pricing = match form.pricing.as_deref() {
         Some("market") => Pricing::Market,
         _ => Pricing::Manual,
     };
     if pricing == Pricing::Market
-        && MarketSpec::from_attrs(&attrs).map_err(|e| bad_input(e.to_string()))?.is_none()
+        && MarketSpec::from_attrs(&attrs)
+            .map_err(|e| invalid(bad_input(e.to_string())))?
+            .is_none()
     {
-        return Err(bad_input("market pricing needs a metal or a coin to follow"));
+        return Err(invalid(bad_input("market pricing needs a metal or a coin to follow")));
     }
 
-    session
-        .with_vault(|vault| {
-            atomically(vault, || {
-                let currency = currency_or(&form.currency, &base_currency(vault))
-                    .map_err(|e| storage(e.message))?;
-                let cost_currency = field_currency(&form.acquired_currency, None, &currency)
-                    .map_err(|e| storage(e.message))?;
-                let insured_currency = field_currency(&form.insured_currency, None, &currency)
-                    .map_err(|e| storage(e.message))?;
-                let cost = parse_money_opt(&form.acquired_price, &cost_currency)
-                    .map_err(|e| storage(e.message))?;
-                let insured = parse_money_opt(&form.insured_value, &insured_currency)
-                    .map_err(|e| storage(e.message))?;
-                let opening = parse_money_opt(&form.current_value, &currency)
-                    .map_err(|e| storage(e.message))?;
+    let currency =
+        currency_or(&form.currency, &base_currency(vault)).map_err(|e| storage(e.message))?;
+    let cost_currency = field_currency(&form.acquired_currency, None, &currency)
+        .map_err(|e| storage(e.message))?;
+    let insured_currency = field_currency(&form.insured_currency, None, &currency)
+        .map_err(|e| storage(e.message))?;
+    let cost = parse_money_opt(&form.acquired_price, &cost_currency)
+        .map_err(|e| storage(e.message))?;
+    let insured = parse_money_opt(&form.insured_value, &insured_currency)
+        .map_err(|e| storage(e.message))?;
+    let opening =
+        parse_money_opt(&form.current_value, &currency).map_err(|e| storage(e.message))?;
 
-                let asset_id = assets::create(
-                    vault,
-                    &NewAsset {
-                        type_id: form.type_id.clone(),
-                        name: name.clone(),
-                        quantity,
-                        quantity_unit: form.quantity_unit.clone().unwrap_or_default(),
-                        acquired_date: form.acquired_date.clone(),
-                        effective_date: Some(today()),
-                        acquired_cost: cost,
-                        acquired_from: form.acquired_from.clone(),
-                        storage_location: form.storage_location.clone(),
-                        notes: form.notes.clone().unwrap_or_default(),
-                        insured,
-                        attrs: attrs.clone(),
-                        pricing,
-                        review_every_days: form.review_every_days,
-                    },
-                    &timestamp,
-                )
-                .map_err(storage)?;
+    let asset_id = assets::create(
+        vault,
+        &NewAsset {
+            type_id: form.type_id.clone(),
+            name: name.clone(),
+            quantity,
+            quantity_unit: form.quantity_unit.clone().unwrap_or_default(),
+            acquired_date: form.acquired_date.clone(),
+            effective_date: Some(today()),
+            acquired_cost: cost,
+            acquired_from: form.acquired_from.clone(),
+            storage_location: form.storage_location.clone(),
+            notes: form.notes.clone().unwrap_or_default(),
+            insured,
+            attrs: attrs.clone(),
+            pricing,
+            review_every_days: form.review_every_days,
+        },
+        &timestamp,
+    )
+    .map_err(storage)?;
 
-                if let Some(tags) = &form.tags {
-                    am_storage::organize::set_tags(vault, &asset_id, tags, &timestamp)
-                        .map_err(storage)?;
-                }
-                if let Some(value) = opening {
-                    record_manual_value(vault, &asset_id, value, "opening value", &timestamp)?;
-                } else if pricing == Pricing::Market {
-                    am_storage::pricing::revalue_asset(vault, &asset_id, &timestamp, &today())
-                        .map_err(storage)?;
-                }
-                Ok(asset_id)
-            })
-        })
-        .map_err(IpcError::from)
+    if let Some(tags) = &form.tags {
+        am_storage::organize::set_tags(vault, &asset_id, tags, &timestamp).map_err(storage)?;
+    }
+    if let Some(value) = opening {
+        record_manual_value(vault, &asset_id, value, "opening value", &timestamp)?;
+    } else if pricing == Pricing::Market {
+        am_storage::pricing::revalue_asset(vault, &asset_id, &timestamp, &today())
+            .map_err(storage)?;
+    }
+    Ok(asset_id)
 }
 
 #[tauri::command]

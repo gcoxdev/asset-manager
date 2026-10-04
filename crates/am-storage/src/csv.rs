@@ -90,6 +90,15 @@ pub enum CsvError {
 /// Minimal RFC 4180 reader. Hand-rolled rather than pulled in: the format is
 /// small, and export quoting has to be controlled precisely for leading zeros.
 fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError> {
+    parse_delimited(input, ',')
+}
+
+/// The same reader with another separator: spreadsheets saved where the
+/// decimal mark is a comma write semicolons; some tools write tabs.
+pub(crate) fn parse_delimited(
+    input: &str,
+    delimiter: char,
+) -> Result<Vec<Vec<String>>, CsvError> {
     let mut rows = Vec::new();
     let mut row = Vec::new();
     let mut field = String::new();
@@ -120,7 +129,7 @@ fn parse_csv(input: &str) -> Result<Vec<Vec<String>>, CsvError> {
                         reason: "unexpected quote inside an unquoted field".into(),
                     })
                 }
-                ',' => {
+                c if c == delimiter => {
                     row.push(std::mem::take(&mut field));
                 }
                 '\r' => {} // CRLF tolerated

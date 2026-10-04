@@ -11,6 +11,7 @@ import * as store from "../lib/store.js";
 import { sourceBadge, statusBadge, emptyState, select, segmented, busy, toast, toastError, menuButton, modal, field, confirmDialog, tagsInput, suggestInput } from "../ui/components.js";
 import { openAddAsset } from "./asset-forms.js";
 import { exportCsv, importCsv } from "./reports.js";
+import { importSpreadsheet } from "./spreadsheet-import.js";
 
 const PAGE = 300;
 
@@ -193,7 +194,8 @@ export async function renderHoldings(root, params, ctx) {
     { label: "Update many values…", icon: "edit", onSelect: () => { bulk = true; prefs.layout = "list"; draw(); } },
     { label: "Tags & locations…", icon: "tag", onSelect: () => manageNames(tagList, locationList, ctx) },
     "divider",
-    { label: "Import CSV…", icon: "upload", onSelect: () => importCsv(() => ctx.refresh()) },
+    { label: "Import a spreadsheet…", icon: "upload", onSelect: () => importSpreadsheet(() => ctx.refresh()) },
+    { label: "Re-import an export…", icon: "upload", onSelect: () => importCsv(() => ctx.refresh()) },
     { label: "Export CSV…", icon: "download", onSelect: () => exportCsv() },
   ]);
 

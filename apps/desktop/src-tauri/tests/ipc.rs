@@ -371,6 +371,70 @@ fn the_frontend_contract_holds_end_to_end() {
     assert_eq!(detail["asset"]["current_display"], "7407.41 USD", "0.12345678 × 60,000");
     ok(&w, "keep_alive", json!({}));
 
+    // --- a household spreadsheet ---------------------------------------------------------
+    let household = "Item;Type;Purchase price;Date bought;Where;Serial #;Tags\n\
+                     Grandfather clock;Furniture;1.250,00;15/03/2021;Hall;GC-881;heirloom\n\
+                     Omega Speedmaster;Watches;4.100,50;02/11/2019;Safe;OM-12;\n\
+                     Broken row;;12,00;31/02/2020;;;\n";
+    let inspected = ok(&w, "inspect_spreadsheet", json!({ "contents": household }));
+    assert_eq!(inspected["delimiter"], ";");
+    assert_eq!(
+        inspected["mapping"],
+        json!([
+            "name",
+            "type",
+            "acquired_price",
+            "acquired_date",
+            "storage_location",
+            "detail:serial_number",
+            "tags"
+        ])
+    );
+    assert_eq!(
+        inspected["options"]["date_order"], "day_month_year",
+        "15/03 can only be day-first"
+    );
+    assert_eq!(inspected["options"]["decimal_comma"], true);
+
+    let request = |skip: Value, apply: bool| {
+        json!({ "contents": household, "mapping": inspected["mapping"],
+                "options": inspected["options"], "skip": skip, "apply": apply })
+    };
+    let before = ok(&w, "list_assets", json!({})).as_array().unwrap().len();
+    let preview = ok(&w, "import_spreadsheet", request(json!([]), false));
+    assert_eq!((preview["ready"].as_u64(), preview["errors"].as_u64()), (Some(2), Some(1)));
+    assert_eq!(preview["rows"][1]["paid"], "4100.50 USD");
+    assert_eq!(preview["rows"][1]["type_label"], "Watch");
+    assert!(preview["rows"][0]["warnings"][0].as_str().unwrap().contains("Furniture"));
+    assert!(preview["rows"][2]["error"].as_str().unwrap().contains("not a date"));
+    assert_eq!(
+        ok(&w, "list_assets", json!({})).as_array().unwrap().len(),
+        before,
+        "a preview writes nothing"
+    );
+    let refused = ok(&w, "import_spreadsheet", request(json!([]), true));
+    assert_eq!(refused["applied"], false, "not while a row has an error");
+
+    let applied = ok(&w, "import_spreadsheet", request(json!([2]), true));
+    assert_eq!(applied["applied"], true);
+    assert_eq!(ok(&w, "list_assets", json!({})).as_array().unwrap().len(), before + 2);
+    let again = ok(&w, "import_spreadsheet", request(json!([2]), false));
+    assert!(again["rows"][1]["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w.as_str().unwrap().contains("already in the catalog")));
+    assert_eq!(
+        ok(&w, "inspect_spreadsheet", json!({ "contents": household }))["remembered"],
+        true
+    );
+    for a in ok(&w, "list_assets", json!({})).as_array().unwrap() {
+        if a["name"] == "Grandfather clock" || a["name"] == "Omega Speedmaster" {
+            ok(&w, "delete_asset", json!({ "assetId": a["asset_id"] }));
+            ok(&w, "purge_trash", json!({ "assetId": a["asset_id"] }));
+        }
+    }
+
     // --- photos -----------------------------------------------------------------------
     let photo_path = dir.path().join("slab.png");
     image::RgbImage::from_fn(64, 48, |x, y| image::Rgb([x as u8 * 3, y as u8 * 4, 90]))

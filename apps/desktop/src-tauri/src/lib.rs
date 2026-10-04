@@ -14,6 +14,7 @@ pub mod paths;
 pub mod protocol;
 pub mod report_commands;
 pub mod session;
+pub mod spreadsheet_commands;
 pub mod valuation_commands;
 
 use std::time::Duration;
@@ -125,6 +126,8 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             organize_commands::list_saved_views,
             organize_commands::save_view,
             organize_commands::delete_saved_view,
+            spreadsheet_commands::inspect_spreadsheet,
+            spreadsheet_commands::import_spreadsheet,
             asset_commands::set_pricing,
             asset_commands::import_photo,
             asset_commands::list_photos,

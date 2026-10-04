@@ -983,3 +983,9 @@ tr.voided td.num { text-decoration: line-through; }
 .holdings-table.selecting tr[aria-selected="true"] { background: color-mix(in srgb, var(--info-bg) 70%, transparent); }
 .selection-bar { margin-bottom: 10px; }
 .danger-text { color: var(--bad); }
+
+.mapping-table select { width: 100%; min-width: 180px; }
+.sample-cell { max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+tr.row-skipped td { opacity: 0.5; }
+tr.row-error td { background: color-mix(in srgb, var(--bad-bg) 60%, transparent); }
+.warn-text { font-size: 12px; color: var(--attention-ink); }

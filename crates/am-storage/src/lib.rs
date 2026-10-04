@@ -19,6 +19,7 @@ pub mod scanning;
 pub mod series;
 pub mod settings;
 pub mod spot;
+pub mod spreadsheet;
 pub mod summary;
 pub mod thumbs;
 pub mod valuations;
