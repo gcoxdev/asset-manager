@@ -1,6 +1,6 @@
 // One asset: photos, value, details, and its history.
 
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 
 import { call, describe } from "../lib/api.js";
 import { mediaUrl } from "../lib/media.js";
@@ -117,6 +117,7 @@ function gallery(a, photos, reload) {
                 reload();
               } catch (e) { toast(describe(e), { kind: "error" }); }
             } }, icon("star", { size: 14 }), "Make cover"),
+        h("button", { class: "btn btn-overlay btn-sm", "aria-label": "Save a copy of this photo", title: "Save a copy…", onclick: () => saveAttachmentCopy(a, selected) }, icon("download", { size: 14 })),
         h("button", { class: "btn btn-overlay btn-sm", "aria-label": "Remove photo", onclick: () => removePhoto(a, selected, reload) }, icon("trash", { size: 14 }))
       )
     );
@@ -129,7 +130,9 @@ function gallery(a, photos, reload) {
           h("img", { src: mediaUrl(p.object_id, 256), alt: "", loading: "lazy" })
         )
       ),
-      docs.map((p) => h("div", { class: "strip-doc", title: p.media_type }, icon("reports", { size: 18 }), h("span", {}, "PDF"),
+      docs.map((p) => h("div", { class: "strip-doc", title: p.media_type },
+        h("button", { class: "strip-doc-open", "aria-label": "Save a copy of this document", title: "Save a copy…", onclick: () => saveAttachmentCopy(a, p) },
+          icon("reports", { size: 18 }), h("span", {}, "PDF"), icon("download", { size: 12 })),
         h("button", { class: "icon-btn", "aria-label": "Remove document", onclick: () => removePhoto(a, p, reload) }, icon("x", { size: 14 })))),
       h("button", { class: "strip-add", onclick: () => addPhotos(a, reload), "aria-label": "Add photos" }, icon("plus"))
     );
@@ -138,6 +141,34 @@ function gallery(a, photos, reload) {
   drawMain();
   drawStrip();
   return h("section", { class: "card gallery" }, main, strip);
+}
+
+const EXTENSIONS = { "application/pdf": "pdf", "image/jpeg": "jpg", "image/png": "png", "image/webp": "webp", "image/heic": "heic" };
+
+/**
+ * Save a decrypted copy of an attachment where the owner chooses. Opening it
+ * in another app means a plaintext file on disk, so that is said first.
+ */
+async function saveAttachmentCopy(a, attachment) {
+  const ok = await confirmDialog({
+    title: "Save an unencrypted copy?",
+    message: [
+      "The copy is an ordinary file, readable by anything that can open the folder you choose — outside the vault's protection.",
+      "Delete it when you are done with it. The original stays encrypted in the vault.",
+    ],
+    confirmLabel: "Choose where…",
+  });
+  if (!ok) return;
+  const ext = EXTENSIONS[attachment.media_type] ?? "bin";
+  const base = a.name.replace(/[^\w\- ]+/g, "").trim().slice(0, 60) || "attachment";
+  const path = await saveDialog({ defaultPath: `${base}.${ext}`, filters: [{ name: ext.toUpperCase(), extensions: [ext] }] });
+  if (!path) return;
+  try {
+    await call("export_attachment", { assetId: a.asset_id, objectId: attachment.object_id, path });
+    toast("Copy saved. Delete it when you no longer need it.", { kind: "success" });
+  } catch (e) {
+    toast(describe(e), { kind: "error" });
+  }
 }
 
 async function removePhoto(a, photo, reload) {
@@ -192,7 +223,12 @@ function valueCard(a, detail, reload) {
     : h("p", { class: "muted small" }, m ? `Waiting for a ${m.label.toLowerCase()} price.` : "Record what it is worth — your own research counts. Unvalued items are counted on the overview, never treated as zero.");
 
   const rows = [];
-  if (a.acquired_display) rows.push(["Paid", fmt.money(a.acquired_display)]);
+  if (a.acquired_display) {
+    rows.push(["Paid", a.cost_complete
+      ? fmt.money(a.acquired_display)
+      : h("span", {}, fmt.money(a.acquired_display), " ",
+          h("span", { class: "badge badge-attention", title: "Some of this holding was added without a price, so this covers only part of it. Edit the asset and enter the total paid for everything to see a gain." }, "Partial cost"))]);
+  }
   if (a.gain_display) {
     const up = !a.gain_display.startsWith("-");
     const cost = Number(a.acquired_amount_minor);
@@ -285,25 +321,47 @@ function watchBox(a, reload) {
 function historyCard(a, detail) {
   const vals = detail.valuations;
   if (!vals.length) return null;
-  const ordered = [...vals].reverse();
-  const chart = ordered.length >= 2
-    ? valueChart(ordered.map((v) => ({ date: v.asof, display: v.amount, value: fmt.approxMajor(v.amount_minor, fmt.digitsOf(v.amount)), unvalued: 0, event: false })), { currency: vals[0].currency, height: 160, label: "Value history" })
-    : null;
 
-  const rows = vals.slice(0, 12).map((v) =>
+  // One currency per chart: minor units of two currencies are not one scale.
+  // The current value's currency is charted; anything else stays in the
+  // table below, and the chart says so.
+  const currency = a.current_currency ?? vals[0].currency;
+  const charted = [...vals].reverse().filter((v) => v.currency === currency);
+  const otherCurrencies = vals.length - charted.length;
+  const points = charted.map((v, i) => ({
+    date: v.asof,
+    display: v.amount,
+    value: fmt.approxMajor(v.amount_minor, fmt.digitsOf(v.amount)),
+    unvalued: 0,
+    // A value for a different quantity: the step is partly a purchase or
+    // sale, not a change in worth.
+    event: i > 0 && v.quantity_at_time !== charted[i - 1].quantity_at_time,
+  }));
+  const chart = points.length >= 2 ? valueChart(points, { currency, height: 160, label: "Value history" }) : null;
+  const notes = [];
+  if (points.some((p) => p.event)) notes.push("Dots mark values recorded for a different quantity — part of that step is a purchase or sale.");
+  if (otherCurrencies) notes.push(`${otherCurrencies} value${otherCurrencies === 1 ? "" : "s"} in other currencies ${otherCurrencies === 1 ? "is" : "are"} listed below but not charted.`);
+
+  const row = (v) =>
     h("tr", {},
       h("td", {}, fmt.date(v.asof)),
       h("td", { class: "num" }, fmt.money(v.amount)),
       h("td", {}, h("div", { class: "name-cell" },
         h("span", {}, fmt.PROVENANCE_LABELS[v.provenance] ?? v.provenance),
-        h("span", { class: "sub" }, [fmt.BASIS_LABELS[v.basis] ?? v.basis, v.unit_price ? `at ${fmt.unitPrice(v.unit_price, v.currency)}` : null, v.note].filter(Boolean).join(" · "))
+        h("span", { class: "sub" }, [fmt.BASIS_LABELS[v.basis] ?? v.basis, `${fmt.quantity(v.quantity_at_time)} held`, v.unit_price ? `at ${fmt.unitPrice(v.unit_price, v.currency)}` : null, v.note].filter(Boolean).join(" · "))
       ))
-    )
-  );
+    );
+  const LIMIT = 12;
+  const tbody = h("tbody", {}, vals.slice(0, LIMIT).map(row));
+  const showAll = vals.length > LIMIT
+    ? h("button", { class: "btn btn-ghost btn-sm", onclick: () => { mount(tbody, vals.map(row)); showAll.remove(); } }, `Show all ${vals.length}`)
+    : null;
   return h("section", { class: "card" },
     h("div", { class: "card-head" }, h("h2", {}, "Value history"), h("span", { class: "muted small" }, `${vals.length} record${vals.length === 1 ? "" : "s"}`)),
     chart,
-    h("table", { class: "table compact" }, h("tbody", {}, rows))
+    notes.length ? h("p", { class: "chart-notes" }, notes.join(" ")) : null,
+    h("table", { class: "table compact" }, h("caption", { class: "sr-only" }, "Every recorded value, newest first"), tbody),
+    showAll
   );
 }
 

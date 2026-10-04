@@ -595,6 +595,15 @@ fn apply_update(
     row: &ParsedRow,
     now: &str,
 ) -> Result<(), CsvError> {
+    let stored_cost = |tx: &rusqlite::Transaction<'_>| {
+        tx.query_row(
+            "SELECT acquired_amount_minor, acquired_currency FROM assets WHERE asset_id = ?1",
+            [id],
+            |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)),
+        )
+    };
+    let cost_before = stored_cost(tx)?;
+
     for column in COLUMNS.iter().filter(|c| **c != "asset_id" && !DERIVED.contains(c)) {
         let Some(value) = cell(row, column) else { continue };
 
@@ -603,6 +612,12 @@ fn apply_update(
         let sql =
             format!("UPDATE assets SET {column} = ?1, updated_at = ?2 WHERE asset_id = ?3");
         tx.execute(&sql, rusqlite::params![value, now, id])?;
+    }
+
+    // A changed cost is a restated total for the whole position, as in the
+    // edit form; an unchanged one leaves a partial cost partial.
+    if stored_cost(tx)? != cost_before {
+        tx.execute("UPDATE assets SET cost_complete = 1 WHERE asset_id = ?1", [id])?;
     }
 
     // Quantity: a changed figure is a correction, recorded as an event so the

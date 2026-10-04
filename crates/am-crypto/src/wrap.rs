@@ -91,6 +91,11 @@ mod hex_bytes {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
         let s = String::deserialize(d)?;
+        // Checked as bytes before any slicing: a multi-byte character would
+        // otherwise put a slice boundary inside it and panic.
+        if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(serde::de::Error::custom("expected hex characters"));
+        }
         if s.len() % 2 != 0 {
             return Err(serde::de::Error::custom("odd-length hex string"));
         }
@@ -152,6 +157,14 @@ mod tests {
         let a = wrap_data_key(&KEK, &DATA_KEY, b"aad").unwrap();
         let b = wrap_data_key(&KEK, &DATA_KEY, b"aad").unwrap();
         assert_ne!(a.ciphertext, b.ciphertext);
+    }
+
+    #[test]
+    fn non_ascii_hex_is_an_error_not_a_panic() {
+        for bad in ["\"é\"", "\"aé\"", "\"zz\"", "\"abc\""] {
+            let json = format!("{{\"nonce\":{bad},\"ciphertext\":\"00\"}}");
+            assert!(serde_json::from_str::<WrappedKey>(&json).is_err(), "accepted {bad}");
+        }
     }
 
     #[test]

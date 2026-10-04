@@ -15,6 +15,8 @@ not yet frozen; it freezes at the first public release.
 ```
 <app-data>/asset-manager/
 ├── vault.header          unencrypted, authenticated (§3)
+├── vault.header.next     only mid credential change; see §3 "Credential changes"
+├── vault.lock            OS file lock held while open; contents informational
 ├── catalog.db            SQLCipher database (§5)
 ├── catalog.db-wal        WAL; transient
 ├── objects/              encrypted originals (§4)
@@ -24,9 +26,9 @@ not yet frozen; it freezes at the first public release.
         └── 9b/21/9b21c7e4…
 ```
 
-A **backup** is `vault.header` + `catalog.db` + `objects/`. `cache/` is
-regenerable and excluded. **Omitting `vault.header` makes the backup
-permanently undecryptable** — it holds the wrapped data key.
+A **backup** is `vault.header` + `catalog.db` + `objects/` + `manifest.json`
+(§6). `cache/` is regenerable and excluded. **Omitting `vault.header` makes the
+backup permanently undecryptable** — it holds the wrapped data key.
 
 Filenames are opaque. Object IDs are random, carry no extension, and reveal
 nothing about content, type or which thumbnail sizes exist. The plaintext hash
@@ -136,7 +138,9 @@ the AAD, so editing it breaks the unwrap like any other tampering.
 > `wrapped_at_epoch`, the KEK is derived once and the unwrap retried at each
 > earlier epoch. A match must still pass the header↔database pairing check
 > before it is accepted and pinned into the header. A wrong credential never
-> matches; an edited epoch gains nothing, because pairing fails.
+> matches; an edited epoch gains nothing, because pairing fails. The retry
+> covers at most the 4,096 most recent epochs, so a header edited to claim an
+> enormous epoch cannot demand unbounded work.
 
 Field order is part of the format: reordering the `AuthenticatedHeader` struct
 changes the AAD and breaks every existing vault.
@@ -157,6 +161,29 @@ changes the AAD and breaks every existing vault.
 
 Write to a temporary file in the same directory, fsync, rename. The rename is
 atomic; a crash leaves either the old or the new header, never a partial one.
+
+### Credential changes
+
+A passphrase change or recovery-key rotation moves the header *and* the
+database to a new `key_epoch` (§5, pairing). One rename cannot replace two
+files, so the change is staged:
+
+1. Write the new header to `vault.header.next` (atomically, as above).
+2. Advance `key_epoch` in the database. This commit is the point of no return.
+3. Rename `vault.header.next` over `vault.header`.
+
+Stopping after any step — a crash, a full disk — leaves a vault that opens. The
+old and new headers wrap the *same* data key, so whichever one the typed
+credential unwraps reaches the database, and the database's epoch then says
+which header is current:
+
+| Stopped after | Database epoch | Unlock with the old credential | Unlock with the new credential |
+|---|---|---|---|
+| step 1 | old | old header pairs; `.next` is discarded | finishes the change (advances the database, installs `.next`) |
+| step 2 | new | `.next` pairs and is installed | `.next` pairs and is installed |
+
+Either way `vault.header.next` is gone afterwards. A header that pairs with
+neither is still a pairing error (§5); staging does not loosen that check.
 
 ---
 
@@ -246,7 +273,8 @@ Without this, restoring a backup's `vault.header` beside a current `catalog.db`
 undecryptable vault, and the failure *looks like a wrong passphrase*, sending
 the user after the wrong problem. On mismatch, refuse to open and say so.
 
-`key_epoch` increments on every credential change or rewrap.
+`key_epoch` increments on every credential change or rewrap. See
+"Credential changes" (§3) for how the two move together.
 
 ### Schema versions
 
@@ -255,6 +283,7 @@ the user after the wrong problem. On mismatch, refuse to open and say so.
 | 1 | Initial schema |
 | 2 | `app_settings` (per-vault settings, including privacy opt-ins) |
 | 3 | Effective dates normalized to calendar dates; type categories and the types the forms create; collectibles saved as `generic` reclassified from their fields; `pricing` (`manual`/`market`) and `review_every_days` on assets; FTS index extended to type-specific attributes |
+| 4 | `cost_complete` on assets: false when part of a holding was added at an unknown cost (or in another currency), so no gain is computed against a cost covering only some of it. Backfilled from existing `add` events |
 
 ---
 
@@ -268,19 +297,75 @@ failure. Pause-and-copy is therefore the only protocol:
 1. Pause writes; finish or cancel in-flight imports.
 2. `PRAGMA wal_checkpoint(TRUNCATE)` — without this a copy can miss committed
    transactions still living in the WAL.
-3. Close all database connections.
-4. Copy `vault.header`, `catalog.db`, and `objects/`. Pin referenced objects
-   against GC until the copy completes.
-5. Write a manifest: format version, vault ID, key epoch, object list, sizes
-   and hashes.
+3. Close all database connections, **keeping the process lock** (`vault.lock`)
+   until the vault is reopened: another instance must not open and write to
+   the vault mid-copy.
+4. Copy `vault.header`, `catalog.db`, and every *live* object the database
+   lists into `<destination>.partial`, fsyncing each file.
+5. Write the manifest last, then rename `<destination>.partial` to the
+   destination. A folder under the real name is therefore always a complete
+   backup; a failed one leaves nothing that looks finished.
 
-The manifest carries an object list **from v1**, even though v1 copies
-everything. Objects are immutable and content-addressed, so incremental backup
-is nearly free later — but only if the manifest format allows it. Retrofitting
-is a format migration.
+### Manifest
 
-Restore into a **staging directory**, verify the manifest and object integrity,
-then swap — keeping a recoverable pre-restore copy.
+```json
+{
+  "format": "asset-manager-vault-v1",
+  "manifest_version": 2,
+  "format_version": 1, "schema_version": 4,
+  "vault_id": "…", "key_epoch": 3, "created_at": "…",
+  "objects": [{ "object_id": "3f7a…", "ciphertext_sha256": "…", "bytes": 48213 }]
+}
+```
+
+The manifest is **plaintext**, so it carries only what a copy of the vault
+directory already reveals (§7): object IDs and sizes, plus a SHA-256 of each
+*encrypted* file to detect a damaged copy.
+
+> **Never a plaintext hash.** `manifest_version` 1 listed each object's
+> plaintext SHA-256 — the deduplication hash. Anyone holding such a backup
+> could hash a photograph of their own and confirm whether the vault held
+> it, without unlocking anything. Version 1 manifests are still restored
+> (the plaintext field is ignored), but are never written. A new backup does
+> not change copies already made: delete version 1 backups you no longer need,
+> after making a new one.
+
+The manifest carries an object list because objects are immutable and
+content-addressed, so incremental backup is nearly free later — but only if
+the manifest format allows it.
+
+### Restore
+
+A backup folder is untrusted input, however it was made. Restore:
+
+1. Validates the manifest before anything else: bounded size, known format and
+   versions, well-formed vault and object IDs and digests. Header, database and
+   objects must be regular files — a symlink is refused.
+2. Copies header and database into `<vault>.restore-staging` and **unlocks the
+   staged copy with the passphrase or recovery key the backup opens with** —
+   the same unlock, migrations and pairing check the restored vault will get.
+3. Runs `PRAGMA integrity_check`.
+4. Copies every live object **the encrypted database lists** — not the
+   manifest, which anyone can edit — checking each one's size against the
+   database and its digest against the manifest. From version 2 an object
+   missing from the manifest is an error.
+5. Only then: refuses if another instance holds the vault's lock, moves the
+   current vault aside to `<vault>.pre-restore`, and renames the staged copy
+   into place, putting the previous vault back if that rename fails.
+
+A backup that fails any check — damaged, edited, incomplete, or simply one
+whose credential is not known — never displaces the vault in place, and its
+staging folder is removed. The desktop app keeps the current session open
+until step 5, then opens the restored vault with the same credential.
+
+### Process lock
+
+`vault.lock` is held with an OS file lock (`flock` / `LockFileEx`) for as long
+as the vault is open. The operating system releases it when the process exits
+for any reason, so a crash never leaves the vault claimed, on any platform. The
+file is left in place on release — deleting it would let one process lock the
+old file while another created and locked a new one. Its content (a PID) is
+informational only.
 
 ---
 

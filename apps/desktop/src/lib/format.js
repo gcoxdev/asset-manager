@@ -6,6 +6,9 @@
 // string manipulation — the amount is never parsed into a JS number, which
 // is a 53-bit float and would corrupt large values.
 
+/** Currencies offered wherever one can be picked. Any valid code is accepted. */
+export const COMMON_CURRENCIES = ["USD", "EUR", "GBP", "CAD", "AUD", "CHF", "JPY", "NZD", "SEK", "NOK", "DKK", "SGD"];
+
 const symbolCache = new Map();
 
 function currencySymbol(code) {
@@ -15,7 +18,11 @@ function currencySymbol(code) {
     const part = new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: code,
-      currencyDisplay: "narrowSymbol",
+      // "symbol", not "narrowSymbol": the narrow form shows US, Canadian and
+      // Australian dollars all as "$". In en-US only USD keeps the bare sign;
+      // the others read "CA$", "A$", so mixed holdings cannot be mistaken
+      // for one another.
+      currencyDisplay: "symbol",
     })
       .formatToParts(1)
       .find((p) => p.type === "currency");
@@ -74,7 +81,7 @@ export function compactMoney(value, currency) {
     return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency,
-      currencyDisplay: "narrowSymbol",
+      currencyDisplay: "symbol",
       notation: "compact",
       maximumFractionDigits: 1,
     }).format(value);
@@ -120,8 +127,24 @@ function dayNumber(iso) {
   return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86_400_000;
 }
 
+/**
+ * Today's date where the user is, as YYYY-MM-DD. Effective dates — when
+ * something was bought, sold or valued — are calendar dates in the owner's
+ * time zone; toISOString() would give the UTC date, which is tomorrow for
+ * everyone west of Greenwich each evening.
+ */
 export function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/** The local calendar date `days` before today, as YYYY-MM-DD. */
+export function daysAgoIso(days) {
+  const then = new Date();
+  then.setDate(then.getDate() - days);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${then.getFullYear()}-${pad(then.getMonth() + 1)}-${pad(then.getDate())}`;
 }
 
 /** Whole days from `iso` to today. */

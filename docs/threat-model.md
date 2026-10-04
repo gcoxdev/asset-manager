@@ -70,6 +70,16 @@ extension. The plaintext hash used for deduplication lives only inside the
 encrypted database, so an attacker cannot confirm whether a specific image is
 present by hashing their own copy.
 
+The same holds for **backups**: the readable `manifest.json` lists object IDs,
+sizes, and digests of the *encrypted* files only. Backups made by builds before
+manifest version 2 did list each photo's plaintext hash, which allows exactly
+that membership check; making a new backup does not change copies already
+made, so delete old ones once a new one exists.
+
+**Verified by:** a leakage test that backs up a vault holding sentinel text and
+a sentinel image, then scans every file in the backup — manifest included —
+for the text, the image bytes, and the image's SHA-256 in hex and raw form.
+
 ---
 
 ## 4. What is NOT protected
@@ -101,8 +111,9 @@ own encryption — FDE protects a powered-off machine only.
 
 ### 4.3 Anything you deliberately export
 
-CSV exports, insurance reports, printed recovery sheets and photos you export
-are **plaintext by intent**, at destinations you choose. Once written they are
+CSV exports, insurance reports, printed recovery sheets, and photos or
+documents saved with "Save a copy…" are **plaintext by intent**, at
+destinations you choose. The app says so before writing each one. Once written they are
 outside the vault entirely. The app warns before writing a CSV export and
 states that it is neither encrypted nor a backup. The insurance report leaves
 storage locations and notes out unless you tick them in — a list of where
@@ -208,9 +219,12 @@ Known, accepted, and unresolved:
   a wrapper the old passphrase opens, and the data key is unchanged, so the old
   passphrase plus an old backup decrypts newer content. Genuine rotation
   requires re-encrypting everything and is not implemented.
-- **No integrity check across the vault as a whole.** Individual objects and
-  database pages are authenticated, but an attacker who deletes an object file
-  causes a missing-photo error rather than a tamper alarm.
+- **No integrity check across the live vault as a whole.** Individual objects
+  and database pages are authenticated, but an attacker who deletes an object
+  file causes a missing-photo error rather than a tamper alarm. Restore is the
+  exception: it checks a backup's database integrity and that every object the
+  database lists is present, the right size, and matches its digest before
+  anything is replaced.
 - **Dependency risk.** WebKitGTK, SQLCipher and the Rust crypto crates are
   trusted. `cargo audit` runs in CI; a vulnerability in a transitive
   dependency is still a vulnerability here.

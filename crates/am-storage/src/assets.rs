@@ -76,6 +76,9 @@ pub struct AssetRecord {
     #[serde(serialize_with = "minor_as_string")]
     pub acquired_amount_minor: Option<i64>,
     pub acquired_currency: Option<String>,
+    /// False when part of the holding was added at an unknown cost, so the
+    /// recorded cost covers only some of it. Gain is not computed then.
+    pub cost_complete: bool,
     pub acquired_from: Option<String>,
     pub storage_location: Option<String>,
     pub notes: String,
@@ -112,7 +115,7 @@ const SELECT: &str = "
              ORDER BY m.is_primary DESC, m.sort_order, m.created_at LIMIT 1),
            (SELECT count(*) FROM asset_media m JOIN objects o ON o.object_id = m.object_id
              WHERE m.asset_id = a.asset_id AND o.gc_state = 'live'),
-           a.created_at, a.updated_at
+           a.created_at, a.updated_at, a.cost_complete
     FROM assets a JOIN asset_types t ON t.type_id = a.type_id";
 
 fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
@@ -146,6 +149,7 @@ fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
         acquired_date: r.get(9)?,
         acquired_amount_minor: r.get(10)?,
         acquired_currency: r.get(11)?,
+        cost_complete: r.get::<_, i64>(31)? != 0,
         acquired_from: r.get(12)?,
         storage_location: r.get(13)?,
         notes: r.get(14)?,
@@ -405,6 +409,9 @@ pub struct AssetEdit {
     pub insured: Option<Money>,
     pub attrs: BTreeMap<String, String>,
     pub review_every_days: Option<i64>,
+    /// The owner confirms the cost covers everything held, even though the
+    /// figure did not change — the unpriced units were a gift, say.
+    pub cost_covers_holding: bool,
 }
 
 /// Apply an edit.
@@ -480,8 +487,18 @@ pub fn update(
         ],
     )?;
 
+    // Restating the total paid is how a partial cost is reconciled: the
+    // owner has now given the cost of the whole position. Saving the same
+    // figure again — a notes-only edit — leaves a partial cost partial.
+    let cost_changed = cost_minor != current.acquired_amount_minor
+        || cost_currency.as_deref() != current.acquired_currency.as_deref();
+    if cost_changed || edit.cost_covers_holding {
+        tx.execute("UPDATE assets SET cost_complete = 1 WHERE asset_id = ?1", [asset_id])?;
+    }
+
     if let Some(date) = &acquired_date {
         if current.acquired_date.as_deref() != Some(date.as_str()) {
+            crate::events::check_acquisition_move(&tx, asset_id, date)?;
             tx.execute(
                 "UPDATE asset_events SET effective_date = ?1
                  WHERE asset_id = ?2 AND event_type = 'acquire'",
@@ -669,7 +686,38 @@ mod tests {
             insured: None,
             attrs: r.attrs.clone(),
             review_every_days: r.review_every_days,
+            cost_covers_holding: false,
         }
+    }
+
+    #[test]
+    fn a_partial_cost_is_completed_by_restating_or_confirming_it() {
+        let (_d, _root, v) = setup();
+        let mut a = new_asset("Coins");
+        a.acquired_cost = Some(usd(10_000));
+        let id = create(&v, &a, NOW).unwrap();
+        let partial = || {
+            v.conn().execute("UPDATE assets SET cost_complete = 0", []).unwrap();
+        };
+
+        // Saving the same figure — a notes-only edit — leaves it partial.
+        partial();
+        let mut edit = edit_of(&get(&v, &id).unwrap());
+        edit.acquired_cost = Some(usd(10_000));
+        edit.notes = "just a note".into();
+        update(&v, &id, &edit, NOW).unwrap();
+        assert!(!get(&v, &id).unwrap().cost_complete);
+
+        // A restated total completes it.
+        edit.acquired_cost = Some(usd(14_000));
+        update(&v, &id, &edit, NOW).unwrap();
+        assert!(get(&v, &id).unwrap().cost_complete);
+
+        // So does confirming the unchanged figure covers everything.
+        partial();
+        edit.cost_covers_holding = true;
+        update(&v, &id, &edit, NOW).unwrap();
+        assert!(get(&v, &id).unwrap().cost_complete);
     }
 
     #[test]

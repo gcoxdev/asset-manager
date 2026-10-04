@@ -6,12 +6,18 @@ import QRCode from "qrcode";
 import { call, describe } from "../lib/api.js";
 import { h, mount, clear } from "../lib/dom.js";
 import { icon, brandMark } from "../lib/icons.js";
-import { busy, callout, confirmDialog, toast } from "../ui/components.js";
-import { date as fmtDate } from "../lib/format.js";
+import { busy, callout, modal, toast } from "../ui/components.js";
+import { date as fmtDate, todayIso } from "../lib/format.js";
 
 const MIN_CHARS = 12;
 
-export function showOnboarding(root, { mode, onUnlocked, notice }) {
+/**
+ * onUnlocked: the vault is open; enter the app.
+ * onSessionOpened: a vault was just created, so the backend session is open
+ *   while its recovery key is on screen — the shell must treat a lock in that
+ *   state like any other.
+ */
+export function showOnboarding(root, { mode, onUnlocked, onSessionOpened, notice }) {
   const panel = h("div", { class: "onboard-card" });
   const page = h(
     "div",
@@ -36,8 +42,9 @@ export function showOnboarding(root, { mode, onUnlocked, notice }) {
 
   const go = {
     welcome: () => renderWelcome(panel, go),
-    create: () => renderCreate(panel, go, onUnlocked),
+    create: () => renderCreate(panel, go, onUnlocked, onSessionOpened),
     unlock: (message) => renderUnlock(panel, go, onUnlocked, message),
+    restore: () => restoreFlow(onUnlocked),
   };
   (go[mode] ?? go.unlock)(notice);
 }
@@ -57,7 +64,7 @@ function renderWelcome(panel, go) {
         h("span", { class: "choice-text" }, h("strong", {}, "Create a new vault"), h("span", {}, "Start an empty, encrypted catalog.")),
         icon("forward")
       ),
-      h("button", { class: "choice", onclick: () => restoreFlow(go) },
+      h("button", { class: "choice", onclick: go.restore },
         h("span", { class: "choice-icon" }, icon("archive", { size: 20 })),
         h("span", { class: "choice-text" }, h("strong", {}, "Restore from a backup"), h("span", {}, "Moving to a new computer, or recovering a vault.")),
         icon("forward")
@@ -95,7 +102,7 @@ function passwordField(label, props = {}) {
   return { wrap, input };
 }
 
-function renderCreate(panel, go, onUnlocked) {
+function renderCreate(panel, go, onUnlocked, onSessionOpened) {
   const pass = passwordField("Passphrase", { id: "new-pass", autocomplete: "new-password", autofocus: true });
   const confirm = passwordField("Confirm passphrase", { id: "confirm-pass", autocomplete: "new-password" });
   const meter = h("div", { class: "meter", "aria-hidden": "true" }, [1, 2, 3, 4].map(() => h("span")));
@@ -131,6 +138,7 @@ function renderCreate(panel, go, onUnlocked) {
             const created = await call("create_vault", { passphrase });
             pass.input.value = "";
             confirm.input.value = "";
+            onSessionOpened?.();
             mount(panel, recoveryCeremony(created, { context: "create", onDone: onUnlocked }));
           } catch (e) {
             error.textContent = describe(e);
@@ -203,7 +211,7 @@ function renderUnlock(panel, go, onUnlocked, notice) {
     pass.wrap,
     error,
     submit,
-    h("div", { class: "form-links" }, switcher, h("button", { type: "button", class: "link", onclick: () => restoreFlow(go) }, "Restore from a backup"))
+    h("div", { class: "form-links" }, switcher, h("button", { type: "button", class: "link", onclick: go.restore }, "Restore from a backup"))
   );
 
   mount(
@@ -215,25 +223,81 @@ function renderUnlock(panel, go, onUnlocked, notice) {
   );
 }
 
-async function restoreFlow(go) {
-  const ok = await confirmDialog({
+async function restoreFlow(onUnlocked) {
+  const restored = await restoreDialog({ replacing: false });
+  if (!restored) return;
+  toast(restoredMessage(restored), { kind: "success", timeout: 7000 });
+  if (restored.opened) onUnlocked();
+}
+
+export function restoredMessage(restored) {
+  const photos = `${restored.objects} photo${restored.objects === 1 ? "" : "s"}`;
+  return `Restored and verified a backup from ${fmtDate(restored.created_at)} with ${photos}.`;
+}
+
+/**
+ * Choose a backup folder and give the passphrase or recovery key it opens
+ * with. The backend unlocks and checks the copy before anything is replaced,
+ * so a damaged backup, or one with a credential nobody remembers, leaves the
+ * current vault exactly as it was. Resolves with the result once the
+ * backup is in place (`opened` says whether the restored vault was also
+ * opened), or undefined if cancelled.
+ */
+export function restoreDialog({ replacing }) {
+  let directory = null;
+  let useRecovery = false;
+  const folderLabel = h("code", { class: "path" }, "No folder chosen");
+  const choose = h("button", { type: "button", class: "btn btn-secondary", onclick: async () => {
+    const picked = await openDialog({ directory: true, title: "Choose a backup folder" });
+    if (!picked) return;
+    directory = picked;
+    folderLabel.textContent = picked;
+  } }, icon("archive", { size: 16 }), "Choose folder…");
+
+  const secret = passwordField("Passphrase the backup opens with", { id: "restore-secret", autocomplete: "off" });
+  const label = secret.wrap.querySelector("label");
+  const switcher = h("button", { type: "button", class: "link", onclick: () => {
+    useRecovery = !useRecovery;
+    label.textContent = useRecovery ? "Recovery key the backup opens with" : "Passphrase the backup opens with";
+    switcher.textContent = useRecovery ? "Use the passphrase instead" : "Use the recovery key instead";
+    secret.input.value = "";
+    secret.input.focus();
+  } }, "Use the recovery key instead");
+
+  const error = h("p", { class: "form-error", role: "alert" });
+  const submit = h("button", { class: replacing ? "btn btn-danger" : "btn btn-primary", type: "submit", form: "restore-form" }, "Verify and restore");
+
+  const m = modal({
     title: "Restore from a backup",
-    message: [
-      "Choose the backup folder — the one containing manifest.json and vault.header.",
-      "If a vault already exists on this computer it is set aside as “vault.pre-restore”, not deleted. You will then unlock the restored vault with the passphrase or recovery key it had when the backup was made.",
-    ],
-    confirmLabel: "Choose folder…",
+    size: "md",
+    body: h("form", { id: "restore-form", class: "stack", onsubmit: async (event) => {
+      event.preventDefault();
+      error.textContent = "";
+      if (!directory) return (error.textContent = "Choose the backup folder — the one containing manifest.json.");
+      if (!secret.input.value) return (error.textContent = useRecovery ? "Enter the recovery key." : "Enter the passphrase.");
+      await busy(submit, async () => {
+        try {
+          const result = await call("restore_vault", { directory, secret: secret.input.value, useRecoveryKey: useRecovery });
+          secret.input.value = "";
+          m.close(result);
+        } catch (e) {
+          error.textContent = describe(e);
+        }
+      }, "Verifying backup…");
+    } },
+      h("p", {}, "The backup is opened and checked — every record and photo — before anything is replaced. If the check fails, nothing changes."),
+      h("div", { class: "field" }, h("label", {}, "Backup folder"), h("div", { class: "btn-row" }, choose, folderLabel)),
+      secret.wrap,
+      h("div", { class: "form-links" }, switcher),
+      h("p", { class: "field-hint" }, "Use the passphrase or recovery key the vault had when the backup was made — not necessarily today's."),
+      replacing
+        ? callout("warning", "The current vault is set aside as “vault.pre-restore”, not deleted, and the backup opens in its place.")
+        : callout("info", "If a vault already exists on this computer it is set aside as “vault.pre-restore”, not deleted."),
+      error
+    ),
+    footer: (close) => [h("button", { class: "btn btn-ghost", type: "button", onclick: () => close() }, "Cancel"), submit],
   });
-  if (!ok) return;
-  const directory = await openDialog({ directory: true, title: "Choose a backup folder" });
-  if (!directory) return;
-  try {
-    const restored = await call("restore_vault", { directory });
-    toast(`Restored a backup from ${fmtDate(restored.created_at)} with ${restored.objects} photo${restored.objects === 1 ? "" : "s"}.`, { kind: "success" });
-    go.unlock("Backup restored. Unlock it with its passphrase or recovery key.");
-  } catch (e) {
-    toast(describe(e), { kind: "error" });
-  }
+  return m.done;
 }
 
 // ------------------------------------------------------------ ceremony
@@ -263,10 +327,13 @@ export function recoveryCeremony({ recovery_key, fingerprint }, { context, onDon
   ack.addEventListener("change", check);
   verify.addEventListener("input", check);
 
-  finish.addEventListener("click", () => {
+  finish.addEventListener("click", () => busy(finish, async () => {
+    // Recorded before moving on: a key never confirmed is one the app asks
+    // the owner to replace at the next unlock.
+    await call("confirm_recovery_saved");
     clear(canvas.parentElement ?? canvas);
     onDone();
-  });
+  }));
 
   const copy = h("button", { class: "btn btn-secondary", onclick: async () => {
     try {
@@ -278,7 +345,7 @@ export function recoveryCeremony({ recovery_key, fingerprint }, { context, onDon
   } }, icon("copy", { size: 16 }), "Copy");
 
   const saveText = h("button", { class: "btn btn-secondary", onclick: async () => {
-    const stamp = new Date().toISOString().slice(0, 10);
+    const stamp = todayIso();
     const path = await saveDialog({ defaultPath: `Asset-Manager-Recovery-Key-${stamp}.txt`, filters: [{ name: "Text", extensions: ["txt"] }] });
     if (!path) return;
     try {
@@ -353,7 +420,7 @@ async function printRecoverySheet(key, fingerprint) {
       h("p", { class: "print-meta" }, `Generated ${new Date().toLocaleString()}`)
     )
   );
-  runPrint(`Asset-Manager-Recovery-Key-${new Date().toISOString().slice(0, 10)}`);
+  runPrint(`Asset-Manager-Recovery-Key-${todayIso()}`);
 }
 
 /**

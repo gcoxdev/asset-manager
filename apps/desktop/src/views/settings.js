@@ -7,8 +7,8 @@ import { h, mount } from "../lib/dom.js";
 import { icon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
 import * as store from "../lib/store.js";
-import { busy, toast, confirmDialog, modal, field, select, toggle, callout } from "../ui/components.js";
-import { recoveryCeremony } from "./onboarding.js";
+import { busy, toast, modal, field, select, toggle, callout } from "../ui/components.js";
+import { recoveryCeremony, restoreDialog, restoredMessage } from "./onboarding.js";
 
 const CURRENCIES = [
   ["USD", "US dollar (USD)"], ["EUR", "Euro (EUR)"], ["GBP", "British pound (GBP)"], ["CAD", "Canadian dollar (CAD)"],
@@ -120,7 +120,7 @@ function changePassphrase() {
   });
 }
 
-function rotateRecovery() {
+export function rotateRecovery() {
   const pass = passField("Your passphrase", "rr-pass", "current-password");
   const error = h("p", { class: "form-error", role: "alert" });
   const submit = h("button", { class: "btn btn-primary", type: "submit", form: "rr-form" }, "Issue new key");
@@ -175,25 +175,16 @@ function backupCard(settings, ctx) {
   } }, icon("archive", { size: 16 }), "Back up now…");
 
   const restore = h("button", { class: "btn btn-secondary", onclick: async () => {
-    const ok = await confirmDialog({
-      title: "Restore from a backup?",
-      message: [
-        "The current vault is set aside as “vault.pre-restore” — not deleted — and replaced by the backup you choose.",
-        "The app locks. You then unlock the restored vault with the passphrase or recovery key it had when the backup was made.",
-      ],
-      confirmLabel: "Choose backup folder…",
-      danger: true,
-    });
-    if (!ok) return;
-    const directory = await openDialog({ directory: true, title: "Choose a backup folder" });
-    if (!directory) return;
-    try {
-      await call("restore_vault", { directory });
-      toast("Backup restored. Unlock it to continue.", { kind: "success" });
-      ctx.lock();
-    } catch (e) {
-      toast(describe(e), { kind: "error" });
+    const restored = await restoreDialog({ replacing: true });
+    if (restored?.opened) {
+      // A different vault is open now; nothing cached from this one applies.
+      ctx.reopen();
+      toast(restoredMessage(restored), { kind: "success", timeout: 7000 });
+      return;
     }
+    // A restore that failed after the swap began leaves the session locked.
+    const state = await call("session_state").catch(() => null);
+    if (state && !state.unlocked) ctx.lock();
   } }, icon("upload", { size: 16 }), "Restore…");
 
   return h("section", { class: "card" },

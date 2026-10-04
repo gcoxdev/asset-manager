@@ -74,6 +74,9 @@ fn the_frontend_contract_holds_end_to_end() {
     // --- settings ----------------------------------------------------------
     let settings = ok(&w, "get_settings", json!({}));
     assert_eq!(settings["currency"], "USD");
+    assert_eq!(settings["recovery_unconfirmed"], true, "until the ceremony finishes");
+    ok(&w, "confirm_recovery_saved", json!({}));
+    assert_eq!(ok(&w, "get_settings", json!({}))["recovery_unconfirmed"], false);
     ok(
         &w,
         "update_settings",
@@ -211,6 +214,36 @@ fn the_frontend_contract_holds_end_to_end() {
     assert_eq!(detail["asset"]["insured_display"], "1300000.00 USD");
     assert_eq!(detail["asset"]["storage_location"], Value::Null, "blank clears");
 
+    // Changing the base currency relabels nothing. A notes-only edit sent in
+    // EUR keeps the stored USD cost, and each amount keeps its own currency.
+    let settings_in = |currency: &str| {
+        json!({ "settings": {
+            "currency": currency, "auto_lock_minutes": 30, "metals_auto_refresh": false,
+            "balance_lookup": false
+        }})
+    };
+    ok(&w, "update_settings", settings_in("EUR"));
+    let eagles_form = |notes: &str, insured_currency: Option<&str>| {
+        json!({ "assetId": eagles, "form": {
+            "type_id": "sovereign_coin", "name": "Gold Eagles", "quantity_unit": "coin",
+            "acquired_date": "2024-01-02", "acquired_price": "20000.00",
+            "storage_location": "Safe", "notes": notes, "insured_value": "15000",
+            "insured_currency": insured_currency, "currency": "EUR",
+            "attrs": { "metal": "XAU", "weight_per_item": "1.0909", "weight_unit": "troy_oz",
+                       "weight_basis": "gross", "purity": "0.9167", "preset": "age" },
+            "review_every_days": null
+        }})
+    };
+    ok(&w, "update_asset", eagles_form("insured separately", Some("CHF")));
+    let detail = ok(&w, "get_asset", json!({ "assetId": eagles }));
+    assert_eq!(detail["asset"]["acquired_display"], "20000.00 USD", "cost keeps its currency");
+    assert_eq!(detail["asset"]["insured_display"], "15000.00 CHF");
+    ok(&w, "update_asset", eagles_form("notes only", None));
+    let detail = ok(&w, "get_asset", json!({ "assetId": eagles }));
+    assert_eq!(detail["asset"]["acquired_display"], "20000.00 USD");
+    assert_eq!(detail["asset"]["insured_display"], "15000.00 CHF", "stored currency wins");
+    ok(&w, "update_settings", settings_in("USD"));
+
     // --- reports and charts -----------------------------------------------------
     let report = ok(
         &w,
@@ -276,6 +309,22 @@ fn the_frontend_contract_holds_end_to_end() {
     let first =
         ok(&w, "import_photo", json!({ "assetId": btc, "path": photo_path.to_str().unwrap() }));
     assert_eq!(first["media_type"], "image/png");
+    // An attachment can be taken back out, decrypted — but only from the
+    // asset it belongs to.
+    let copy = dir.path().join("copy.png");
+    ok(
+        &w,
+        "export_attachment",
+        json!({ "assetId": btc, "objectId": first["object_id"], "path": copy.to_str().unwrap() }),
+    );
+    assert_eq!(std::fs::read(&copy).unwrap(), std::fs::read(&photo_path).unwrap());
+    assert!(invoke(
+        &w,
+        "export_attachment",
+        json!({ "assetId": eagles, "objectId": first["object_id"],
+                "path": dir.path().join("other.png").to_str().unwrap() }),
+    )
+    .is_err());
     let again =
         ok(&w, "import_photo", json!({ "assetId": btc, "path": photo_path.to_str().unwrap() }));
     assert_eq!(again["deduplicated"], true);
@@ -316,14 +365,30 @@ fn the_frontend_contract_holds_end_to_end() {
     ok(&w, "delete_asset", json!({ "assetId": comic }));
     assert_eq!(ok(&w, "list_assets", json!({})).as_array().unwrap().len(), 1);
 
-    ok(&w, "restore_vault", json!({ "directory": backup["path"] }));
-    assert_eq!(ok(&w, "vault_status", json!({}))["unlocked"], false, "restore locks");
-    assert!(invoke(&w, "list_assets", json!({})).is_err(), "locked means locked");
+    // The backup was made after the passphrase change, so the old one does
+    // not open it — and a backup that cannot be opened replaces nothing.
+    let refused = invoke(
+        &w,
+        "restore_vault",
+        json!({ "directory": backup["path"], "secret": PASS, "useRecoveryKey": false }),
+    )
+    .unwrap_err();
+    assert_eq!(refused["kind"], "cannot_unlock");
+    assert_eq!(ok(&w, "vault_status", json!({}))["unlocked"], true, "session untouched");
+    assert_eq!(ok(&w, "list_assets", json!({})).as_array().unwrap().len(), 1);
 
-    let old = invoke(&w, "unlock_vault", json!({ "secret": PASS, "useRecoveryKey": false }))
-        .unwrap_err();
-    assert_eq!(old["kind"], "cannot_unlock", "the backup was made after the change");
-    ok(&w, "unlock_vault", json!({ "secret": recovery, "useRecoveryKey": true }));
+    let restored = ok(
+        &w,
+        "restore_vault",
+        json!({ "directory": backup["path"], "secret": recovery, "useRecoveryKey": true }),
+    );
+    assert_eq!(restored["objects"], 0);
+    assert_eq!(restored["opened"], true);
+    assert_eq!(
+        ok(&w, "vault_status", json!({}))["unlocked"],
+        true,
+        "a verified restore opens the restored vault"
+    );
     assert_eq!(
         ok(&w, "list_assets", json!({})).as_array().unwrap().len(),
         2,

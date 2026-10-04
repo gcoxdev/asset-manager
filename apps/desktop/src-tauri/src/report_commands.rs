@@ -68,14 +68,26 @@ pub struct InsuranceReport {
     pub warning: String,
 }
 
-#[derive(Deserialize, Default)]
+/// What goes into a report beyond the item itself.
+///
+/// Leaving an option out is always the private choice — the same choice the
+/// report screen starts from. Storage locations and notes appear only when
+/// asked for by name: a list of where valuables are kept is the most
+/// damaging thing a leaked report could contain.
+#[derive(Deserialize)]
 pub struct ReportOptions {
-    #[serde(default = "yes")]
+    #[serde(default)]
     pub include_locations: bool,
     #[serde(default)]
     pub include_notes: bool,
     #[serde(default = "yes")]
     pub include_photos: bool,
+}
+
+impl Default for ReportOptions {
+    fn default() -> Self {
+        Self { include_locations: false, include_notes: false, include_photos: true }
+    }
 }
 
 fn yes() -> bool {
@@ -146,11 +158,7 @@ pub fn insurance_report(
     options: Option<ReportOptions>,
 ) -> IpcResult<InsuranceReport> {
     session.touch();
-    let options = options.unwrap_or(ReportOptions {
-        include_locations: true,
-        include_notes: false,
-        include_photos: true,
-    });
+    let options = options.unwrap_or_default();
     let generated_at = now();
 
     session
@@ -318,6 +326,18 @@ mod tests {
             "unknown keys still shown"
         );
         assert_eq!(out.len(), 3, "pricing internals are not item details");
+    }
+
+    #[test]
+    fn leaving_an_option_out_is_the_private_choice() {
+        let omitted = ReportOptions::default();
+        assert!(!omitted.include_locations && !omitted.include_notes);
+        let partial: ReportOptions =
+            serde_json::from_str(r#"{"include_photos": false}"#).unwrap();
+        assert!(!partial.include_locations, "a missing field must not reveal locations");
+        assert!(!partial.include_notes);
+        let empty: ReportOptions = serde_json::from_str("{}").unwrap();
+        assert!(!empty.include_locations && empty.include_photos);
     }
 
     #[test]

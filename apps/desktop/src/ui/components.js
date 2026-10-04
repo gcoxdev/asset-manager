@@ -26,6 +26,9 @@ export function toast(message, { kind = "info", timeout = 4500 } = {}) {
 }
 
 export function toastError(error) {
+  // Locking already took the user to the unlock screen; a toast saying so
+  // would only land there late.
+  if (error?.kind === "locked") return () => {};
   return toast(describe(error), { kind: "error" });
 }
 
@@ -35,7 +38,8 @@ export function clearToasts() {
 
 // ------------------------------------------------------------------ modals
 
-const openModals = new Set();
+/** Open modals, in stacking order, each with the close() that disposes it. */
+const openModals = new Map();
 
 /**
  * Open a modal. `render(close)` returns its body; `footer` is an array of
@@ -46,15 +50,21 @@ export function modal({ title, subtitle, body, footer = [], size = "md", onClose
   const done = new Promise((r) => (resolve = r));
   const previousFocus = document.activeElement;
 
-  const close = (value) => {
+  // One disposer for every way a modal ends — a button, Escape, or a lock —
+  // so listeners are always removed and whoever awaits `done` is answered.
+  const close = (value, { immediate = false } = {}) => {
     if (!openModals.has(backdrop)) return;
     openModals.delete(backdrop);
-    backdrop.classList.add("leaving");
     document.removeEventListener("keydown", onKey, true);
-    setTimeout(() => backdrop.remove(), 160);
+    if (immediate) {
+      backdrop.remove();
+    } else {
+      backdrop.classList.add("leaving");
+      setTimeout(() => backdrop.remove(), 160);
+    }
     onClose?.(value);
     resolve(value);
-    if (previousFocus && document.contains(previousFocus)) previousFocus.focus();
+    if (!immediate && previousFocus && document.contains(previousFocus)) previousFocus.focus();
   };
 
   const onKey = (event) => {
@@ -63,7 +73,7 @@ export function modal({ title, subtitle, body, footer = [], size = "md", onClose
       close(undefined);
     }
   };
-  const isTopmost = () => [...openModals].at(-1) === backdrop;
+  const isTopmost = () => [...openModals.keys()].at(-1) === backdrop;
 
   const content = typeof body === "function" ? body(close) : body;
   const buttons = typeof footer === "function" ? footer(close) : footer;
@@ -88,7 +98,7 @@ export function modal({ title, subtitle, body, footer = [], size = "md", onClose
     if (event.target === backdrop && dismissable) close(undefined);
   });
   document.addEventListener("keydown", onKey, true);
-  openModals.add(backdrop);
+  openModals.set(backdrop, close);
   document.body.append(backdrop);
 
   // Focus the first field, or the primary button.
@@ -103,11 +113,9 @@ export function modal({ title, subtitle, body, footer = [], size = "md", onClose
   return { close, done, dialog };
 }
 
+/** Close every modal at once, through each one's own disposer. */
 export function closeAllModals() {
-  for (const backdrop of [...openModals]) {
-    openModals.delete(backdrop);
-    backdrop.remove();
-  }
+  for (const close of [...openModals.values()].reverse()) close(undefined, { immediate: true });
 }
 
 /** A yes/no question. Resolves true only on confirmation. */
@@ -205,7 +213,7 @@ export function menuButton(trigger, items) {
     menu.style.left = `${Math.max(8, Math.min(rect.right - width, window.innerWidth - width - 8))}px`;
     menu.querySelector("button")?.focus();
     const dismiss = (e) => {
-      if (!menu.contains(e.target)) {
+      if (!menu.isConnected || !menu.contains(e.target)) {
         menu.remove();
         document.removeEventListener("mousedown", dismiss);
       }

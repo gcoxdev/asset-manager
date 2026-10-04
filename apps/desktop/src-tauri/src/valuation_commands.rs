@@ -295,8 +295,11 @@ pub fn change_quantity(
 
     session
         .with_vault(|vault| {
-            let held =
-                events::quantity_as_of(vault, &change.asset_id, None).map_err(storage)?;
+            // What was held on the chosen date, not today: "sold all" in
+            // March sells what was there in March, and "correct to 7" on a
+            // past date means 7 then.
+            let held = events::quantity_as_of(vault, &change.asset_id, Some(&effective_date))
+                .map_err(storage)?;
             let (event_type, delta) = delta_for(&change.kind, change.quantity.as_deref(), held)
                 .map_err(|e| storage(e.message))?;
 

@@ -213,7 +213,16 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
 
   // --- ownership -------------------------------------------------------
   const acquiredDate = h("input", { type: "date", value: asset?.acquired_date ?? "", max: fmt.todayIso() });
-  const price = moneyInput(currency, amountOf(asset?.acquired_display));
+  // Each amount keeps the currency it was recorded in. The base currency is
+  // only what a new, empty amount starts in — changing it later must not
+  // relabel a stored USD 1,000 as EUR 1,000 when the form is saved.
+  const price = moneyInput(asset?.acquired_currency ?? currency, amountOf(asset?.acquired_display), { codes: [currency] });
+  const partialCost = editing && asset.acquired_display && !asset.cost_complete;
+  let costCoversHolding = false;
+  const coversToggle = partialCost
+    ? toggle("This is the total for everything held", false, (on) => (costCoversHolding = on),
+        { hint: "For when the units added without a price cost nothing extra — a gift, or included in this figure." })
+    : null;
   const from = textInput({ value: asset?.acquired_from ?? "", placeholder: "Dealer, show, auction, gift…" });
   const location = textInput({ value: asset?.storage_location ?? "", placeholder: kindId === "crypto" ? "Wallet or exchange" : "Safe, deposit box, shelf…" });
 
@@ -226,7 +235,12 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
         }),
         field("Unit", unit),
         field("Acquired on", acquiredDate),
-        field("Total paid", price.el, { hint: "For the whole position. Leave blank if unknown — never enter 0 for unknown." }),
+        field("Total paid", price.el, {
+          hint: partialCost
+            ? "Covers only part of this holding — some was added without a price. Enter what everything held cost in total to complete it."
+            : "For the whole position. Leave blank if unknown — never enter 0 for unknown.",
+        }),
+        coversToggle ? h("div", { class: "span-2" }, coversToggle) : null,
         field("Acquired from", from),
         field(kindId === "crypto" ? "Held at" : "Storage location", location)
       )
@@ -235,7 +249,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
 
   // --- value -----------------------------------------------------------
   const currentValue = moneyInput(currency, "");
-  const insured = moneyInput(currency, amountOf(asset?.insured_display));
+  const insured = moneyInput(asset?.insured_currency ?? currency, amountOf(asset?.insured_display), { codes: [currency] });
   const review = select(
     [["", "Never"], ["30", "Every month"], ["90", "Every 3 months"], ["180", "Every 6 months"], ["365", "Every year"]],
     asset?.review_every_days ? String(asset.review_every_days) : ""
@@ -293,6 +307,8 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
       storage_location: location.value.trim() || null,
       notes: notes.value,
       insured_value: insured.value(),
+      acquired_currency: price.currency(),
+      insured_currency: insured.currency(),
       currency,
       attrs: {},
       review_every_days: review.value ? Number(review.value) : null,
@@ -304,6 +320,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
       form.current_value = form.pricing === "manual" ? currentValue.value() : null;
     } else {
       form.status = statusSelect ? statusSelect.value : asset.status;
+      form.cost_covers_holding = costCoversHolding;
       delete form.quantity;
     }
     return form;
@@ -375,11 +392,24 @@ function openAddAssetInPlace(m, body, onSaved) {
   );
 }
 
-/** An amount input with the currency shown alongside. */
-function moneyInput(currency, value) {
+/**
+ * An amount input with its currency alongside. Given `codes`, the currency
+ * can be switched among those and the one it starts in — choosing one is an
+ * explicit statement about what the number means, never a conversion.
+ */
+function moneyInput(currency, value, { codes } = {}) {
   const input = textInput({ value: value ?? "", inputmode: "decimal", placeholder: "0.00", class: "input-money" });
-  const el = h("div", { class: "input-affix" }, h("span", { class: "affix" }, currency), input);
-  return { el, input, value: () => input.value.trim() || null };
+  let code = currency;
+  let affix;
+  const options = [...new Set([currency, ...(codes ?? []), ...fmt.COMMON_CURRENCIES])];
+  if (codes) {
+    affix = select(options.map((c) => [c, c]), currency, { class: "affix affix-select", "aria-label": "Currency" });
+    affix.addEventListener("change", () => (code = affix.value));
+  } else {
+    affix = h("span", { class: "affix" }, currency);
+  }
+  const el = h("div", { class: "input-affix" }, affix, input);
+  return { el, input, value: () => input.value.trim() || null, currency: () => code };
 }
 
 // ------------------------------------------------------------ kind fields
@@ -684,7 +714,7 @@ export async function openRecordChange(asset, { onSaved } = {}) {
   let kind = "add";
   const qty = textInput({ inputmode: "decimal", autofocus: true });
   const when = h("input", { type: "date", value: fmt.todayIso(), max: fmt.todayIso() });
-  const price = moneyInput(currency, "");
+  const price = moneyInput(currency, "", { codes: [settings.currency] });
   const note = textInput({ maxlength: 500, placeholder: "Optional" });
   const error = h("p", { class: "form-error", role: "alert" });
   const qtyLabel = h("label", { for: "chg-qty" }, "How many");
@@ -701,10 +731,10 @@ export async function openRecordChange(asset, { onSaved } = {}) {
     qtyLabel.textContent = { add: "How many more", remove: "How many sold", correct: "The correct quantity" }[kind] ?? "";
     priceLabel.textContent = kind === "add" ? "Price paid (total)" : "Sale price (total)";
     explain.textContent = {
-      add: "Adds to the holding and, if you give a price, to its cost.",
+      add: "Adds to the holding and, if you give a price in the cost's currency, to its cost. Without one, the recorded cost no longer covers the whole holding and no gain is shown until you enter the total paid.",
       remove: "Reduces the holding; its cost is reduced in proportion.",
-      dispose: `Records all ${held} ${asset.quantity_unit} as sold. The asset keeps its history and stops counting toward today's total.`,
-      correct: "Fixes a miscount without recording a trade — for when the number was simply wrong.",
+      dispose: `Records everything held on that date as sold (${held} ${asset.quantity_unit} today). The asset keeps its history and stops counting toward today's total.`,
+      correct: "Sets the quantity held on that date, without recording a trade — for when the number was simply wrong.",
     }[kind];
   };
 
@@ -726,13 +756,13 @@ export async function openRecordChange(asset, { onSaved } = {}) {
         event.preventDefault();
         error.textContent = "";
         if (kind === "dispose") {
-          const ok = await confirmDialog({ title: "Record as sold?", message: `All ${held} ${asset.quantity_unit} will be recorded as sold on ${fmt.date(when.value)}.`, confirmLabel: "Record sale" });
+          const ok = await confirmDialog({ title: "Record as sold?", message: `Everything held on ${fmt.date(when.value)} will be recorded as sold that day.`, confirmLabel: "Record sale" });
           if (!ok) return;
         }
         await busy(save, async () => {
           try {
             await call("change_quantity", {
-              change: { asset_id: asset.asset_id, kind, quantity: qty.value.trim() || null, effective_date: when.value, amount: kind === "correct" ? null : price.value(), currency, note: note.value.trim() || null },
+              change: { asset_id: asset.asset_id, kind, quantity: qty.value.trim() || null, effective_date: when.value, amount: kind === "correct" ? null : price.value(), currency: price.currency(), note: note.value.trim() || null },
             });
             store.invalidate();
             toast("Change recorded.", { kind: "success" });

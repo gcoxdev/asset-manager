@@ -76,13 +76,30 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// Days in a month of the proleptic Gregorian calendar.
+pub(crate) fn days_in_month(year: i64, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 => 29,
+        2 => 28,
+        _ => 0,
+    }
+}
+
+/// Whether a year, month and day name a real date — February 30 does not.
+/// The one rule every date accepted from outside goes through.
+pub(crate) fn is_calendar_date(year: i64, month: u32, day: u32) -> bool {
+    (1..=12).contains(&month) && day >= 1 && day <= days_in_month(year, month)
+}
+
 pub(crate) fn parse_date(iso: &str) -> Option<i64> {
     let date = iso.get(..10)?;
     let mut parts = date.split('-');
     let y: i64 = parts.next()?.parse().ok()?;
     let m: u32 = parts.next()?.parse().ok()?;
     let d: u32 = parts.next()?.parse().ok()?;
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+    if !is_calendar_date(y, m, d) {
         return None;
     }
     Some(days_from_civil(y, m, d))
@@ -297,6 +314,11 @@ mod tests {
         }
         assert!(parse_date("not-a-date").is_none());
         assert!(parse_date("2026-13-01").is_none());
+        assert!(parse_date("2026-02-29").is_none(), "2026 is not a leap year");
+        assert!(parse_date("2026-04-31").is_none());
+        assert!(parse_date("2024-02-29").is_some());
+        assert!(parse_date("1900-02-29").is_none(), "centuries are not leap years…");
+        assert!(parse_date("2000-02-29").is_some(), "…unless divisible by 400");
     }
 
     /// Obligation 1: a holding sold in June appears in a March point, not July.

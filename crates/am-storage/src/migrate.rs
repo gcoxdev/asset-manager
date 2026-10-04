@@ -7,7 +7,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 struct Migration {
     version: i64,
@@ -18,6 +18,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration { version: 1, sql: include_str!("../migrations/001_initial.sql") },
     Migration { version: 2, sql: include_str!("../migrations/002_app_settings.sql") },
     Migration { version: 3, sql: include_str!("../migrations/003_catalog.sql") },
+    Migration { version: 4, sql: include_str!("../migrations/004_cost_completeness.sql") },
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -140,6 +141,42 @@ mod tests {
         assert_eq!(name, "Pre-existing", "existing data must survive the migration");
 
         conn.execute("INSERT INTO app_settings (key, value) VALUES ('k','v')", []).unwrap();
+    }
+
+    #[test]
+    fn v4_marks_costs_left_partial_by_unpriced_purchases() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        let conn = open_encrypted(path.to_str().unwrap(), &key()).unwrap();
+        migrate_to(&conn, 3);
+
+        conn.execute_batch(
+            "INSERT INTO assets (asset_id, type_id, name, acquired_amount_minor,
+                                 acquired_currency, created_at, updated_at)
+             VALUES ('unpriced','generic','A',10000,'USD','2026-01-01','2026-01-01'),
+                    ('priced','generic','B',10000,'USD','2026-01-01','2026-01-01'),
+                    ('foreign','generic','C',10000,'USD','2026-01-01','2026-01-01'),
+                    ('unknown','generic','D',NULL,NULL,'2026-01-01','2026-01-01');
+             INSERT INTO asset_events (event_id, asset_id, event_type, effective_date,
+                                       quantity_delta, amount_minor, currency, recorded_at)
+             VALUES ('e1','unpriced','add','2026-02-01','1',NULL,NULL,'2026-02-01'),
+                    ('e2','priced','add','2026-02-01','1',5000,'USD','2026-02-01'),
+                    ('e3','foreign','add','2026-02-01','1',5000,'EUR','2026-02-01'),
+                    ('e4','unknown','add','2026-02-01','1',NULL,NULL,'2026-02-01');",
+        )
+        .unwrap();
+
+        migrate(&conn).unwrap();
+        let complete = |id: &str| -> i64 {
+            conn.query_row("SELECT cost_complete FROM assets WHERE asset_id = ?1", [id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert_eq!(complete("unpriced"), 0, "added at an unknown price");
+        assert_eq!(complete("priced"), 1, "every purchase priced in the cost's currency");
+        assert_eq!(complete("foreign"), 0, "a purchase in another currency was never added");
+        assert_eq!(complete("unknown"), 1, "no cost at all is unknown, not partial");
     }
 
     /// Apply migrations up to and including `version`, as an older build did.

@@ -49,8 +49,10 @@ pub struct AssetView {
     pub acquired_display: Option<String>,
     pub insured_display: Option<String>,
     pub sold_display: Option<String>,
-    /// Current value minus cost, when both are known in the same currency.
-    /// Absent otherwise — never computed against an assumed zero.
+    /// Current value minus cost, when both are known in the same currency
+    /// and the cost covers the whole holding. Absent otherwise — never
+    /// computed against an assumed zero, or against the cost of only some of
+    /// the units.
     pub gain_minor: Option<String>,
     pub gain_display: Option<String>,
     pub next_review: Option<String>,
@@ -61,7 +63,9 @@ pub fn view(record: AssetRecord, today: &str) -> AssetView {
     let current = record.current_amount_minor.zip(record.current_currency.clone());
     let cost = record.acquired_amount_minor.zip(record.acquired_currency.clone());
     let gain = match (&current, &cost) {
-        (Some((value, vc)), Some((cost, cc))) if vc == cc && record.status == "active" => {
+        (Some((value, vc)), Some((cost, cc)))
+            if vc == cc && record.status == "active" && record.cost_complete =>
+        {
             Currency::new(vc).ok().and_then(|c| {
                 Money::new(*value, c.clone()).checked_sub(&Money::new(*cost, c)).ok()
             })
@@ -333,8 +337,11 @@ pub fn get_asset(session: State<'_, Session>, asset_id: String) -> IpcResult<Ass
 
 /// The asset form, for both create and edit.
 ///
-/// Amounts are major units as typed ("1299.50"); `currency` applies to all
-/// of them and defaults to the vault's base currency.
+/// Amounts are major units as typed ("1299.50"). Each amount has its own
+/// currency: `acquired_currency` and `insured_currency` when given, otherwise
+/// — on edit — the currency already stored with that amount, and only then
+/// `currency` or the vault's base currency. Changing the base currency must
+/// never relabel a stored USD 1,000 as EUR 1,000 because a form was saved.
 #[derive(Deserialize, Default)]
 pub struct AssetForm {
     pub type_id: String,
@@ -362,6 +369,10 @@ pub struct AssetForm {
     #[serde(default)]
     pub currency: Option<String>,
     #[serde(default)]
+    pub acquired_currency: Option<String>,
+    #[serde(default)]
+    pub insured_currency: Option<String>,
+    #[serde(default)]
     pub attrs: BTreeMap<String, String>,
     /// "manual" or "market". Create only; afterwards use `set_pricing`.
     #[serde(default)]
@@ -371,6 +382,9 @@ pub struct AssetForm {
     /// Create only: an opening valuation, recorded as a manual value.
     #[serde(default)]
     pub current_value: Option<String>,
+    /// Edit only: the cost given covers everything held, even if unchanged.
+    #[serde(default)]
+    pub cost_covers_holding: bool,
 }
 
 /// Validate and clean attributes for a type.
@@ -423,6 +437,22 @@ fn prepare_attrs(
     Ok((cleaned, derived_name))
 }
 
+/// The currency for one amount on the form: the one named for that field,
+/// else the one already stored with it, else the form's general currency.
+fn field_currency(
+    explicit: &Option<String>,
+    stored: Option<&str>,
+    general: &Currency,
+) -> IpcResult<Currency> {
+    match explicit.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        Some(code) => Currency::new(code).map_err(|e| bad_input(e.to_string())),
+        None => match stored {
+            Some(code) => Currency::new(code).map_err(|e| bad_input(e.to_string())),
+            None => Ok(general.clone()),
+        },
+    }
+}
+
 fn pick_name(typed: &Option<String>, derived: Option<String>) -> IpcResult<String> {
     match typed.as_deref().map(str::trim) {
         Some(name) if !name.is_empty() => Ok(name.to_string()),
@@ -440,7 +470,7 @@ fn record_manual_value(
     note: &str,
     now: &str,
 ) -> Result<(), SessionError> {
-    let today = &now[..10];
+    let today = &today();
     let quantity =
         am_storage::events::quantity_as_of(vault, asset_id, Some(today)).map_err(storage)?;
     valuations::record_valuation(
@@ -493,9 +523,13 @@ pub fn create_asset(session: State<'_, Session>, form: AssetForm) -> IpcResult<S
         .with_vault(|vault| {
             let currency = currency_or(&form.currency, &base_currency(vault))
                 .map_err(|e| storage(e.message))?;
-            let cost = parse_money_opt(&form.acquired_price, &currency)
+            let cost_currency = field_currency(&form.acquired_currency, None, &currency)
                 .map_err(|e| storage(e.message))?;
-            let insured = parse_money_opt(&form.insured_value, &currency)
+            let insured_currency = field_currency(&form.insured_currency, None, &currency)
+                .map_err(|e| storage(e.message))?;
+            let cost = parse_money_opt(&form.acquired_price, &cost_currency)
+                .map_err(|e| storage(e.message))?;
+            let insured = parse_money_opt(&form.insured_value, &insured_currency)
                 .map_err(|e| storage(e.message))?;
             let opening = parse_money_opt(&form.current_value, &currency)
                 .map_err(|e| storage(e.message))?;
@@ -548,9 +582,21 @@ pub fn update_asset(
             let current = assets::get(vault, &asset_id).map_err(storage)?;
             let currency = currency_or(&form.currency, &base_currency(vault))
                 .map_err(|e| storage(e.message))?;
-            let cost = parse_money_opt(&form.acquired_price, &currency)
+            let cost_currency = field_currency(
+                &form.acquired_currency,
+                current.acquired_currency.as_deref(),
+                &currency,
+            )
+            .map_err(|e| storage(e.message))?;
+            let insured_currency = field_currency(
+                &form.insured_currency,
+                current.insured_currency.as_deref(),
+                &currency,
+            )
+            .map_err(|e| storage(e.message))?;
+            let cost = parse_money_opt(&form.acquired_price, &cost_currency)
                 .map_err(|e| storage(e.message))?;
-            let insured = parse_money_opt(&form.insured_value, &currency)
+            let insured = parse_money_opt(&form.insured_value, &insured_currency)
                 .map_err(|e| storage(e.message))?;
 
             assets::update(
@@ -572,6 +618,7 @@ pub fn update_asset(
                     insured,
                     attrs: attrs.clone(),
                     review_every_days: form.review_every_days,
+                    cost_covers_holding: form.cost_covers_holding,
                 },
                 &timestamp,
             )
@@ -746,6 +793,47 @@ pub fn remove_photo<R: Runtime>(
         .map_err(IpcError::from)
 }
 
+/// Save a decrypted copy of a photo or document to a path the owner chose.
+///
+/// The one way to get an attachment back out — a receipt kept for a claim is
+/// no use if it can only be looked at as a label. Only an object attached to
+/// the named asset can be exported, and never into the vault folder. The
+/// caller has already warned that the copy is plaintext.
+#[tauri::command]
+pub fn export_attachment<R: Runtime>(
+    app: AppHandle<R>,
+    session: State<'_, Session>,
+    asset_id: String,
+    object_id: String,
+    path: String,
+) -> IpcResult<()> {
+    session.touch();
+    let root = vault_root(&app).map_err(other)?;
+    let target = std::path::PathBuf::from(&path);
+    if target.starts_with(&root) {
+        return Err(bad_input("choose a location outside the vault folder"));
+    }
+    let bytes = session
+        .with_vault(|vault| {
+            let attached: i64 = vault
+                .conn()
+                .query_row(
+                    "SELECT count(*) FROM asset_media WHERE asset_id = ?1 AND object_id = ?2",
+                    [&asset_id, &object_id],
+                    |r| r.get(0),
+                )
+                .map_err(storage)?;
+            if attached == 0 {
+                return Err(storage("that file is not attached to this asset"));
+            }
+            am_storage::objects::load_object(vault, &root, &object_id).map_err(storage)
+        })
+        .map_err(IpcError::from)?;
+    // Written outside the vault lock: a slow disk must not hold the session.
+    std::fs::write(&target, bytes.as_slice())
+        .map_err(|e| IpcError { kind: "unwritable_file".into(), message: e.to_string() })
+}
+
 #[tauri::command]
 pub fn set_primary_photo(
     session: State<'_, Session>,
@@ -866,6 +954,22 @@ mod tests {
     }
 
     #[test]
+    fn each_amount_keeps_its_own_currency_unless_told_otherwise() {
+        let eur = Currency::new("EUR").unwrap();
+        let code = |explicit: Option<&str>, stored: Option<&str>| {
+            field_currency(&explicit.map(str::to_string), stored, &eur)
+                .unwrap()
+                .code()
+                .to_string()
+        };
+        assert_eq!(code(None, Some("USD")), "USD", "stored beats the form's general currency");
+        assert_eq!(code(Some("JPY"), Some("USD")), "JPY", "an explicit choice beats both");
+        assert_eq!(code(Some("  "), Some("USD")), "USD", "blank is not a choice");
+        assert_eq!(code(None, None), "EUR", "a new amount takes the general currency");
+        assert!(field_currency(&Some("dollars".into()), None, &eur).is_err());
+    }
+
+    #[test]
     fn collectibles_are_validated_and_named_from_their_fields() {
         let (cleaned, name) = prepare_attrs(
             "comic",
@@ -953,6 +1057,13 @@ mod tests {
         r.acquired_currency = Some("USD".into());
         assert_eq!(view(r.clone(), "2026-09-22").gain_minor.as_deref(), Some("5000"));
 
+        let mut partial = r.clone();
+        partial.cost_complete = false;
+        assert!(
+            view(partial, "2026-09-22").gain_minor.is_none(),
+            "never against a cost that covers only part of the holding"
+        );
+
         r.acquired_currency = Some("EUR".into());
         assert!(view(r, "2026-09-22").gain_minor.is_none(), "never across currencies");
     }
@@ -985,6 +1096,7 @@ mod tests {
             acquired_date: None,
             acquired_amount_minor: None,
             acquired_currency: None,
+            cost_complete: true,
             acquired_from: None,
             storage_location: None,
             notes: String::new(),

@@ -23,9 +23,17 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev patchelf
 
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain rust-toolchain.toml pins, so CI tests what developers
+      # build with rather than whatever stable is today.
+      - uses: dtolnay/rust-toolchain@1.93.1
         with:
           components: clippy, rustfmt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
 
       - uses: Swatinem/rust-cache@v2
 
@@ -53,3 +61,10 @@ jobs:
       - uses: rustsec/audit-check@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The frontend ships inside the app, so its runtime dependencies are
+      # audited too, not only the Rust ones.
+      - name: npm audit
+        run: npm --prefix apps/desktop audit --omit=dev --audit-level=high

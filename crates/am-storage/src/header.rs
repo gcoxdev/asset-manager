@@ -36,6 +36,12 @@ use zeroize::Zeroizing;
 /// every object — see the plan's note on resumable re-encryption.
 pub const FORMAT_VERSION: u16 = 1;
 
+/// How many earlier epochs [`VaultHeader::unlock_orphaned_slot`] will try.
+/// Every credential change advances the epoch by one, so this covers far more
+/// changes than any vault made by an older build will have seen, while
+/// keeping the work a tampered header can demand to milliseconds.
+pub const MAX_ORPHAN_EPOCH_RETRIES: u64 = 4096;
+
 /// Identifies the file and prevents cross-format confusion.
 pub const FORMAT_TAG: &str = "asset-manager-vault-v1";
 
@@ -364,7 +370,11 @@ impl VaultHeader {
         let kek = derive_kek(secret, &slot.salt, &slot.params)
             .map_err(|_| UnlockError::CannotUnlock)?;
 
-        for epoch in (1..self.key_epoch).rev() {
+        // The epoch comes from the unauthenticated header, so the number of
+        // attempts is bounded here rather than by it: a header edited to
+        // claim epoch 2^64 must not buy an effectively endless loop.
+        let oldest = self.key_epoch.saturating_sub(MAX_ORPHAN_EPOCH_RETRIES).max(1);
+        for epoch in (oldest..self.key_epoch).rev() {
             let mut candidate = self.clone();
             candidate.pin_slot_epoch_at(credential, epoch);
             let aad =
@@ -439,7 +449,9 @@ mod hex16 {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 16], D::Error> {
         let s = String::deserialize(d)?;
-        if s.len() != 32 {
+        // Checked as bytes before any slicing: a multi-byte character would
+        // otherwise put a slice boundary inside it and panic.
+        if s.len() != 32 || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(serde::de::Error::custom("expected 32 hex characters"));
         }
         let mut out = [0u8; 16];
@@ -705,5 +717,32 @@ mod tests {
         assert_ne!(a.header.vault_id, b.header.vault_id);
         assert_ne!(a.recovery_key, b.recovery_key);
         assert_ne!(a.data_key.as_ref(), b.data_key.as_ref());
+    }
+
+    #[test]
+    fn non_ascii_ids_are_an_error_not_a_panic() {
+        let v = new_vault();
+        let json = v.header.to_json().unwrap();
+        let id = hex(&v.header.vault_id);
+        // 32 bytes, but with a two-byte character straddling a slice point.
+        let hostile = format!("a{}é{}", &id[..15], &id[18..]);
+        assert_eq!(hostile.len(), 32);
+        assert!(VaultHeader::from_json(&json.replace(&id, &hostile)).is_err());
+    }
+
+    #[test]
+    fn a_hostile_epoch_cannot_demand_unbounded_retries() {
+        let v = new_vault();
+        let mut header = v.header.clone();
+        header.key_epoch = u64::MAX;
+        let started = std::time::Instant::now();
+        assert!(header
+            .unlock_orphaned_slot(Credential::Passphrase, "correct horse battery staple")
+            .is_err());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "took {:?}",
+            started.elapsed()
+        );
     }
 }

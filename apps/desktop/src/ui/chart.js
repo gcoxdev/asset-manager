@@ -7,7 +7,11 @@
 // - dates carrying a quantity change are MARKED, so a step can be attributed
 //   to a purchase or sale rather than read as appreciation;
 // - the y-axis starts at zero — an area chart that does not start at zero
-//   exaggerates every wobble.
+//   exaggerates every wobble;
+// - points sit at their DATES, not evenly by index, and the line STEPS: a
+//   value holds until the next one is known (it is carried forward, never
+//   interpolated), so a sloped line between two valuations months apart
+//   would draw measurements nobody took.
 //
 // Marks follow the dataviz spec: 2px line, ~10% area wash, ≥8px markers with
 // a surface ring, hairline recessive grid, one series so no legend box.
@@ -90,7 +94,16 @@ export function valueChart(points, { currency = "USD", height = 240, label = "Va
     if (event.key === "End") show(points.length - 1);
   });
 
+  // Removing the chart from the page also ends the observer, so navigating
+  // back and forth does not accumulate them. (A chart can be built before it
+  // is mounted, so only a chart that was on the page and left it counts.)
+  let attached = false;
   const observer = new ResizeObserver(() => {
+    if (!root.isConnected) {
+      if (attached) observer.disconnect();
+      return;
+    }
+    attached = true;
     if (Math.floor(root.clientWidth) !== width) draw();
   });
   observer.observe(root);
@@ -109,6 +122,12 @@ function niceMax(value) {
   return 10 * base;
 }
 
+/** "2026-03-01" → whole days since the epoch, for spacing points by date. */
+function dayOf(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso ?? "");
+  return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) / 86_400_000 : NaN;
+}
+
 function render(points, width, height, currency) {
   const pad = { top: 16, right: 16, bottom: 26, left: 56 };
   const plotW = width - pad.left - pad.right;
@@ -116,7 +135,12 @@ function render(points, width, height, currency) {
   const max = niceMax(Math.max(...points.map((p) => p.value), 0) * 1.08);
   const n = points.length;
 
-  const x = (i) => pad.left + (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+  // By date where every point has one; evenly otherwise.
+  const days = points.map((p) => dayOf(p.date));
+  const span = days[n - 1] - days[0];
+  const byDate = n > 1 && days.every(Number.isFinite) && span > 0;
+  const x = (i) =>
+    pad.left + (n <= 1 ? plotW / 2 : byDate ? ((days[i] - days[0]) / span) * plotW : (i / (n - 1)) * plotW);
   const y = (v) => pad.top + plotH - (v / max) * plotH;
 
   const el = svg("svg", { width, height, viewBox: `0 0 ${width} ${height}`, class: "chart-svg" });
@@ -142,18 +166,22 @@ function render(points, width, height, currency) {
   }
 
   if (n >= 2) {
+    // Each value holds until the next: across to the next date, then up or
+    // down to the new value.
+    const step = (i) => `H ${x(i)} V ${y(points[i].value)}`;
+
     // Area wash under the whole line.
     const area =
-      `M ${x(0)} ${y(0)} ` +
-      points.map((p, i) => `L ${x(i)} ${y(p.value)}`).join(" ") +
-      ` L ${x(n - 1)} ${y(0)} Z`;
+      `M ${x(0)} ${y(0)} V ${y(points[0].value)} ` +
+      points.slice(1).map((_, k) => step(k + 1)).join(" ") +
+      ` V ${y(0)} Z`;
     el.append(svg("path", { class: "chart-area", d: area }));
 
     // Line, split into runs of equal coverage so partial stretches dash.
     let run = [0];
     const flush = (partial) => {
       if (run.length < 2) return;
-      const d = run.map((i, k) => `${k ? "L" : "M"} ${x(i)} ${y(points[i].value)}`).join(" ");
+      const d = `M ${x(run[0])} ${y(points[run[0]].value)} ` + run.slice(1).map(step).join(" ");
       el.append(svg("path", { class: partial ? "chart-line partial" : "chart-line", d }));
     };
     for (let i = 1; i < n; i += 1) {
@@ -182,9 +210,9 @@ function render(points, width, height, currency) {
   el.append(cross, dot);
 
   const nearest = (px) => {
-    if (n <= 1) return 0;
-    const i = Math.round(((px - pad.left) / plotW) * (n - 1));
-    return Math.max(0, Math.min(n - 1, i));
+    let best = 0;
+    for (let i = 1; i < n; i += 1) if (Math.abs(x(i) - px) < Math.abs(x(best) - px)) best = i;
+    return best;
   };
 
   return { el, x, y, cross, dot, nearest };

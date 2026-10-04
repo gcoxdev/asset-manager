@@ -8,7 +8,7 @@ import { h, mount, debounce } from "../lib/dom.js";
 import { icon, typeIcon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
 import * as store from "../lib/store.js";
-import { sourceBadge, statusBadge, emptyState, select, segmented, busy, toast, menuButton } from "../ui/components.js";
+import { sourceBadge, statusBadge, emptyState, select, segmented, busy, toast, toastError, menuButton } from "../ui/components.js";
 import { openAddAsset } from "./asset-forms.js";
 import { exportCsv, importCsv } from "./reports.js";
 
@@ -30,6 +30,18 @@ function cmpBig(a, b) {
   if (x === null) return 1; // unknowns last, whatever the direction
   if (y === null) return -1;
   return x > y ? -1 : 1;
+}
+
+/**
+ * Compare amounts that may be in different currencies. Minor units of two
+ * currencies are not comparable — 100,000 JPY is not more than 1,000 USD —
+ * and there is no exchange rate to make them so. So the base currency comes
+ * first, then each other currency as its own group, largest first within it.
+ */
+export function cmpMoney(a, aCurrency, b, bCurrency, base) {
+  if (a == null || b == null || aCurrency === bCurrency) return cmpBig(a, b);
+  const rank = (c) => (c === base ? 0 : 1);
+  return rank(aCurrency) - rank(bCurrency) || String(aCurrency).localeCompare(String(bCurrency));
 }
 
 /** Sum minor units exactly and lay the result out like the backend does. */
@@ -73,10 +85,24 @@ export async function renderHoldings(root, params, ctx) {
   sortSelect.addEventListener("change", () => { prefs.sort = sortSelect.value; draw(); });
   const layout = segmented([["list", "List"], ["grid", "Grid"]], prefs.layout, (v) => { prefs.layout = v; draw(); });
 
+  // Searches can finish out of order — a short query is slower than the
+  // longer one typed after it — so only the latest is applied, and none once
+  // the view has gone.
+  let searchSeq = 0;
+  let disposed = false;
   const runSearch = debounce(async () => {
+    const seq = ++searchSeq;
     prefs.query = search.value;
     const q = search.value.trim();
-    searchIds = q ? await call("search_assets", { query: q }) : null;
+    let ids = null;
+    try {
+      ids = q ? await call("search_assets", { query: q }) : null;
+    } catch (error) {
+      if (seq === searchSeq && !disposed) toastError(error);
+      return;
+    }
+    if (seq !== searchSeq || disposed) return;
+    searchIds = ids;
     shown = PAGE;
     draw();
   }, 160);
@@ -110,8 +136,10 @@ export async function renderHoldings(root, params, ctx) {
     const sorted = [...list];
     switch (prefs.sort) {
       case "name": sorted.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })); break;
-      case "value": sorted.sort((a, b) => cmpBig(a.current_amount_minor, b.current_amount_minor)); break;
-      case "gain": sorted.sort((a, b) => cmpBig(a.gain_minor, b.gain_minor)); break;
+      // Gain exists only when value and cost share a currency, so it is in
+      // the value's currency.
+      case "value": sorted.sort((a, b) => cmpMoney(a.current_amount_minor, a.current_currency, b.current_amount_minor, b.current_currency, settings.currency)); break;
+      case "gain": sorted.sort((a, b) => cmpMoney(a.gain_minor, a.current_currency, b.gain_minor, b.current_currency, settings.currency)); break;
       case "acquired": sorted.sort((a, b) => (b.acquired_date ?? "").localeCompare(a.acquired_date ?? "")); break;
       default: break; // backend order: most recently changed first
     }
@@ -137,9 +165,15 @@ export async function renderHoldings(root, params, ctx) {
     const list = filtered();
     const total = sumDisplay(list, settings.currency);
     const unpriced = list.filter((a) => a.current_amount_minor == null).length;
+    const foreign = [...new Set(list.filter((a) => a.current_amount_minor != null && a.current_currency !== settings.currency).map((a) => a.current_currency))].sort();
+    const foreignCount = list.filter((a) => a.current_amount_minor != null && a.current_currency !== settings.currency).length;
     mount(summary,
       h("span", {}, `${list.length} ${list.length === 1 ? "holding" : "holdings"}`),
       total ? h("span", {}, " · ", h("strong", {}, fmt.money(total))) : null,
+      foreignCount
+        ? h("span", { class: "muted", title: "There is no currency conversion, so these are not in the total." },
+            ` · ${foreignCount} valued in ${foreign.join(", ")} not included`)
+        : null,
       unpriced ? h("span", { class: "muted" }, ` · ${unpriced} without a value`) : null,
       special
         ? h("button", { class: "chip active chip-dismiss", onclick: () => { special = null; draw(); } },
@@ -185,6 +219,9 @@ export async function renderHoldings(root, params, ctx) {
   if (prefs.query) await runSearch();
   else draw();
   if (params.focusSearch) search.focus();
+  return () => {
+    disposed = true;
+  };
 }
 
 function thumb(a, size = 44) {

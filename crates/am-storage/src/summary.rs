@@ -7,15 +7,27 @@
 //!
 //! - an unpriced holding is **counted**, never treated as zero;
 //! - gain is computed only over holdings with *both* a value and a known
-//!   cost, and says how many that is — a gain over half the collection
-//!   presented as the whole would be a confident lie;
-//! - foreign-currency figures are excluded and named, not converted.
+//!   cost for the whole holding, and says how many that is — a gain over
+//!   half the collection presented as the whole would be a confident lie;
+//! - foreign-currency figures are excluded and named, not converted;
+//! - a total too large to represent is an error, never a smaller number.
 
 use am_core::{Currency, Money};
 use serde::Serialize;
 
 use crate::series::{format_date, parse_date};
 use crate::vault::Vault;
+
+#[derive(Debug, thiserror::Error)]
+pub enum SummaryError {
+    #[error(
+        "the collection's total is too large to compute exactly — check for a \
+         mistyped value"
+    )]
+    Overflow,
+    #[error(transparent)]
+    Sqlite(#[from] rusqlite::Error),
+}
 
 fn minor_as_string<S: serde::Serializer>(v: &i64, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&v.to_string())
@@ -85,6 +97,9 @@ pub struct Dashboard {
     pub gain: Option<Amount>,
     /// How many holdings the gain is computed over.
     pub gain_coverage: usize,
+    /// Valued holdings left out of the gain because part of the holding was
+    /// added at an unknown cost.
+    pub partial_cost: usize,
     pub active_count: usize,
     pub by_category: Vec<CategoryTotal>,
     pub top_holdings: Vec<Brief>,
@@ -101,6 +116,7 @@ struct Row {
     category: String,
     value: Option<(i64, String)>,
     cost: Option<(i64, String)>,
+    cost_complete: bool,
     value_asof: Option<String>,
     review_every_days: Option<i64>,
     primary_photo: Option<String>,
@@ -110,13 +126,13 @@ pub fn dashboard(
     vault: &Vault,
     currency: &Currency,
     today: &str,
-) -> rusqlite::Result<Dashboard> {
+) -> Result<Dashboard, SummaryError> {
     let rows: Vec<Row> = {
         let mut stmt = vault.conn().prepare(
             "SELECT a.asset_id, a.name, t.display_name, t.category,
                     a.current_amount_minor, a.current_currency,
                     a.acquired_amount_minor, a.acquired_currency,
-                    a.value_asof, a.review_every_days, a.type_id,
+                    a.value_asof, a.review_every_days, a.type_id, a.cost_complete,
                     (SELECT m.object_id FROM asset_media m
                        JOIN objects o ON o.object_id = m.object_id
                       WHERE m.asset_id = a.asset_id AND o.gc_state = 'live'
@@ -137,7 +153,8 @@ pub fn dashboard(
                     value_asof: r.get(8)?,
                     review_every_days: r.get(9)?,
                     type_id: r.get(10)?,
-                    primary_photo: r.get(11)?,
+                    cost_complete: r.get::<_, i64>(11)? != 0,
+                    primary_photo: r.get(12)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -152,6 +169,10 @@ pub fn dashboard(
     let mut cost_basis = zero();
     let mut covered_value = zero();
     let (mut valued, mut unvalued, mut gain_coverage) = (0usize, 0usize, 0usize);
+    let mut partial_cost = 0usize;
+    let add = |sum: &Money, minor: i64| {
+        sum.checked_add(&money(minor)).map_err(|_| SummaryError::Overflow)
+    };
     let mut skipped: Vec<String> = Vec::new();
     let mut categories: Vec<(String, Money, usize, usize)> = Vec::new();
     let mut top: Vec<(i64, &Row)> = Vec::new();
@@ -186,19 +207,17 @@ pub fn dashboard(
         match &row.value {
             Some((minor, c)) if c == code => {
                 valued += 1;
-                total = total.checked_add(&money(*minor)).unwrap_or(total);
-                if let Ok(sum) = categories[slot].1.checked_add(&money(*minor)) {
-                    categories[slot].1 = sum;
-                }
+                total = add(&total, *minor)?;
+                categories[slot].1 = add(&categories[slot].1, *minor)?;
                 top.push((*minor, row));
 
                 if let Some((cost, cost_code)) = &row.cost {
-                    if cost_code == code {
+                    if cost_code == code && row.cost_complete {
                         gain_coverage += 1;
-                        cost_basis =
-                            cost_basis.checked_add(&money(*cost)).unwrap_or(cost_basis);
-                        covered_value =
-                            covered_value.checked_add(&money(*minor)).unwrap_or(covered_value);
+                        cost_basis = add(&cost_basis, *cost)?;
+                        covered_value = add(&covered_value, *minor)?;
+                    } else if cost_code == code {
+                        partial_cost += 1;
                     }
                 }
             }
@@ -250,7 +269,9 @@ pub fn dashboard(
         .collect();
 
     let gain = if gain_coverage > 0 {
-        covered_value.checked_sub(&cost_basis).ok().map(|g| Amount::from(&g))
+        let gain =
+            covered_value.checked_sub(&cost_basis).map_err(|_| SummaryError::Overflow)?;
+        Some(Amount::from(&gain))
     } else {
         None
     };
@@ -287,6 +308,7 @@ pub fn dashboard(
         cost_covered_value: Amount::from(&covered_value),
         gain,
         gain_coverage,
+        partial_cost,
         active_count: rows.len(),
         by_category,
         top_holdings,
@@ -420,5 +442,43 @@ mod tests {
         assert_eq!(d.review_due[0].name, "Due");
         assert!(d.review_due[0].reason.contains("141 days"), "{}", d.review_due[0].reason);
         assert_eq!(add_days("2026-05-01", 90).as_deref(), Some("2026-07-30"));
+    }
+
+    #[test]
+    fn a_cost_covering_part_of_a_holding_gives_no_gain() {
+        // Buy one for $100, then another at an unknown price: the $100 is
+        // the cost of half the holding, so there is no honest gain figure.
+        let (_d, v) = setup();
+        let a = asset(&v, "Coin", "generic", Some(10_000));
+        value(&v, &a, 10_000, "USD", "2026-02-01");
+        crate::events::record(
+            &v,
+            &crate::events::NewEvent {
+                asset_id: a.clone(),
+                event_type: crate::events::EventType::Add,
+                effective_date: "2026-03-01".into(),
+                quantity_delta: Decimal::ONE,
+                amount_minor: None,
+                currency: None,
+                note: String::new(),
+            },
+            NOW,
+        )
+        .unwrap();
+
+        let d = dashboard(&v, &usd(), "2026-09-19").unwrap();
+        assert!(d.gain.is_none(), "no gain against a partial cost");
+        assert_eq!(d.gain_coverage, 0);
+        assert_eq!(d.partial_cost, 1, "and the reason is counted");
+    }
+
+    #[test]
+    fn a_total_too_large_to_represent_is_an_error_not_a_smaller_number() {
+        let (_d, v) = setup();
+        let a = asset(&v, "A", "art", None);
+        let b = asset(&v, "B", "art", None);
+        value(&v, &a, i64::MAX / 2 + 1, "USD", "2026-09-01");
+        value(&v, &b, i64::MAX / 2 + 1, "USD", "2026-09-01");
+        assert!(matches!(dashboard(&v, &usd(), "2026-09-19"), Err(SummaryError::Overflow)));
     }
 }

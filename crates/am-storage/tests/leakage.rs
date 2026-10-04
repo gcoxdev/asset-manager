@@ -318,3 +318,55 @@ fn a_deleted_photo_leaves_nothing_decryptable_behind() {
         after.iter().map(|p| p.display().to_string()).collect::<Vec<_>>()
     );
 }
+
+/// A backup is held to the same standard as the vault it copies: it may sit on
+/// an external drive or in a synced folder, so nothing in it — the manifest
+/// included — may reveal catalog text, image content, or which photos it
+/// holds.
+#[test]
+fn a_backup_reveals_no_more_than_the_vault() {
+    use sha2::{Digest, Sha256};
+
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("vault");
+    let backup = dir.path().join("backup");
+    let photo = sentinel_png();
+
+    {
+        let (vault, _r) = Vault::create(&root, PASS, &fast(), NOW).unwrap();
+        vault
+            .conn()
+            .execute(
+                "INSERT INTO assets
+                   (asset_id, type_id, name, notes, storage_location, created_at, updated_at)
+                 VALUES ('a1', 'generic', ?1, ?2, ?3, ?4, ?4)",
+                rusqlite::params![NAME_SENTINEL, NOTES_SENTINEL, LOCATION_SENTINEL, NOW],
+            )
+            .unwrap();
+        let stored = am_storage::objects::import_object(&vault, &root, &photo, NOW).unwrap();
+        am_storage::objects::attach_to_asset(&vault, "a1", &stored.object_id, NOW).unwrap();
+        vault.backup_to(&backup, NOW).unwrap();
+    }
+
+    // What someone holding a photo of their own would search for.
+    let digest = Sha256::digest(&photo);
+    let hex_digest: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+
+    let mut files = Vec::new();
+    walk(&backup, &mut files);
+    assert!(files.len() >= 4, "header, database, manifest and the photo");
+    for path in &files {
+        let bytes = fs::read(path).unwrap();
+        for (label, needle) in [
+            ("asset name", NAME_SENTINEL.as_bytes()),
+            ("notes", NOTES_SENTINEL.as_bytes()),
+            ("storage location", LOCATION_SENTINEL.as_bytes()),
+            ("image content", &photo[photo.len() / 2..photo.len() / 2 + 64]),
+            ("photo fingerprint", hex_digest.as_bytes()),
+            ("photo fingerprint", hex_digest.to_uppercase().as_bytes()),
+            ("raw photo fingerprint", digest.as_slice()),
+        ] {
+            assert!(!contains(&bytes, needle), "{label} found in {}", path.display());
+        }
+    }
+}

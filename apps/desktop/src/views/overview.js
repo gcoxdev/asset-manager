@@ -6,7 +6,7 @@ import { mediaUrl } from "../lib/media.js";
 import { h, mount } from "../lib/dom.js";
 import { icon, typeIcon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
-import { segmented, emptyState } from "../ui/components.js";
+import { segmented, emptyState, toastError } from "../ui/components.js";
 import { valueChart } from "../ui/chart.js";
 import { openAddAsset, openUpdateValue } from "./asset-forms.js";
 import * as store from "../lib/store.js";
@@ -81,11 +81,15 @@ function hero(d) {
       h("span", { class: "gain-context" }, `vs. cost, across ${d.gain_coverage} holding${d.gain_coverage === 1 ? "" : "s"} with a known price paid`)
     );
   }
+  const partial = d.partial_cost > 0
+    ? h("p", { class: "muted small" }, `${d.partial_cost} holding${d.partial_cost === 1 ? " is" : "s are"} left out of the gain: more was added without a price, so the recorded cost covers only part of ${d.partial_cost === 1 ? "it" : "them"}.`)
+    : null;
 
   return h("section", { class: "hero card" },
     h("div", { class: "hero-label" }, "Collection value"),
     h("div", { class: "hero-value" }, fmt.amount(d.total)),
     h("div", { class: "hero-meta" }, coverage, gain),
+    partial,
     d.skipped_currencies.length
       ? h("p", { class: "muted small" }, `Excludes holdings valued in ${d.skipped_currencies.join(", ")} — there is no currency conversion yet.`)
       : null
@@ -119,9 +123,20 @@ function chartCard(d) {
   let showTable = false;
   let lastPoints = [];
 
+  // Switching ranges quickly can return the older request last; only the
+  // latest one may draw.
+  let latest = 0;
   const load = async (range) => {
-    const from = range === "all" ? null : new Date(Date.now() - Number(range) * 86_400_000).toISOString().slice(0, 10);
-    const series = await call("portfolio_series", { from, maxPoints: 160 });
+    const request = ++latest;
+    const from = range === "all" ? null : fmt.daysAgoIso(Number(range));
+    let series;
+    try {
+      series = await call("portfolio_series", { from, maxPoints: 160 });
+    } catch (error) {
+      if (request === latest) toastError(error);
+      return;
+    }
+    if (request !== latest) return;
     const points = series.points.map((p) => ({
       date: p.date,
       display: p.total,

@@ -21,6 +21,11 @@ pub const MIN_PASSPHRASE_CHARS: usize = 12;
 
 const AUTO_LOCK_SETTING: &str = "auto_lock_minutes";
 const METALS_AUTO_SETTING: &str = "metals_auto_refresh";
+/// Set when a recovery key is issued, cleared when the ceremony confirms it
+/// was saved. Still set after unlock means the ceremony never finished — the
+/// vault locked, or the app closed, while the key was on screen — and that
+/// key is gone for good, so the owner is asked to issue another.
+const RECOVERY_UNCONFIRMED_SETTING: &str = "recovery_key_unconfirmed";
 
 fn other(message: String) -> IpcError {
     IpcError { kind: "error".into(), message }
@@ -74,8 +79,30 @@ pub fn create_vault<R: Runtime>(
     let recovery_key = session
         .create(&root, &passphrase, &default_params(), &now())
         .map_err(IpcError::from)?;
+    mark_recovery_unconfirmed(&session)?;
     let fingerprint = am_crypto::recovery_fingerprint(&recovery_key);
     Ok(CreatedVault { recovery_key, fingerprint })
+}
+
+fn mark_recovery_unconfirmed(session: &Session) -> IpcResult<()> {
+    session
+        .with_vault(|vault| {
+            am_storage::settings::set(vault, RECOVERY_UNCONFIRMED_SETTING, "true")
+                .map_err(storage)
+        })
+        .map_err(IpcError::from)
+}
+
+/// The recovery ceremony finished: the key was acknowledged and retyped.
+#[tauri::command]
+pub fn confirm_recovery_saved(session: State<'_, Session>) -> IpcResult<()> {
+    session.touch();
+    session
+        .with_vault(|vault| {
+            am_storage::settings::set(vault, RECOVERY_UNCONFIRMED_SETTING, "false")
+                .map_err(storage)
+        })
+        .map_err(IpcError::from)
 }
 
 #[tauri::command]
@@ -223,6 +250,8 @@ pub fn rotate_recovery_key(
                 )));
             }
             let recovery_key = vault.rotate_recovery_key(&default_params())?;
+            am_storage::settings::set(vault, RECOVERY_UNCONFIRMED_SETTING, "true")
+                .map_err(storage)?;
             let fingerprint = am_crypto::recovery_fingerprint(&recovery_key);
             Ok(CreatedVault { recovery_key, fingerprint })
         })
@@ -289,19 +318,27 @@ pub fn backup_vault<R: Runtime>(
 pub struct RestoreResult {
     pub created_at: String,
     pub objects: usize,
+    /// Whether the restored vault was opened. False when the session
+    /// auto-locked while a long restore was being verified: the screen has
+    /// already gone to the lock screen, so the restored vault waits there too.
+    pub opened: bool,
 }
 
-/// Replace the vault with a backup.
+/// Replace the vault with a backup, and open it.
 ///
-/// Locks first: restoring underneath an open vault would leave the session
-/// pointing at files that no longer exist. The previous vault is kept beside
-/// it as `vault.pre-restore` until the next restore, so a wrong choice here
-/// is recoverable.
+/// Takes the backup's own passphrase or recovery key: the copy is unlocked,
+/// integrity-checked and its photos verified *before* anything is replaced,
+/// so a damaged backup — or one the owner cannot open — never displaces a
+/// working vault. Only then does the session lock and the swap happen. The
+/// previous vault is kept beside it as `vault.pre-restore` until the next
+/// restore, so a wrong choice here is still recoverable.
 #[tauri::command]
 pub fn restore_vault<R: Runtime>(
     app: AppHandle<R>,
     session: State<'_, Session>,
     directory: String,
+    secret: String,
+    use_recovery_key: bool,
 ) -> IpcResult<RestoreResult> {
     let root = vault_root(&app).map_err(other)?;
     let backup = PathBuf::from(&directory);
@@ -314,14 +351,34 @@ pub fn restore_vault<R: Runtime>(
              contains manifest.json",
         ));
     }
+    if secret.is_empty() {
+        return Err(bad_input("enter the passphrase or recovery key the backup opens with"));
+    }
+    session.touch();
+    let was_unlocked = session.is_unlocked();
+    let credential =
+        if use_recovery_key { Credential::RecoveryKey } else { Credential::Passphrase };
 
-    session.lock();
     if let Some(parent) = root.parent() {
         std::fs::create_dir_all(parent).map_err(|e| other(e.to_string()))?;
     }
-    let manifest = am_storage::vault::restore_from(&backup, &root)
+    let staged = am_storage::vault::stage_restore(&backup, &root, credential, &secret)
         .map_err(|e| IpcError::from(SessionError::Vault(e)))?;
-    Ok(RestoreResult { created_at: manifest.created_at, objects: manifest.objects.len() })
+
+    // Restoring underneath an open vault would leave the session pointing at
+    // files that no longer exist.
+    let locked_meanwhile = was_unlocked && !session.is_unlocked();
+    session.lock();
+    let report = staged.commit().map_err(|e| IpcError::from(SessionError::Vault(e)))?;
+    if !locked_meanwhile {
+        session.unlock(&root, credential, &secret).map_err(IpcError::from)?;
+        apply_session_settings(&session);
+    }
+    Ok(RestoreResult {
+        created_at: report.manifest.created_at,
+        objects: report.objects,
+        opened: !locked_meanwhile,
+    })
 }
 
 // ------------------------------------------------------------ settings
@@ -335,6 +392,10 @@ pub struct Settings {
     /// Read-only here; written by `backup_vault`.
     #[serde(default)]
     pub last_backup_at: Option<String>,
+    /// Read-only here: the last recovery key issued was never confirmed as
+    /// saved. See [`RECOVERY_UNCONFIRMED_SETTING`].
+    #[serde(default)]
+    pub recovery_unconfirmed: bool,
 }
 
 #[tauri::command]
@@ -351,6 +412,8 @@ pub fn get_settings(session: State<'_, Session>) -> IpcResult<Settings> {
                 balance_lookup: get(crate::crypto_commands::BALANCE_OPT_IN_KEY).as_deref()
                     == Some("true"),
                 last_backup_at: get(LAST_BACKUP_SETTING),
+                recovery_unconfirmed: get(RECOVERY_UNCONFIRMED_SETTING).as_deref()
+                    == Some("true"),
             })
         })
         .map_err(IpcError::from)

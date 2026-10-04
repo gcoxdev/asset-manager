@@ -31,6 +31,18 @@ pub enum EventError {
          record a correction instead if the stored quantity is wrong"
     )]
     WouldGoNegative { removing: String, current: String },
+    #[error(
+        "that would leave a negative holding on {date}: a later sale or removal depends \
+         on these units — record the change on or after that date, or correct the later one"
+    )]
+    WouldGoNegativeLater { date: String },
+    #[error(
+        "moving the acquisition to that date would leave a negative holding on {date}, \
+         before anything was acquired"
+    )]
+    AcquisitionAfterRemoval { date: String },
+    #[error("that amount is too large to add to the recorded cost")]
+    AmountOverflow,
     #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 }
@@ -125,9 +137,12 @@ pub fn normalize_date(raw: &str) -> Result<String, EventError> {
         4 | 7 => *b == b'-',
         _ => b.is_ascii_digit(),
     });
+    let year: i64 = date.get(0..4).and_then(|y| y.parse().ok()).unwrap_or(0);
     let month: u32 = date.get(5..7).and_then(|m| m.parse().ok()).unwrap_or(0);
     let day: u32 = date.get(8..10).and_then(|d| d.parse().ok()).unwrap_or(0);
-    if !shape_ok || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+    // A real calendar date, not just day 1–31: "2026-02-30" would otherwise
+    // be stored and sort between real dates as though it existed.
+    if !shape_ok || !crate::series::is_calendar_date(year, month, day) {
         return Err(EventError::BadDate(raw.to_string()));
     }
     Ok(date.to_string())
@@ -145,7 +160,8 @@ pub fn normalize_date(raw: &str) -> Result<String, EventError> {
 ///
 /// - **Add** with a price paid adds it to the position's cost. Without one
 ///   the cost is left as it was — the added units have unknown cost, and
-///   inventing zero would overstate the gain.
+///   inventing zero would overstate the gain — and marked incomplete, so no
+///   gain is computed against a cost that covers only part of the holding.
 /// - **Remove** reduces cost in proportion to what remains (average cost),
 ///   so a half-sold position does not keep its full original cost.
 /// - **Dispose** records the sale date and, if given, what it sold for.
@@ -164,17 +180,12 @@ pub fn record(vault: &Vault, event: &NewEvent, now: &str) -> Result<String, Even
 
     // A removal that would push the holding below zero is almost always a
     // mistyped quantity. Refusing it with a pointer to `Correct` is more
-    // useful than storing an impossible holding.
-    if event.quantity_delta.is_sign_negative() {
-        let current = quantity_as_of(vault, &event.asset_id, None)?;
-        if current + event.quantity_delta < Decimal::ZERO
-            && event.event_type != EventType::Correct
-        {
-            return Err(EventError::WouldGoNegative {
-                removing: (-event.quantity_delta).to_string(),
-                current: current.to_string(),
-            });
-        }
+    // useful than storing an impossible holding. Checked across the whole
+    // timeline, not just today's total: a sale backdated to February must
+    // fit what was held in February, and must not take units that a later
+    // sale already accounted for.
+    if event.quantity_delta.is_sign_negative() && event.event_type != EventType::Correct {
+        check_removal_fits(vault, &event.asset_id, &effective_date, event.quantity_delta)?;
     }
 
     let previous = quantity_as_of(vault, &event.asset_id, None)?;
@@ -207,6 +218,102 @@ pub fn record(vault: &Vault, event: &NewEvent, now: &str) -> Result<String, Even
     Ok(event_id)
 }
 
+/// Every event's date and quantity change, in the order they took effect.
+/// Same-day events apply in the order they were recorded.
+fn timeline(
+    conn: &rusqlite::Connection,
+    asset_id: &str,
+) -> Result<Vec<(String, Decimal)>, EventError> {
+    let mut stmt = conn.prepare(
+        "SELECT effective_date, quantity_delta FROM asset_events WHERE asset_id = ?1
+         ORDER BY effective_date, recorded_at",
+    )?;
+    let rows = stmt
+        .query_map([asset_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(date, raw)| {
+            let delta = parse_decimal(&raw).map_err(|_| EventError::BadQuantity(raw))?;
+            Ok((date, delta))
+        })
+        .collect()
+}
+
+/// The smallest holding at any point in the timeline, with the date it
+/// occurs. Zero for an empty timeline.
+fn lowest_holding(events: &[(String, Decimal)]) -> (Decimal, Option<String>) {
+    let mut held = Decimal::ZERO;
+    let mut lowest = (Decimal::ZERO, None);
+    for (date, delta) in events {
+        held += *delta;
+        if held < lowest.0 {
+            lowest = (held, Some(date.clone()));
+        }
+    }
+    lowest
+}
+
+/// Refuse a removal that does not fit the holding on its date, or that would
+/// leave a later removal taking units no longer there.
+fn check_removal_fits(
+    vault: &Vault,
+    asset_id: &str,
+    effective_date: &str,
+    delta: Decimal,
+) -> Result<(), EventError> {
+    let mut events = timeline(vault.conn(), asset_id)?;
+    // Recorded now, so it applies after everything already on its date.
+    let at = events.partition_point(|(date, _)| date.as_str() <= effective_date);
+    let held_then: Decimal = events[..at].iter().map(|(_, d)| *d).sum();
+    if held_then + delta < Decimal::ZERO {
+        return Err(EventError::WouldGoNegative {
+            removing: (-delta).normalize().to_string(),
+            current: held_then.normalize().to_string(),
+        });
+    }
+    events.insert(at, (effective_date.to_string(), delta));
+    let mut held = Decimal::ZERO;
+    for (i, (date, d)) in events.iter().enumerate() {
+        held += *d;
+        if i > at && held < Decimal::ZERO {
+            return Err(EventError::WouldGoNegativeLater { date: date.clone() });
+        }
+    }
+    Ok(())
+}
+
+/// Check that moving the acquisition to a new date leaves no point in the
+/// history holding less than before the move — a sale dated before the
+/// purchase would otherwise appear as a negative holding.
+pub(crate) fn check_acquisition_move(
+    conn: &rusqlite::Connection,
+    asset_id: &str,
+    new_date: &str,
+) -> Result<(), EventError> {
+    let mut stmt = conn.prepare(
+        "SELECT effective_date, quantity_delta, event_type = 'acquire' FROM asset_events
+         WHERE asset_id = ?1 ORDER BY effective_date, recorded_at",
+    )?;
+    let mut events = Vec::new();
+    let mut moved = Vec::new();
+    for row in stmt.query_map([asset_id], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, bool>(2)?))
+    })? {
+        let (date, raw, acquire) = row?;
+        let delta = parse_decimal(&raw).map_err(|_| EventError::BadQuantity(raw))?;
+        moved.push((if acquire { new_date.to_string() } else { date.clone() }, delta));
+        events.push((date, delta));
+    }
+    // A stable sort: same-day events keep their recorded order.
+    moved.sort_by(|a, b| a.0.cmp(&b.0));
+    let (before, _) = lowest_holding(&events);
+    let (after, date) = lowest_holding(&moved);
+    if after < Decimal::ZERO && after < before {
+        return Err(EventError::AcquisitionAfterRemoval { date: date.unwrap_or_default() });
+    }
+    Ok(())
+}
+
 /// Keep the single position cost consistent with a quantity change.
 fn apply_cost_basis(
     tx: &rusqlite::Transaction<'_>,
@@ -223,19 +330,28 @@ fn apply_cost_basis(
 
     match event.event_type {
         EventType::Add => {
-            let (Some(paid), Some(paid_currency)) = (event.amount_minor, &event.currency)
-            else {
-                return Ok(());
-            };
-            match (cost, cost_currency.as_deref()) {
-                (Some(cost), Some(code)) if code == paid_currency => {
+            let paid = event.amount_minor.zip(event.currency.as_deref());
+            match (cost, cost_currency.as_deref(), paid) {
+                (Some(cost), Some(code), Some((paid, paid_currency)))
+                    if code == paid_currency =>
+                {
+                    let total = cost.checked_add(paid).ok_or(EventError::AmountOverflow)?;
                     tx.execute(
                         "UPDATE assets SET acquired_amount_minor = ?1 WHERE asset_id = ?2",
-                        rusqlite::params![cost.saturating_add(paid), &event.asset_id],
+                        rusqlite::params![total, &event.asset_id],
                     )?;
                 }
-                // Unknown prior cost, or a different currency: adding would
-                // produce a figure that looks exact and is not.
+                // A known cost, and units whose cost is unknown or in another
+                // currency: adding would produce a figure that looks exact
+                // and is not, so the cost stands but no longer covers
+                // everything.
+                (Some(_), Some(_), _) => {
+                    tx.execute(
+                        "UPDATE assets SET cost_complete = 0 WHERE asset_id = ?1",
+                        [&event.asset_id],
+                    )?;
+                }
+                // No recorded cost: still unknown.
                 _ => {}
             }
         }
@@ -530,6 +646,66 @@ mod tests {
     }
 
     #[test]
+    fn a_backdated_sale_must_fit_what_was_held_then() {
+        // January: 10. September: 10 more. A sale of 15 dated February fits
+        // today's 20 — but only 10 were held in February.
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "10", "2026-01-15"), NOW).unwrap();
+        record(&v, &event(EventType::Add, "10", "2026-09-01"), NOW).unwrap();
+
+        let err = record(&v, &event(EventType::Remove, "-15", "2026-02-01"), NOW).unwrap_err();
+        assert!(matches!(err, EventError::WouldGoNegative { .. }), "got: {err}");
+        assert!(err.to_string().contains("currently 10"), "{err}");
+        assert_eq!(quantity_as_of(&v, "a1", Some("2026-03-01")).unwrap(), Decimal::from(10));
+
+        // Dated after the second purchase, the same sale is fine.
+        record(&v, &event(EventType::Remove, "-15", "2026-09-02"), NOW).unwrap();
+    }
+
+    #[test]
+    fn a_backdated_sale_cannot_take_units_a_later_sale_already_used() {
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "10", "2026-01-01"), NOW).unwrap();
+        record(&v, &event(EventType::Remove, "-8", "2026-06-01"), NOW).unwrap();
+
+        // Fits March on its own (10 held), but June's sale of 8 then finds 5.
+        let err = record(&v, &event(EventType::Remove, "-5", "2026-03-01"), NOW).unwrap_err();
+        assert!(
+            matches!(err, EventError::WouldGoNegativeLater { ref date } if date == "2026-06-01")
+        );
+        assert_eq!(
+            quantity_as_of(&v, "a1", None).unwrap(),
+            Decimal::from(2),
+            "nothing written"
+        );
+    }
+
+    #[test]
+    fn same_day_events_apply_in_the_order_recorded() {
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "3", "2026-01-01"), NOW).unwrap();
+        // Bought two more and sold four, both on one day: in that order it fits.
+        record(&v, &event(EventType::Add, "2", "2026-02-01"), NOW).unwrap();
+        record(&v, &event(EventType::Remove, "-4", "2026-02-01"), "2026-09-19T00:00:01Z")
+            .unwrap();
+        assert_eq!(quantity_as_of(&v, "a1", None).unwrap(), Decimal::ONE);
+    }
+
+    #[test]
+    fn the_acquisition_cannot_move_after_a_sale_of_what_it_bought() {
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "5", "2026-01-01"), NOW).unwrap();
+        record(&v, &event(EventType::Remove, "-2", "2026-03-01"), NOW).unwrap();
+
+        let err = check_acquisition_move(v.conn(), "a1", "2026-04-01").unwrap_err();
+        assert!(
+            matches!(err, EventError::AcquisitionAfterRemoval { ref date } if date == "2026-03-01")
+        );
+        assert!(check_acquisition_move(v.conn(), "a1", "2026-02-28").is_ok());
+        assert!(check_acquisition_move(v.conn(), "a1", "2025-12-01").is_ok());
+    }
+
+    #[test]
     fn a_correction_may_go_negative_where_a_removal_may_not() {
         // Corrections fix bad data, including data that was too high.
         let (_d, v) = setup();
@@ -602,6 +778,15 @@ mod tests {
             .unwrap()
     }
 
+    fn cost_complete(v: &Vault) -> bool {
+        v.conn()
+            .query_row("SELECT cost_complete FROM assets WHERE asset_id='a1'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .unwrap()
+            == 1
+    }
+
     fn set_cost(v: &Vault, minor: i64) {
         v.conn()
             .execute(
@@ -631,7 +816,21 @@ mod tests {
     fn malformed_dates_are_refused() {
         assert_eq!(normalize_date("2026-02-03").unwrap(), "2026-02-03");
         assert_eq!(normalize_date(" 2026-02-03T00:00:00Z ").unwrap(), "2026-02-03");
-        for bad in ["", "yesterday", "2026-13-01", "2026-00-10", "2026/02/03", "26-02-03"] {
+        assert_eq!(normalize_date("2024-02-29").unwrap(), "2024-02-29", "a leap day");
+        for bad in [
+            "",
+            "yesterday",
+            "2026-13-01",
+            "2026-00-10",
+            "2026/02/03",
+            "26-02-03",
+            "2026-02-29",
+            "2026-02-30",
+            "2026-06-31",
+            "2026-01-00",
+            "2026-01-32",
+            "é026-01-01",
+        ] {
             assert!(normalize_date(bad).is_err(), "accepted {bad:?}");
         }
 
@@ -662,15 +861,46 @@ mod tests {
         let (_d, v) = setup();
         record(&v, &event(EventType::Acquire, "10", "2026-01-01"), NOW).unwrap();
         set_cost(&v, 30_000);
+        assert!(cost_complete(&v));
         record(&v, &event(EventType::Add, "5", "2026-02-01"), NOW).unwrap();
         assert_eq!(cost(&v), Some(30_000));
+        assert!(!cost_complete(&v), "the cost now covers ten of fifteen units");
 
         // Nor does a price in another currency get added as if it were USD.
+        set_cost(&v, 30_000);
+        v.conn().execute("UPDATE assets SET cost_complete = 1", []).unwrap();
         let mut eur = event(EventType::Add, "1", "2026-03-01");
         eur.amount_minor = Some(5_000);
         eur.currency = Some("EUR".into());
         record(&v, &eur, NOW).unwrap();
         assert_eq!(cost(&v), Some(30_000));
+        assert!(!cost_complete(&v));
+    }
+
+    #[test]
+    fn a_priced_purchase_keeps_a_complete_cost_complete() {
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "1", "2026-01-01"), NOW).unwrap();
+        set_cost(&v, 10_000);
+        let mut add = event(EventType::Add, "1", "2026-02-01");
+        add.amount_minor = Some(12_000);
+        add.currency = Some("USD".into());
+        record(&v, &add, NOW).unwrap();
+        assert!(cost_complete(&v));
+        assert_eq!(cost(&v), Some(22_000));
+    }
+
+    #[test]
+    fn an_overflowing_cost_is_refused_rather_than_clamped() {
+        let (_d, v) = setup();
+        record(&v, &event(EventType::Acquire, "1", "2026-01-01"), NOW).unwrap();
+        set_cost(&v, i64::MAX - 10);
+        let mut add = event(EventType::Add, "1", "2026-02-01");
+        add.amount_minor = Some(100);
+        add.currency = Some("USD".into());
+        assert!(matches!(record(&v, &add, NOW), Err(EventError::AmountOverflow)));
+        assert_eq!(cost(&v), Some(i64::MAX - 10), "nothing written");
+        assert_eq!(quantity_as_of(&v, "a1", None).unwrap(), Decimal::ONE, "not even the event");
     }
 
     #[test]

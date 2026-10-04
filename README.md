@@ -38,8 +38,8 @@ valuation is a first-class path rather than a fallback.
 - **History.** Buying more, selling some, selling all and fixing a miscount
   are dated events, so the value chart shows what you held *then* — a sale
   ends an item's contribution without erasing its past.
-- **Overview** with total value, gain against cost (only where cost is known,
-  and saying over how many), allocation, largest holdings, what needs a value
+- **Overview** with total value, gain against cost (only where the cost of the
+  whole holding is known, and saying over how many), allocation, largest holdings, what needs a value
   and what is due for a revalue reminder.
 - **Bulk value entry** in the holdings list, and a **CSV round trip** for
   editing a few hundred items in a spreadsheet — blank cells preserve, `-`
@@ -48,7 +48,12 @@ valuation is a first-class path rather than a fallback.
   details and the source of every figure; storage locations are left out
   unless you include them.
 - **Backup and restore** of the whole encrypted vault, without signing out.
-  Passphrase change and recovery-key rotation in Settings.
+  A restore is unlocked and checked — database integrity, every photo present
+  and intact — before it replaces anything. Backups list no plaintext photo
+  hashes. Passphrase change and recovery-key rotation in Settings, staged so
+  an interruption never leaves the vault unopenable.
+- **Attachments you can take back out**: "Save a copy…" writes a decrypted
+  photo or PDF where you choose, after saying it will be unencrypted.
 - **Watch-only Bitcoin balances**, behind their own opt-in. Seed phrases and
   private keys are refused before they can be stored.
 

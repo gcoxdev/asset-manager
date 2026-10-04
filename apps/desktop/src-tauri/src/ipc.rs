@@ -16,9 +16,15 @@ pub fn now() -> String {
     chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-/// Today as `YYYY-MM-DD`, in UTC to match every stored timestamp.
+/// Today as `YYYY-MM-DD` on the owner's calendar.
+///
+/// Effective dates — acquired on, sold on, valued as of — are calendar dates
+/// where the owner is, so "today" is their local date. Audit timestamps
+/// (`now()`, `recorded_at`) stay UTC. Using the UTC date here made an
+/// evening purchase west of Greenwich land on tomorrow, which the
+/// no-future-dates rule then refused.
 pub fn today() -> String {
-    now()[..10].to_string()
+    chrono::Local::now().format("%Y-%m-%d").to_string()
 }
 
 pub fn bad_input(message: impl Into<String>) -> IpcError {

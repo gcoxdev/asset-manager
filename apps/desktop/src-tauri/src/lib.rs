@@ -93,6 +93,7 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             commands::rotate_recovery_key,
             commands::backup_vault,
             commands::restore_vault,
+            commands::confirm_recovery_saved,
             commands::get_settings,
             commands::update_settings,
             commands::vault_info,
@@ -114,6 +115,7 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             asset_commands::import_csv,
             asset_commands::read_text_file,
             asset_commands::write_text_file,
+            asset_commands::export_attachment,
             // Valuation
             valuation_commands::set_prices,
             valuation_commands::portfolio_total,
