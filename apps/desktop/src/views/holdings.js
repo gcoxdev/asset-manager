@@ -8,6 +8,7 @@ import { h, mount, debounce } from "../lib/dom.js";
 import { icon, typeIcon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
 import { cmpMoney, sumDisplay } from "../lib/money.js";
+import { CHECKS } from "../lib/health.js";
 import * as store from "../lib/store.js";
 import { sourceBadge, statusBadge, emptyState, select, segmented, busy, toast, toastError, menuButton, modal, field, confirmDialog, tagsInput, suggestInput } from "../ui/components.js";
 import { openAddAsset } from "./asset-forms.js";
@@ -66,8 +67,10 @@ export async function renderHoldings(root, params, ctx) {
   const locationSelect = select([["", "Any location"], ...locationList.map((l) => [l.name, l.name])], prefs.location, { "aria-label": "Location" });
   locationSelect.addEventListener("change", () => { prefs.location = locationSelect.value; shown = PAGE; draw(); });
   const missingSelect = select([
-    ["", "Nothing missing"], ["photo", "No photo"], ["document", "No documents"], ["value", "No value"], ["insurance", "No insured value"], ["review", "Due for review"],
-  ], prefs.missing, { "aria-label": "Missing" });
+    ["", "Any condition"], ["value", "No value"], ["stale", "Value over a year old"], ["review", "Due for review"],
+    ["partial_cost", "Cost incomplete"], ["insurance", "No insured value"], ["underinsured", "Insured below value"],
+    ["photo", "No photo"], ["document", "No documents"],
+  ], prefs.missing, { "aria-label": "Needs attention" });
   missingSelect.addEventListener("change", () => { prefs.missing = missingSelect.value; shown = PAGE; draw(); });
 
   // --- saved views ------------------------------------------------------------
@@ -171,14 +174,8 @@ export async function renderHoldings(root, params, ctx) {
     if (prefs.tag) list = list.filter((a) => a.tags?.some((t) => t.toLowerCase() === prefs.tag.toLowerCase()));
     // A location includes the places inside it: "Safe" finds "Safe / Top shelf".
     if (prefs.location) list = list.filter((a) => a.storage_location === prefs.location || a.storage_location?.startsWith(`${prefs.location} / `));
-    switch (prefs.missing) {
-      case "photo": list = list.filter((a) => !a.primary_photo); break;
-      case "document": list = list.filter((a) => !a.document_count); break;
-      case "value": list = list.filter((a) => a.current_amount_minor == null); break;
-      case "insurance": list = list.filter((a) => a.insured_amount_minor == null); break;
-      case "review": list = list.filter((a) => a.review_due); break;
-      default: break;
-    }
+    // The same rules the overview's catalog health counts with.
+    if (CHECKS[prefs.missing]) list = list.filter(CHECKS[prefs.missing]);
 
     if (searchIds) {
       const rank = new Map(searchIds.map((id, i) => [id, i]));

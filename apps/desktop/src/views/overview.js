@@ -10,6 +10,7 @@ import { segmented, emptyState, toastError } from "../ui/components.js";
 import { valueChart } from "../ui/chart.js";
 import { openAddAsset, openUpdateValue } from "./asset-forms.js";
 import * as store from "../lib/store.js";
+import { catalogHealth } from "../lib/health.js";
 
 export async function renderOverview(root, _params, ctx) {
   const d = await call("dashboard");
@@ -35,6 +36,7 @@ export async function renderOverview(root, _params, ctx) {
     chartCard(d),
     h("div", { class: "grid-2" }, allocationCard(d, ctx), topCard(d, ctx)),
     attentionCard(d, ctx),
+    healthCard(ctx),
     recentCard(d, ctx)
   );
 }
@@ -57,6 +59,45 @@ function backupReminder(ctx) {
     ));
   }).catch(() => {});
   return box;
+}
+
+/**
+ * What is missing from the figures above, and where to fix it. Each line
+ * opens Holdings filtered to exactly the items it counts.
+ */
+function healthCard(ctx) {
+  const card = h("section", { class: "card" });
+  Promise.all([store.assets(), store.settings()]).then(([assets, settings]) => {
+    const health = catalogHealth(assets, settings.currency);
+    if (!health.held) return card.remove();
+    const pct = (n) => (health.held ? Math.round((n / health.held) * 100) : 0);
+    const line = (key, label, allClear, hint) => {
+      const n = health.counts[key];
+      return h("li", { class: n ? "health-row" : "health-row ok" },
+        h("span", { class: "health-mark", "aria-hidden": "true" }, icon(n ? "warn" : "check", { size: 14 })),
+        h("span", { class: "health-text" }, h("strong", {}, n ? `${n} ${label}` : allClear), n && hint ? h("span", { class: "muted small" }, hint) : null),
+        n ? h("button", { class: "btn btn-ghost btn-sm", onclick: () => { Object.assign(store.ui(), { missing: key, status: "active", category: "all", tag: "", location: "", query: "" }); ctx.navigate("holdings"); } }, "Show") : null
+      );
+    };
+    mount(card,
+      h("div", { class: "card-head" }, h("div", {}, h("h2", {}, "Catalog health"), h("p", { class: "card-sub" }, `Across ${health.held} held item${health.held === 1 ? "" : "s"}. What would make the totals above more complete, and the catalog more useful after a loss.`))),
+      h("ul", { class: "health-list" },
+        line("value", "without a value", "Every item has a value", "Counted in totals as unknown, never as zero."),
+        line("stale", "valued over a year ago", "Every value is less than a year old", "Prices move; an old figure is a guess."),
+        line("partial_cost", "with an incomplete cost", "No incomplete costs", "Bought more without a price, so no gain is shown."),
+        line("underinsured", "insured below their value", "Nothing insured below its value", "Recorded insured value lower than the current value."),
+        line("photo", "without a photo", "Every item has a photo", `${pct(health.counts.photo)}% of the catalog. Photos are the first thing a claim asks for.`),
+        line("document", "without a receipt or appraisal", "Every item has a document on file", "Proof of ownership and value.")
+      ),
+      health.location && health.location.places > 1 && health.location.share >= 0.5
+        ? h("p", { class: "health-note" }, icon("info", { size: 14 }), ` ${fmt.percent(health.location.share, 0)} of the valued catalog is kept in one place — ${health.location.name}. One event there affects most of it.`)
+        : null,
+      health.largest && health.largest.share >= 0.3 && health.held > 1
+        ? h("p", { class: "health-note" }, icon("info", { size: 14 }), " ", h("button", { class: "link", onclick: () => ctx.navigate("asset", { id: health.largest.asset_id }) }, health.largest.name), ` is ${fmt.percent(health.largest.share, 0)} of the valued total.`)
+        : null
+    );
+  }).catch(() => card.remove());
+  return card;
 }
 
 function welcomeEmpty(ctx) {
