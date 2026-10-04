@@ -266,6 +266,16 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
   const statusSelect = editing && asset.status !== "sold"
     ? select([["active", "Held"], ["lost", "Lost"], ["retired", "Retired"]], asset.status)
     : null;
+  // A change of status is dated: the day it was lost, or came back. Totals
+  // before that date keep the item.
+  const statusDate = h("input", { type: "date", value: fmt.todayIso(), max: fmt.todayIso() });
+  const statusDateField = statusSelect
+    ? field("Since", statusDate, { hint: "Totals before this date still include it." })
+    : null;
+  if (statusDateField) {
+    statusDateField.hidden = true;
+    statusSelect.addEventListener("change", () => (statusDateField.hidden = statusSelect.value === asset.status));
+  }
 
   const marketKind = kindId === "metal" || kindId === "crypto";
   if (marketKind && !editing) {
@@ -290,7 +300,8 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
         editing ? null : currentValueField,
         field("Insured for", insured.el),
         field("Remind me to revalue", review, { hint: "Items due appear on the overview." }),
-        statusSelect ? field("Status", statusSelect, { hint: "Sold is recorded with “Record change”." }) : null
+        statusSelect ? field("Status", statusSelect, { hint: "Sold is recorded with “Record change”." }) : null,
+        statusDateField
       )
     )
   );
@@ -325,6 +336,7 @@ async function renderForm(m, body, { mode, kindId, asset, onSaved }) {
       form.current_value = form.pricing === "manual" ? currentValue.value() : null;
     } else {
       form.status = statusSelect ? statusSelect.value : asset.status;
+      if (statusSelect && statusSelect.value !== asset.status) form.status_date = statusDate.value || null;
       form.cost_covers_holding = costCoversHolding;
       delete form.quantity;
     }

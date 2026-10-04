@@ -6,9 +6,11 @@
 //! test.
 
 pub mod assets;
+pub mod atomic;
 pub mod csv;
 pub mod events;
 pub mod header;
+pub mod lifecycle;
 pub mod migrate;
 pub mod objects;
 pub mod pricing;

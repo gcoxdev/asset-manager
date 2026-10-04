@@ -356,6 +356,7 @@ mod tests {
                 quantity: Decimal::ONE,
                 quantity_unit: "item".into(),
                 acquired_date: Some("2026-01-01".into()),
+                effective_date: None,
                 acquired_cost: cost.map(|c| Money::new(c, usd())),
                 acquired_from: None,
                 storage_location: None,

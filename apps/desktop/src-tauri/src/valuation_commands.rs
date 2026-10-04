@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use tauri::State;
 
 use crate::ipc::{
-    bad_input, base_currency, currency_or, now, parse_money, parse_money_opt, storage, today,
-    IpcResult,
+    atomically, bad_input, base_currency, currency_or, now, parse_money, parse_money_opt,
+    storage, today, IpcResult,
 };
 use crate::session::{IpcError, Session};
 
@@ -77,6 +77,10 @@ pub fn set_prices(
             let mut results = Vec::with_capacity(entries.len());
 
             for entry in &entries {
+                // Each entry is its own unit: the valuation and the switch to
+                // manual pricing land together, and a bad cell undoes only
+                // its own row.
+                let unit = am_storage::atomic::begin(vault.conn()).map_err(storage)?;
                 let outcome = (|| -> Result<(), String> {
                     let currency =
                         currency_or(&entry.currency, &base).map_err(|e| e.message)?;
@@ -121,6 +125,7 @@ pub fn set_prices(
                     Ok(())
                 })();
 
+                let outcome = outcome.and_then(|()| unit.commit().map_err(|e| e.to_string()));
                 results.push(match outcome {
                     Ok(()) => {
                         PriceResult { asset_id: entry.asset_id.clone(), ok: true, error: None }
@@ -295,37 +300,41 @@ pub fn change_quantity(
 
     session
         .with_vault(|vault| {
-            // What was held on the chosen date, not today: "sold all" in
-            // March sells what was there in March, and "correct to 7" on a
-            // past date means 7 then.
-            let held = events::quantity_as_of(vault, &change.asset_id, Some(&effective_date))
+            atomically(vault, || {
+                // What was held on the chosen date, not today: "sold all" in
+                // March sells what was there in March, and "correct to 7" on a
+                // past date means 7 then.
+                let held =
+                    events::quantity_as_of(vault, &change.asset_id, Some(&effective_date))
+                        .map_err(storage)?;
+                let (event_type, delta) =
+                    delta_for(&change.kind, change.quantity.as_deref(), held)
+                        .map_err(|e| storage(e.message))?;
+
+                let currency = currency_or(&change.currency, &base_currency(vault))
+                    .map_err(|e| storage(e.message))?;
+                let amount = parse_money_opt(&change.amount, &currency)
+                    .map_err(|e| storage(e.message))?;
+
+                let event_id = events::record(
+                    vault,
+                    &NewEvent {
+                        asset_id: change.asset_id.clone(),
+                        event_type,
+                        effective_date: effective_date.clone(),
+                        quantity_delta: delta,
+                        amount_minor: amount.as_ref().map(|m| m.amount_minor),
+                        currency: amount.as_ref().map(|m| m.currency.code().to_string()),
+                        note: change.note.clone().unwrap_or_default(),
+                    },
+                    &timestamp,
+                )
                 .map_err(storage)?;
-            let (event_type, delta) = delta_for(&change.kind, change.quantity.as_deref(), held)
-                .map_err(|e| storage(e.message))?;
 
-            let currency = currency_or(&change.currency, &base_currency(vault))
-                .map_err(|e| storage(e.message))?;
-            let amount =
-                parse_money_opt(&change.amount, &currency).map_err(|e| storage(e.message))?;
-
-            let event_id = events::record(
-                vault,
-                &NewEvent {
-                    asset_id: change.asset_id.clone(),
-                    event_type,
-                    effective_date: effective_date.clone(),
-                    quantity_delta: delta,
-                    amount_minor: amount.as_ref().map(|m| m.amount_minor),
-                    currency: amount.as_ref().map(|m| m.currency.code().to_string()),
-                    note: change.note.clone().unwrap_or_default(),
-                },
-                &timestamp,
-            )
-            .map_err(storage)?;
-
-            am_storage::pricing::revalue_asset(vault, &change.asset_id, &timestamp)
-                .map_err(storage)?;
-            Ok(event_id)
+                am_storage::pricing::revalue_asset(vault, &change.asset_id, &timestamp, &today)
+                    .map_err(storage)?;
+                Ok(event_id)
+            })
         })
         .map_err(IpcError::from)
 }

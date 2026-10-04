@@ -42,6 +42,8 @@ retroactively enrich the past.
 | Remove | Value steps **down** proportionally; earlier points keep the old quantity. |
 | Dispose | Contribution **ends** at that date. Earlier points are untouched. |
 | Correct | Adjusts from the effective date. A data fix, not a trade. |
+| Lost / retired | Contribution **ends** at the date it took effect; earlier points are untouched. |
+| Recovered | Contribution **resumes** from the recovery date. |
 
 **The distinction the chart must preserve:** a rise because you *bought more*
 is not a rise because your holdings *gained value*. Both move the line up.

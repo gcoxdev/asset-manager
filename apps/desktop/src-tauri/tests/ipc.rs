@@ -225,7 +225,8 @@ fn the_frontend_contract_holds_end_to_end() {
         &w,
         "update_asset",
         json!({ "assetId": comic, "form": {
-            "type_id": "comic", "name": "AF15", "status": "lost", "quantity_unit": "item",
+            "type_id": "comic", "name": "AF15", "status": "lost", "status_date": "2026-09-01",
+            "quantity_unit": "item",
             "acquired_date": "2010-05-01", "acquired_price": "1100", "storage_location": "",
             "notes": "Reported to insurer", "insured_value": "1300000", "currency": "USD",
             "attrs": { "title": "Amazing Fantasy", "issue": "15", "grader": "cgc", "grade": "9.8" },
@@ -277,6 +278,16 @@ fn the_frontend_contract_holds_end_to_end() {
         }}),
     );
     assert_eq!(report["items"].as_array().unwrap().len(), 1, "a lost item is not claimed");
+    // …unless asked for, for a claim — with the date it was lost.
+    let claim = ok(&w, "insurance_report", json!({ "options": { "include_lost": true } }));
+    assert_eq!(claim["items"].as_array().unwrap().len(), 2);
+    assert_eq!(claim["lost"], 1);
+    let lost =
+        claim["items"].as_array().unwrap().iter().find(|i| i["status"] == "lost").unwrap();
+    assert_eq!(lost["lost_on"], "2026-09-01");
+    assert_eq!(lost["current"], "1250000.00 USD", "its value from before the loss");
+    let detail = ok(&w, "get_asset", json!({ "assetId": comic }));
+    assert_eq!(detail["status_events"][0]["status"], "lost");
     assert_eq!(report["items"][0]["storage_location"], Value::Null, "locations left out");
 
     let series = ok(&w, "portfolio_series", json!({ "from": null, "maxPoints": 160 }));

@@ -36,6 +36,8 @@ pub enum ValuationError {
     #[error("{0}")]
     BadCurrency(String),
     #[error(transparent)]
+    History(#[from] crate::events::EventError),
+    #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 }
 
@@ -224,7 +226,7 @@ pub fn record_valuation(
     }
 
     let valuation_id = uuid_v4();
-    let tx = vault.conn().unchecked_transaction()?;
+    let tx = crate::atomic::begin(vault.conn())?;
 
     tx.execute(
         "INSERT INTO valuations
@@ -287,7 +289,7 @@ pub fn scale_to_quantity(
 /// edited, so the two can never disagree. It is scaled to the quantity held
 /// now, so recording a sale moves the figure without a new valuation.
 pub(crate) fn refresh_current_value_in(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &rusqlite::Connection,
     asset_id: &str,
     now: &str,
 ) -> Result<(), ValuationError> {
@@ -388,9 +390,9 @@ pub fn portfolio_total_as_of(
     as_of: &str,
     currency: &Currency,
 ) -> Result<PortfolioTotal, ValuationError> {
-    let mut stmt = vault
-        .conn()
-        .prepare("SELECT asset_id FROM assets WHERE status IN ('active','sold')")?;
+    // Every asset, whatever its status today: one lost in October still
+    // counts in March. Whether it counts on *this* date is asked below.
+    let mut stmt = vault.conn().prepare("SELECT asset_id FROM assets")?;
     let asset_ids: Vec<String> =
         stmt.query_map([], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
     drop(stmt);
@@ -405,6 +407,10 @@ pub fn portfolio_total_as_of(
         let quantity = crate::events::quantity_as_of(vault, &asset_id, Some(as_of))
             .map_err(|e| ValuationError::BadDecimal(e.to_string()))?;
         if quantity == Decimal::ZERO {
+            continue;
+        }
+        // Lost or retired on this date: not held in any sense a total means.
+        if !crate::lifecycle::counts_on(vault, &asset_id, as_of)? {
             continue;
         }
 

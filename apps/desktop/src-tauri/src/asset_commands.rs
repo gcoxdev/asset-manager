@@ -15,8 +15,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime, State};
 
 use crate::ipc::{
-    bad_input, base_currency, currency_or, format_money, now, parse_money_opt, storage, today,
-    IpcResult,
+    atomically, bad_input, base_currency, currency_or, format_money, now, parse_money_opt,
+    storage, today, IpcResult,
 };
 use crate::paths::vault_root;
 use crate::session::{IpcError, Session, SessionError};
@@ -185,6 +185,8 @@ pub struct MarketView {
 pub struct AssetDetail {
     pub asset: AssetView,
     pub events: Vec<EventView>,
+    /// Lost, retired and recovered, newest first.
+    pub status_events: Vec<am_storage::lifecycle::StatusEvent>,
     pub valuations: Vec<ValuationView>,
     pub photos: Vec<PhotoRef>,
     pub market: Option<MarketView>,
@@ -322,8 +324,12 @@ pub fn get_asset(session: State<'_, Session>, asset_id: String) -> IpcResult<Ass
                 })
                 .collect();
             let market = market_of(vault, &record);
+            let mut status_events =
+                am_storage::lifecycle::history(vault, &asset_id).map_err(storage)?;
+            status_events.reverse();
             Ok(AssetDetail {
                 events,
+                status_events,
                 valuations: valuations_of(vault, &asset_id)?,
                 photos: photos_of(vault, &asset_id)?,
                 market,
@@ -385,6 +391,9 @@ pub struct AssetForm {
     /// Edit only: the cost given covers everything held, even if unchanged.
     #[serde(default)]
     pub cost_covers_holding: bool,
+    /// Edit only: when a change of status took effect. Today if absent.
+    #[serde(default)]
+    pub status_date: Option<String>,
 }
 
 /// Validate and clean attributes for a type.
@@ -521,47 +530,50 @@ pub fn create_asset(session: State<'_, Session>, form: AssetForm) -> IpcResult<S
 
     session
         .with_vault(|vault| {
-            let currency = currency_or(&form.currency, &base_currency(vault))
-                .map_err(|e| storage(e.message))?;
-            let cost_currency = field_currency(&form.acquired_currency, None, &currency)
-                .map_err(|e| storage(e.message))?;
-            let insured_currency = field_currency(&form.insured_currency, None, &currency)
-                .map_err(|e| storage(e.message))?;
-            let cost = parse_money_opt(&form.acquired_price, &cost_currency)
-                .map_err(|e| storage(e.message))?;
-            let insured = parse_money_opt(&form.insured_value, &insured_currency)
-                .map_err(|e| storage(e.message))?;
-            let opening = parse_money_opt(&form.current_value, &currency)
-                .map_err(|e| storage(e.message))?;
+            atomically(vault, || {
+                let currency = currency_or(&form.currency, &base_currency(vault))
+                    .map_err(|e| storage(e.message))?;
+                let cost_currency = field_currency(&form.acquired_currency, None, &currency)
+                    .map_err(|e| storage(e.message))?;
+                let insured_currency = field_currency(&form.insured_currency, None, &currency)
+                    .map_err(|e| storage(e.message))?;
+                let cost = parse_money_opt(&form.acquired_price, &cost_currency)
+                    .map_err(|e| storage(e.message))?;
+                let insured = parse_money_opt(&form.insured_value, &insured_currency)
+                    .map_err(|e| storage(e.message))?;
+                let opening = parse_money_opt(&form.current_value, &currency)
+                    .map_err(|e| storage(e.message))?;
 
-            let asset_id = assets::create(
-                vault,
-                &NewAsset {
-                    type_id: form.type_id.clone(),
-                    name: name.clone(),
-                    quantity,
-                    quantity_unit: form.quantity_unit.clone().unwrap_or_default(),
-                    acquired_date: form.acquired_date.clone(),
-                    acquired_cost: cost,
-                    acquired_from: form.acquired_from.clone(),
-                    storage_location: form.storage_location.clone(),
-                    notes: form.notes.clone().unwrap_or_default(),
-                    insured,
-                    attrs: attrs.clone(),
-                    pricing,
-                    review_every_days: form.review_every_days,
-                },
-                &timestamp,
-            )
-            .map_err(storage)?;
+                let asset_id = assets::create(
+                    vault,
+                    &NewAsset {
+                        type_id: form.type_id.clone(),
+                        name: name.clone(),
+                        quantity,
+                        quantity_unit: form.quantity_unit.clone().unwrap_or_default(),
+                        acquired_date: form.acquired_date.clone(),
+                        effective_date: Some(today()),
+                        acquired_cost: cost,
+                        acquired_from: form.acquired_from.clone(),
+                        storage_location: form.storage_location.clone(),
+                        notes: form.notes.clone().unwrap_or_default(),
+                        insured,
+                        attrs: attrs.clone(),
+                        pricing,
+                        review_every_days: form.review_every_days,
+                    },
+                    &timestamp,
+                )
+                .map_err(storage)?;
 
-            if let Some(value) = opening {
-                record_manual_value(vault, &asset_id, value, "opening value", &timestamp)?;
-            } else if pricing == Pricing::Market {
-                am_storage::pricing::revalue_asset(vault, &asset_id, &timestamp)
-                    .map_err(storage)?;
-            }
-            Ok(asset_id)
+                if let Some(value) = opening {
+                    record_manual_value(vault, &asset_id, value, "opening value", &timestamp)?;
+                } else if pricing == Pricing::Market {
+                    am_storage::pricing::revalue_asset(vault, &asset_id, &timestamp, &today())
+                        .map_err(storage)?;
+                }
+                Ok(asset_id)
+            })
         })
         .map_err(IpcError::from)
 }
@@ -579,57 +591,60 @@ pub fn update_asset(
 
     session
         .with_vault(|vault| {
-            let current = assets::get(vault, &asset_id).map_err(storage)?;
-            let currency = currency_or(&form.currency, &base_currency(vault))
+            atomically(vault, || {
+                let current = assets::get(vault, &asset_id).map_err(storage)?;
+                let currency = currency_or(&form.currency, &base_currency(vault))
+                    .map_err(|e| storage(e.message))?;
+                let cost_currency = field_currency(
+                    &form.acquired_currency,
+                    current.acquired_currency.as_deref(),
+                    &currency,
+                )
                 .map_err(|e| storage(e.message))?;
-            let cost_currency = field_currency(
-                &form.acquired_currency,
-                current.acquired_currency.as_deref(),
-                &currency,
-            )
-            .map_err(|e| storage(e.message))?;
-            let insured_currency = field_currency(
-                &form.insured_currency,
-                current.insured_currency.as_deref(),
-                &currency,
-            )
-            .map_err(|e| storage(e.message))?;
-            let cost = parse_money_opt(&form.acquired_price, &cost_currency)
+                let insured_currency = field_currency(
+                    &form.insured_currency,
+                    current.insured_currency.as_deref(),
+                    &currency,
+                )
                 .map_err(|e| storage(e.message))?;
-            let insured = parse_money_opt(&form.insured_value, &insured_currency)
-                .map_err(|e| storage(e.message))?;
+                let cost = parse_money_opt(&form.acquired_price, &cost_currency)
+                    .map_err(|e| storage(e.message))?;
+                let insured = parse_money_opt(&form.insured_value, &insured_currency)
+                    .map_err(|e| storage(e.message))?;
 
-            assets::update(
-                vault,
-                &asset_id,
-                &AssetEdit {
-                    type_id: form.type_id.clone(),
-                    name: name.clone(),
-                    status: form.status.clone().unwrap_or(current.status.clone()),
-                    quantity_unit: form
-                        .quantity_unit
-                        .clone()
-                        .unwrap_or(current.quantity_unit.clone()),
-                    acquired_date: form.acquired_date.clone(),
-                    acquired_cost: cost,
-                    acquired_from: form.acquired_from.clone(),
-                    storage_location: form.storage_location.clone(),
-                    notes: form.notes.clone().unwrap_or_default(),
-                    insured,
-                    attrs: attrs.clone(),
-                    review_every_days: form.review_every_days,
-                    cost_covers_holding: form.cost_covers_holding,
-                },
-                &timestamp,
-            )
-            .map_err(storage)?;
+                assets::update(
+                    vault,
+                    &asset_id,
+                    &AssetEdit {
+                        type_id: form.type_id.clone(),
+                        name: name.clone(),
+                        status: form.status.clone().unwrap_or(current.status.clone()),
+                        quantity_unit: form
+                            .quantity_unit
+                            .clone()
+                            .unwrap_or(current.quantity_unit.clone()),
+                        acquired_date: form.acquired_date.clone(),
+                        acquired_cost: cost,
+                        acquired_from: form.acquired_from.clone(),
+                        storage_location: form.storage_location.clone(),
+                        notes: form.notes.clone().unwrap_or_default(),
+                        insured,
+                        attrs: attrs.clone(),
+                        review_every_days: form.review_every_days,
+                        cost_covers_holding: form.cost_covers_holding,
+                        status_date: Some(form.status_date.clone().unwrap_or_else(today)),
+                    },
+                    &timestamp,
+                )
+                .map_err(storage)?;
 
-            // Changed weight or purity on a market holding changes its value.
-            if current.pricing == "market" {
-                am_storage::pricing::revalue_asset(vault, &asset_id, &timestamp)
-                    .map_err(storage)?;
-            }
-            Ok(())
+                // Changed weight or purity on a market holding changes its value.
+                if current.pricing == "market" {
+                    am_storage::pricing::revalue_asset(vault, &asset_id, &timestamp, &today())
+                        .map_err(storage)?;
+                }
+                Ok(())
+            })
         })
         .map_err(IpcError::from)
 }
@@ -666,18 +681,20 @@ pub fn set_pricing(
     };
     session
         .with_vault(|vault| {
-            if pricing == Pricing::Market {
-                let record = assets::get(vault, &asset_id).map_err(storage)?;
-                if MarketSpec::from_attrs(&record.attrs).map_err(storage)?.is_none() {
-                    return Err(storage("this asset has no metal or coin to follow"));
+            atomically(vault, || {
+                if pricing == Pricing::Market {
+                    let record = assets::get(vault, &asset_id).map_err(storage)?;
+                    if MarketSpec::from_attrs(&record.attrs).map_err(storage)?.is_none() {
+                        return Err(storage("this asset has no metal or coin to follow"));
+                    }
                 }
-            }
-            assets::set_pricing(vault, &asset_id, pricing, &timestamp).map_err(storage)?;
-            if pricing == Pricing::Market {
-                am_storage::pricing::revalue_asset(vault, &asset_id, &timestamp)
-                    .map_err(storage)?;
-            }
-            Ok(())
+                assets::set_pricing(vault, &asset_id, pricing, &timestamp).map_err(storage)?;
+                if pricing == Pricing::Market {
+                    am_storage::pricing::revalue_asset(vault, &asset_id, &timestamp, &today())
+                        .map_err(storage)?;
+                }
+                Ok(())
+            })
         })
         .map_err(IpcError::from)
 }

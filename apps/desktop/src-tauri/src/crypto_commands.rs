@@ -261,7 +261,8 @@ pub fn refresh_crypto_prices(
             }
 
             let revalued =
-                am_storage::pricing::revalue_all(vault, &timestamp).map_err(storage)?;
+                am_storage::pricing::revalue_all(vault, &timestamp, &crate::ipc::today())
+                    .map_err(storage)?;
             Ok(CryptoRefreshResult {
                 updated,
                 missing: missing.clone(),
@@ -307,7 +308,8 @@ pub fn set_coin_price(
                 &timestamp,
             )
             .map_err(storage)?;
-            am_storage::pricing::revalue_all(vault, &timestamp).map_err(storage)
+            am_storage::pricing::revalue_all(vault, &timestamp, &crate::ipc::today())
+                .map_err(storage)
         })
         .map_err(IpcError::from)
 }

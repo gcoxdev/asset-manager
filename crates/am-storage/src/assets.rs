@@ -306,8 +306,12 @@ pub struct NewAsset {
     pub quantity: Decimal,
     pub quantity_unit: String,
     /// When it was acquired. Also the effective date of the acquire event,
-    /// so the chart shows it held from then. Defaults to today.
+    /// so the chart shows it held from then.
     pub acquired_date: Option<String>,
+    /// When the acquisition takes effect if `acquired_date` is unknown: today
+    /// on the owner's calendar, which the caller knows and `now` (UTC) does
+    /// not. Falls back to the date part of `now`.
+    pub effective_date: Option<String>,
     /// What the whole position cost.
     pub acquired_cost: Option<Money>,
     pub acquired_from: Option<String>,
@@ -330,7 +334,11 @@ pub fn create(vault: &Vault, asset: &NewAsset, now: &str) -> Result<String, Asse
         Some(d) if !d.trim().is_empty() => Some(normalize_date(d)?),
         _ => None,
     };
-    let effective = acquired_date.clone().unwrap_or_else(|| now[..10].to_string());
+    let effective = match (&acquired_date, &asset.effective_date) {
+        (Some(date), _) => date.clone(),
+        (None, Some(today)) => normalize_date(today)?,
+        (None, None) => now[..10].to_string(),
+    };
     let (cost_minor, cost_currency) = split_money(&asset.acquired_cost);
     let (insured_minor, insured_currency) = split_money(&asset.insured);
     let unit = match asset.quantity_unit.trim() {
@@ -339,7 +347,7 @@ pub fn create(vault: &Vault, asset: &NewAsset, now: &str) -> Result<String, Asse
     };
 
     let asset_id = uuid_v4();
-    let tx = vault.conn().unchecked_transaction()?;
+    let tx = crate::atomic::begin(vault.conn())?;
     tx.execute(
         "INSERT INTO assets
            (asset_id, type_id, name, quantity, quantity_sort, quantity_unit,
@@ -412,6 +420,9 @@ pub struct AssetEdit {
     /// The owner confirms the cost covers everything held, even though the
     /// figure did not change — the unpriced units were a gift, say.
     pub cost_covers_holding: bool,
+    /// When a change of status took effect — the day it was lost, say.
+    /// Today when absent.
+    pub status_date: Option<String>,
 }
 
 /// Apply an edit.
@@ -433,7 +444,7 @@ pub fn update(
     let name = clean_name(&edit.name)?;
 
     let status = match (current.status.as_str(), edit.status.as_str()) {
-        ("sold", "sold") => "sold",
+        ("sold", "sold") => None,
         ("sold", _) => {
             return Err(AssetError::BadStatus(
                 "this asset was sold — record a purchase to hold it again".into(),
@@ -444,8 +455,14 @@ pub fn update(
                 "record a sale instead, so the history shows when it left".into(),
             ))
         }
-        (_, s @ ("active" | "lost" | "retired")) => s,
-        (_, other) => return Err(AssetError::BadStatus(format!("unknown status: {other}"))),
+        (_, s) => Some(
+            crate::lifecycle::Lifecycle::parse(s)
+                .ok_or_else(|| AssetError::BadStatus(format!("unknown status: {s}")))?,
+        ),
+    };
+    let status_date = match &edit.status_date {
+        Some(d) if !d.trim().is_empty() => normalize_date(d)?,
+        _ => now[..10].to_string(),
     };
 
     let acquired_date = match &edit.acquired_date {
@@ -459,22 +476,18 @@ pub fn update(
         u => u.to_string(),
     };
 
-    let tx = vault.conn().unchecked_transaction()?;
+    let tx = crate::atomic::begin(vault.conn())?;
     tx.execute(
         "UPDATE assets SET
-           type_id = ?1, name = ?2, status = ?3, quantity_unit = ?4, acquired_date = ?5,
-           acquired_amount_minor = ?6, acquired_currency = ?7, acquired_from = ?8,
-           storage_location = ?9, notes = ?10, insured_amount_minor = ?11,
-           insured_currency = ?12, attrs = ?13, review_every_days = ?14, updated_at = ?15
-         WHERE asset_id = ?16",
+           type_id = ?1, name = ?2, quantity_unit = ?3, acquired_date = ?4,
+           acquired_from = ?5, storage_location = ?6, notes = ?7, insured_amount_minor = ?8,
+           insured_currency = ?9, attrs = ?10, review_every_days = ?11, updated_at = ?12
+         WHERE asset_id = ?13",
         rusqlite::params![
             &edit.type_id,
             &name,
-            status,
             unit,
             &acquired_date,
-            cost_minor,
-            cost_currency,
             clean_optional(&edit.acquired_from, "acquired from")?,
             clean_optional(&edit.storage_location, "storage location")?,
             clean_notes(&edit.notes)?,
@@ -487,13 +500,10 @@ pub fn update(
         ],
     )?;
 
-    // Restating the total paid is how a partial cost is reconciled: the
-    // owner has now given the cost of the whole position. Saving the same
-    // figure again — a notes-only edit — leaves a partial cost partial.
-    let cost_changed = cost_minor != current.acquired_amount_minor
-        || cost_currency.as_deref() != current.acquired_currency.as_deref();
-    if cost_changed || edit.cost_covers_holding {
-        tx.execute("UPDATE assets SET cost_complete = 1 WHERE asset_id = ?1", [asset_id])?;
+    // Lost, retired and recovered are dated, so earlier totals keep the
+    // item for as long as it was held.
+    if let Some(status) = status {
+        crate::lifecycle::set_status_in(&tx, asset_id, status, &status_date, "", now)?;
     }
 
     if let Some(date) = &acquired_date {
@@ -504,7 +514,19 @@ pub fn update(
                  WHERE asset_id = ?2 AND event_type = 'acquire'",
                 rusqlite::params![date, asset_id],
             )?;
+            // The acquisition may now fall on the other side of a sale.
+            crate::events::rebuild_cost_in(&tx, asset_id)?;
         }
+    }
+
+    // Restating the total paid is how a cost is corrected, and how a partial
+    // one is reconciled: the owner has given the cost of the whole position.
+    // Saving the same figure again — a notes-only edit — changes nothing.
+    let cost_changed = cost_minor != current.acquired_amount_minor
+        || cost_currency.as_deref() != current.acquired_currency.as_deref();
+    if cost_changed || (edit.cost_covers_holding && !current.cost_complete) {
+        let cost = cost_minor.zip(cost_currency);
+        crate::events::restate_cost_in(&tx, asset_id, cost, "", now)?;
     }
     tx.commit()?;
     Ok(())
@@ -560,7 +582,7 @@ pub fn set_primary_photo(
     asset_id: &str,
     object_id: &str,
 ) -> Result<(), AssetError> {
-    let tx = vault.conn().unchecked_transaction()?;
+    let tx = crate::atomic::begin(vault.conn())?;
     let attached: i64 = tx.query_row(
         "SELECT count(*) FROM asset_media WHERE asset_id = ?1 AND object_id = ?2",
         [asset_id, object_id],
@@ -661,6 +683,7 @@ mod tests {
             quantity: Decimal::ONE,
             quantity_unit: "item".into(),
             acquired_date: None,
+            effective_date: None,
             acquired_cost: None,
             acquired_from: None,
             storage_location: None,
@@ -687,6 +710,7 @@ mod tests {
             attrs: r.attrs.clone(),
             review_every_days: r.review_every_days,
             cost_covers_holding: false,
+            status_date: None,
         }
     }
 

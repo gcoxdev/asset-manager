@@ -255,10 +255,14 @@ fn latest_quote(vault: &Vault, instrument_id: &str) -> Result<Option<Quote>, Pri
 }
 
 /// Revalue one asset if it follows the market.
+///
+/// `today` is the owner's calendar date, which dates the valuation; `now` is
+/// the UTC timestamp it is recorded at.
 pub fn revalue_asset(
     vault: &Vault,
     asset_id: &str,
     now: &str,
+    today: &str,
 ) -> Result<Outcome, PricingError> {
     let row: Option<(String, String, String)> = vault
         .conn()
@@ -326,7 +330,7 @@ pub fn revalue_asset(
             // figure, whatever arithmetic sits between.
             provenance: if quote.manual { Provenance::Manual } else { Provenance::Api },
             inputs,
-            asof: now[..10].to_string(),
+            asof: today.to_string(),
         },
         now,
     )
@@ -335,7 +339,11 @@ pub fn revalue_asset(
 }
 
 /// Revalue every market-priced holding.
-pub fn revalue_all(vault: &Vault, now: &str) -> Result<RevalueSummary, PricingError> {
+pub fn revalue_all(
+    vault: &Vault,
+    now: &str,
+    today: &str,
+) -> Result<RevalueSummary, PricingError> {
     let assets: Vec<(String, String)> = {
         let mut stmt = vault.conn().prepare(
             "SELECT asset_id, name FROM assets WHERE pricing = 'market' AND status = 'active'",
@@ -347,7 +355,7 @@ pub fn revalue_all(vault: &Vault, now: &str) -> Result<RevalueSummary, PricingEr
 
     let mut summary = RevalueSummary::default();
     for (asset_id, name) in assets {
-        match revalue_asset(vault, &asset_id, now)? {
+        match revalue_asset(vault, &asset_id, now, today)? {
             Outcome::Updated => summary.updated += 1,
             Outcome::Unchanged => summary.unchanged += 1,
             Outcome::Unpriced(reason) => summary.unpriced.push((name, reason)),
@@ -409,6 +417,7 @@ mod tests {
                 quantity: Decimal::from(quantity),
                 quantity_unit: "coin".into(),
                 acquired_date: Some("2026-01-01".into()),
+                effective_date: None,
                 acquired_cost: None,
                 acquired_from: None,
                 storage_location: None,
@@ -462,7 +471,7 @@ mod tests {
         let id = eagles(&v, 10, "");
         gold_spot(&v, "2000", SpotOrigin::Api, "2026-09-19T09:00:00Z");
 
-        assert_eq!(revalue_asset(&v, &id, NOW).unwrap(), Outcome::Updated);
+        assert_eq!(revalue_asset(&v, &id, NOW, &NOW[..10]).unwrap(), Outcome::Updated);
         // 10 × 1.0909 × 0.9167 = 10.0002803 oz × $2000 = $20,000.56
         let (minor, source) = current(&v, &id);
         assert_eq!(minor, Some(2_000_056));
@@ -480,7 +489,7 @@ mod tests {
         let (_d, v) = setup();
         let id = eagles(&v, 1, "5");
         gold_spot(&v, "2000", SpotOrigin::Api, "2026-09-19T09:00:00Z");
-        revalue_asset(&v, &id, NOW).unwrap();
+        revalue_asset(&v, &id, NOW, &NOW[..10]).unwrap();
 
         let (minor, _) = current(&v, &id);
         // 1.00002803 oz × 2000 × 1.05 = 2100.0589
@@ -498,8 +507,8 @@ mod tests {
         let id = eagles(&v, 2, "");
         gold_spot(&v, "2000", SpotOrigin::Api, "2026-09-19T09:00:00Z");
 
-        assert_eq!(revalue_asset(&v, &id, NOW).unwrap(), Outcome::Updated);
-        assert_eq!(revalue_asset(&v, &id, NOW).unwrap(), Outcome::Unchanged);
+        assert_eq!(revalue_asset(&v, &id, NOW, &NOW[..10]).unwrap(), Outcome::Updated);
+        assert_eq!(revalue_asset(&v, &id, NOW, &NOW[..10]).unwrap(), Outcome::Unchanged);
         let n: i64 = v
             .conn()
             .query_row("SELECT count(*) FROM valuations WHERE asset_id = ?1", [&id], |r| {
@@ -514,7 +523,7 @@ mod tests {
         let (_d, v) = setup();
         let id = eagles(&v, 1, "");
         gold_spot(&v, "1999.99", SpotOrigin::Manual, NOW);
-        revalue_asset(&v, &id, NOW).unwrap();
+        revalue_asset(&v, &id, NOW, &NOW[..10]).unwrap();
         assert_eq!(current(&v, &id).1.as_deref(), Some("manual"));
     }
 
@@ -526,7 +535,7 @@ mod tests {
         assets::set_pricing(&v, &id, Pricing::Manual, NOW).unwrap();
         gold_spot(&v, "2000", SpotOrigin::Api, "2026-09-19T09:00:00Z");
 
-        assert_eq!(revalue_asset(&v, &id, NOW).unwrap(), Outcome::Skipped);
+        assert_eq!(revalue_asset(&v, &id, NOW, &NOW[..10]).unwrap(), Outcome::Skipped);
         assert_eq!(current(&v, &id).0, None);
     }
 
@@ -534,7 +543,7 @@ mod tests {
     fn a_missing_quote_is_reported_not_zeroed() {
         let (_d, v) = setup();
         let id = eagles(&v, 1, "");
-        let summary = revalue_all(&v, NOW).unwrap();
+        let summary = revalue_all(&v, NOW, &NOW[..10]).unwrap();
         assert_eq!(summary.updated, 0);
         assert_eq!(summary.unpriced.len(), 1);
         assert!(summary.unpriced[0].1.contains("Gold"), "{:?}", summary.unpriced);
@@ -547,7 +556,7 @@ mod tests {
         let (_d, v) = setup();
         let id = eagles(&v, 4, "");
         gold_spot(&v, "2000", SpotOrigin::Api, "2026-09-19T09:00:00Z");
-        revalue_asset(&v, &id, NOW).unwrap();
+        revalue_asset(&v, &id, NOW, &NOW[..10]).unwrap();
 
         record(
             &v,
@@ -563,7 +572,7 @@ mod tests {
             NOW,
         )
         .unwrap();
-        assert_eq!(revalue_asset(&v, &id, NOW).unwrap(), Outcome::Updated);
+        assert_eq!(revalue_asset(&v, &id, NOW, &NOW[..10]).unwrap(), Outcome::Updated);
         assert_eq!(current(&v, &id).0, Some(1_600_045), "8 × 1.00002803 oz × $2000");
     }
 
@@ -578,6 +587,7 @@ mod tests {
                 quantity: Decimal::from(100_000_000),
                 quantity_unit: "coin".into(),
                 acquired_date: None,
+                effective_date: None,
                 acquired_cost: None,
                 acquired_from: None,
                 storage_location: None,
@@ -605,7 +615,7 @@ mod tests {
         )
         .unwrap();
 
-        revalue_asset(&v, &id, NOW).unwrap();
+        revalue_asset(&v, &id, NOW, &NOW[..10]).unwrap();
         assert_eq!(current(&v, &id).0, Some(123_400), "$1,234.00 — not $0 from early rounding");
         assert_eq!(held_coin_ids(&v).unwrap(), vec!["shiba-inu".to_string()]);
     }

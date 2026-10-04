@@ -365,11 +365,27 @@ function historyCard(a, detail) {
   );
 }
 
+const STATUS_EVENT_LABELS = { lost: "Marked lost", retired: "Retired", active: "Recovered" };
+
 function eventsCard(detail) {
-  if (!detail.events.length) return null;
+  const statuses = detail.status_events ?? [];
+  if (!detail.events.length && !statuses.length) return null;
+  // Quantity changes and status changes in one timeline, newest first.
+  const entries = [
+    ...detail.events.map((e) => ({ date: e.effective_date, recorded: e.recorded_at, quantity: e })),
+    ...statuses.map((s) => ({ date: s.effective_date, recorded: s.recorded_at, status: s })),
+  ].sort((a, b) => b.date.localeCompare(a.date) || b.recorded.localeCompare(a.recorded));
   return h("section", { class: "card" },
     h("div", { class: "card-head" }, h("h2", {}, "Holding history")),
-    h("ul", { class: "timeline" }, detail.events.map((e) => {
+    h("ul", { class: "timeline" }, entries.map(({ quantity: e, status: s }) => {
+      if (s) {
+        return h("li", {},
+          h("span", { class: `timeline-dot ev-status-${s.status}` }),
+          h("span", {}, h("strong", {}, STATUS_EVENT_LABELS[s.status] ?? s.status)),
+          s.note ? h("span", { class: "timeline-note" }, s.note) : null,
+          h("span", { class: "timeline-date" }, fmt.date(s.effective_date))
+        );
+      }
       const n = e.quantity_delta.replace(/^-/, "");
       const sign = e.quantity_delta.startsWith("-") ? "−" : "+";
       return h("li", {},

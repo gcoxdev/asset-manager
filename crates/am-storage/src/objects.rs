@@ -204,7 +204,7 @@ pub fn attach_to_asset(
     object_id: &str,
     now: &str,
 ) -> Result<(), ObjectError> {
-    let tx = vault.conn().unchecked_transaction()?;
+    let tx = crate::atomic::begin(vault.conn())?;
 
     let is_first: i64 = tx.query_row(
         "SELECT count(*) FROM asset_media WHERE asset_id = ?1",
@@ -231,7 +231,7 @@ pub fn detach_from_asset(
     asset_id: &str,
     object_id: &str,
 ) -> Result<(), ObjectError> {
-    let tx = vault.conn().unchecked_transaction()?;
+    let tx = crate::atomic::begin(vault.conn())?;
     tx.execute(
         "DELETE FROM asset_media WHERE asset_id = ?1 AND object_id = ?2",
         rusqlite::params![asset_id, object_id],

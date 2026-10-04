@@ -156,7 +156,8 @@ pub fn set_spot_price(
             .map_err(storage)?;
             // A new spot price is only useful if the holdings follow it.
             let summary =
-                am_storage::pricing::revalue_all(vault, &timestamp).map_err(storage)?;
+                am_storage::pricing::revalue_all(vault, &timestamp, &crate::ipc::today())
+                    .map_err(storage)?;
             Ok(summary)
         })
         .map_err(IpcError::from)
@@ -488,7 +489,8 @@ pub fn refresh_metals(session: &Session, automatic: bool) -> IpcResult<RefreshRe
             }
 
             let revalued =
-                am_storage::pricing::revalue_all(vault, &timestamp).map_err(storage)?;
+                am_storage::pricing::revalue_all(vault, &timestamp, &crate::ipc::today())
+                    .map_err(storage)?;
             Ok(RefreshResult {
                 updated,
                 source_asof: source_asof.clone(),

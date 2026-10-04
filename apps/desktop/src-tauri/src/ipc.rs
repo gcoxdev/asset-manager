@@ -35,6 +35,23 @@ pub fn storage(e: impl std::fmt::Display) -> SessionError {
     SessionError::Vault(VaultError::Other(e.to_string()))
 }
 
+/// Run a command's writes as one unit: all of them, or none.
+///
+/// A command that creates an asset and then records its opening value must
+/// not leave the asset behind when the second step fails — the UI reports an
+/// error, the owner retries, and now there are two. Storage functions nest
+/// inside this (see `am_storage::atomic`), so their own all-or-nothing
+/// guarantees still hold and now extend to the whole command.
+pub fn atomically<T>(
+    vault: &Vault,
+    f: impl FnOnce() -> Result<T, SessionError>,
+) -> Result<T, SessionError> {
+    let unit = am_storage::atomic::begin(vault.conn()).map_err(storage)?;
+    let value = f()?;
+    unit.commit().map_err(storage)?;
+    Ok(value)
+}
+
 /// Setting key for the currency new values default to and totals are shown in.
 pub const CURRENCY_SETTING: &str = "currency";
 
@@ -129,6 +146,51 @@ mod tests {
     fn zero_decimal_currencies_are_handled() {
         let yen = parse_money("1000", &Currency::new("JPY").unwrap()).unwrap();
         assert_eq!(yen.amount_minor, 1000, "JPY has no minor units");
+    }
+
+    #[test]
+    fn a_command_that_fails_part_way_leaves_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let fast =
+            am_crypto::KdfParams { memory_cost_kib: 8 * 1024, iterations: 1, parallelism: 1 };
+        let (vault, _r) =
+            Vault::create(&dir.path().join("v"), "correct horse battery staple", &fast, &now())
+                .unwrap();
+        let count = || -> i64 {
+            vault.conn().query_row("SELECT count(*) FROM assets", [], |r| r.get(0)).unwrap()
+        };
+
+        let failed: Result<(), SessionError> = atomically(&vault, || {
+            // The first step commits its own unit…
+            am_storage::assets::create(
+                &vault,
+                &am_storage::assets::NewAsset {
+                    type_id: "generic".into(),
+                    name: "Half-made".into(),
+                    quantity: am_core::Decimal::ONE,
+                    quantity_unit: "item".into(),
+                    acquired_date: None,
+                    effective_date: None,
+                    acquired_cost: None,
+                    acquired_from: None,
+                    storage_location: None,
+                    notes: String::new(),
+                    insured: None,
+                    attrs: Default::default(),
+                    pricing: am_storage::assets::Pricing::Manual,
+                    review_every_days: None,
+                },
+                &now(),
+            )
+            .map_err(storage)?;
+            // …and the second fails.
+            Err(storage("the opening value could not be recorded"))
+        });
+        assert!(failed.is_err());
+        assert_eq!(count(), 0, "so a retry cannot create a duplicate");
+
+        atomically(&vault, || Ok(())).unwrap();
+        assert!(vault.conn().is_autocommit(), "nothing left open");
     }
 
     #[test]

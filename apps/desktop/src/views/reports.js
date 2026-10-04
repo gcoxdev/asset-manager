@@ -16,7 +16,7 @@ import { busy, toast, confirmDialog, modal, callout } from "../ui/components.js"
 import { runPrint } from "./onboarding.js";
 
 export async function renderReports(root, _params, ctx) {
-  const options = { include_locations: false, include_notes: false, include_photos: true };
+  const options = { include_locations: false, include_notes: false, include_photos: true, include_lost: false };
   const check = (key, label, hint) => {
     const input = h("input", { type: "checkbox", checked: options[key], onchange: () => (options[key] = input.checked) });
     return h("label", { class: "check" }, input, h("span", {}, h("span", {}, label), h("span", { class: "check-hint" }, hint)));
@@ -42,7 +42,8 @@ export async function renderReports(root, _params, ctx) {
       h("div", { class: "check-list" },
         check("include_photos", "Include photos", "Up to four per item, embedded in the document."),
         check("include_locations", "Include storage locations", "Usually unnecessary for a claim — and a list of where valuables are kept is exactly what should not leak."),
-        check("include_notes", "Include notes", "Your free-text notes, as written.")
+        check("include_notes", "Include notes", "Your free-text notes, as written."),
+        check("include_lost", "Include items marked lost", "For a claim: each lost item with the date it was lost and its value from before.")
       ),
       callout("warning", "The printed report and any PDF you save are not encrypted. Treat the file as you would the items themselves."),
       h("div", { class: "btn-row" }, build)
@@ -81,6 +82,9 @@ function reportSheet(report, { screen } = {}) {
     report.unvalued
       ? h("p", { class: "report-note" }, `${report.valued} of ${total} items have a recorded value. Items without one are listed but add nothing to the total.`)
       : null,
+    report.lost
+      ? h("p", { class: "report-note" }, `Includes ${report.lost} item${report.lost === 1 ? "" : "s"} marked lost, valued as last recorded before the loss.`)
+      : null,
     h("table", { class: "report-summary" },
       h("thead", {}, h("tr", {}, h("th", {}, "Category"), h("th", { class: "num" }, "Items"), h("th", { class: "num" }, "Value"))),
       h("tbody", {}, report.categories.map((c) => h("tr", {}, h("td", {}, fmt.categoryLabel(c.category)), h("td", { class: "num" }, String(c.count)), h("td", { class: "num" }, fmt.money(c.total))))),
@@ -100,6 +104,7 @@ function reportSheet(report, { screen } = {}) {
             ? `${fmt.money(item.current)} — ${fmt.PROVENANCE_LABELS[item.value_source] ?? item.value_source ?? "unknown source"}, ${fmt.date(item.value_asof)}`
             : "Not recorded"],
         ];
+        if (item.status === "lost") rows.unshift(["Status", `Lost${item.lost_on ? ` on ${fmt.date(item.lost_on)}` : ""}`]);
         if (item.insured) rows.push(["Insured for", fmt.money(item.insured)]);
         if (item.storage_location) rows.push(["Location", item.storage_location]);
         if (item.notes) rows.push(["Notes", item.notes]);

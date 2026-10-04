@@ -24,6 +24,10 @@ use crate::session::{IpcError, Session};
 #[derive(Serialize)]
 pub struct ReportItem {
     pub name: String,
+    /// "active" or "lost". Lost items appear only when asked for, for a claim.
+    pub status: String,
+    /// When a lost item was lost.
+    pub lost_on: Option<String>,
     pub type_label: String,
     pub category: String,
     pub quantity: String,
@@ -64,6 +68,8 @@ pub struct InsuranceReport {
     /// Items with no valuation. Reported rather than omitted: an insurer
     /// should see that the total is partial.
     pub unvalued: usize,
+    /// Items included because they are marked lost.
+    pub lost: usize,
     pub currency: String,
     pub warning: String,
 }
@@ -82,11 +88,20 @@ pub struct ReportOptions {
     pub include_notes: bool,
     #[serde(default = "yes")]
     pub include_photos: bool,
+    /// Include items marked lost, with their last value before the loss —
+    /// what a claim is made from. Off unless asked for.
+    #[serde(default)]
+    pub include_lost: bool,
 }
 
 impl Default for ReportOptions {
     fn default() -> Self {
-        Self { include_locations: false, include_notes: false, include_photos: true }
+        Self {
+            include_locations: false,
+            include_notes: false,
+            include_photos: true,
+            include_lost: false,
+        }
     }
 }
 
@@ -168,12 +183,17 @@ pub fn insurance_report(
         .with_vault(|vault| {
             let currency: Currency = base_currency(vault);
             let code = currency.code().to_string();
-            // Sold and lost items are excluded: a claim covers what is held.
+            // What is held — plus, when asked, what was lost: a claim needs
+            // those items and their values from before the loss. Sold and
+            // retired items are never included.
             let records: Vec<_> = am_storage::assets::list(vault)
                 .map_err(storage)?
                 .into_iter()
-                .filter(|r| r.status == "active")
+                .filter(|r| {
+                    r.status == "active" || (options.include_lost && r.status == "lost")
+                })
                 .collect();
+            let mut lost = 0usize;
 
             let mut items = Vec::new();
             let mut total = Money::zero(currency.clone());
@@ -242,7 +262,20 @@ pub fn insurance_report(
                     Vec::new()
                 };
 
+                let lost_on = if r.status == "lost" {
+                    lost += 1;
+                    am_storage::lifecycle::history(vault, &r.asset_id)
+                        .map_err(storage)?
+                        .into_iter()
+                        .rev()
+                        .find(|e| e.status == "lost")
+                        .map(|e| e.effective_date)
+                } else {
+                    None
+                };
                 items.push(ReportItem {
+                    status: r.status.clone(),
+                    lost_on,
                     details: details(&r.attrs),
                     current: format_money(
                         r.current_amount_minor,
@@ -294,6 +327,7 @@ pub fn insurance_report(
                 insured_total: insured_total.format(),
                 valued,
                 unvalued,
+                lost,
                 currency: code.clone(),
                 warning: "This report is not encrypted. It lists what you own and what it \
                           is worth — treat the file as you would the items themselves."

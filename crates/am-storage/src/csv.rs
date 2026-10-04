@@ -522,7 +522,7 @@ pub fn import_assets(
     }
 
     // One transaction for the whole file.
-    let tx = vault.conn().unchecked_transaction()?;
+    let tx = crate::atomic::begin(vault.conn())?;
     for row in &parsed {
         let id = row.values.get("asset_id").map(|s| s.trim()).unwrap_or("");
 
@@ -585,24 +585,37 @@ fn cell<'a>(row: &'a ParsedRow, column: &str) -> Option<Option<&'a str>> {
 
 /// Columns that are caches of other tables. Writing them directly would make
 /// the cache disagree with its source — a quantity with no event behind it, a
-/// value with no valuation — so they are routed through their own paths.
-const DERIVED: &[&str] =
-    &["quantity", "current_amount_minor", "current_currency", "value_asof"];
+/// value with no valuation, a status with no date, a cost the history does
+/// not explain — so they are routed through their own paths.
+const DERIVED: &[&str] = &[
+    "quantity",
+    "current_amount_minor",
+    "current_currency",
+    "value_asof",
+    "status",
+    "acquired_date",
+    "acquired_amount_minor",
+    "acquired_currency",
+];
 
 fn apply_update(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &rusqlite::Connection,
     id: &str,
     row: &ParsedRow,
     now: &str,
 ) -> Result<(), CsvError> {
-    let stored_cost = |tx: &rusqlite::Transaction<'_>| {
-        tx.query_row(
-            "SELECT acquired_amount_minor, acquired_currency FROM assets WHERE asset_id = ?1",
-            [id],
-            |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)),
-        )
-    };
-    let cost_before = stored_cost(tx)?;
+    let invalid = |reason: String| CsvError::Invalid { line: row.line, reason };
+    let (stored_minor, stored_currency, stored_date, stored_status): (
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        String,
+    ) = tx.query_row(
+        "SELECT acquired_amount_minor, acquired_currency, acquired_date, status
+         FROM assets WHERE asset_id = ?1",
+        [id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+    )?;
 
     for column in COLUMNS.iter().filter(|c| **c != "asset_id" && !DERIVED.contains(c)) {
         let Some(value) = cell(row, column) else { continue };
@@ -614,10 +627,59 @@ fn apply_update(
         tx.execute(&sql, rusqlite::params![value, now, id])?;
     }
 
+    // Acquisition date: moves the acquire event too, validated like the form.
+    if let Some(Some(date)) = cell(row, "acquired_date") {
+        let date = crate::events::normalize_date(date).map_err(|e| invalid(e.to_string()))?;
+        if stored_date.as_deref() != Some(date.as_str()) {
+            crate::events::check_acquisition_move(tx, id, &date)
+                .map_err(|e| invalid(e.to_string()))?;
+            tx.execute(
+                "UPDATE asset_events SET effective_date = ?1
+                 WHERE asset_id = ?2 AND event_type = 'acquire'",
+                rusqlite::params![&date, id],
+            )?;
+            tx.execute(
+                "UPDATE assets SET acquired_date = ?1, updated_at = ?2 WHERE asset_id = ?3",
+                rusqlite::params![&date, now, id],
+            )?;
+            crate::events::rebuild_cost_in(tx, id).map_err(|e| invalid(e.to_string()))?;
+        }
+    }
+
     // A changed cost is a restated total for the whole position, as in the
     // edit form; an unchanged one leaves a partial cost partial.
-    if stored_cost(tx)? != cost_before {
-        tx.execute("UPDATE assets SET cost_complete = 1 WHERE asset_id = ?1", [id])?;
+    let incoming_minor = match cell(row, "acquired_amount_minor") {
+        None => stored_minor,
+        Some(None) => None,
+        Some(Some(v)) => Some(v.parse::<i64>().map_err(|_| {
+            invalid("acquired_amount_minor must be a whole number of minor units".into())
+        })?),
+    };
+    let incoming_currency = match cell(row, "acquired_currency") {
+        None => stored_currency.clone(),
+        Some(None) => None,
+        Some(Some(v)) => Some(v.to_ascii_uppercase()),
+    };
+    if incoming_minor != stored_minor || incoming_currency != stored_currency {
+        crate::events::restate_cost_in(
+            tx,
+            id,
+            incoming_minor.zip(incoming_currency),
+            "CSV import",
+            now,
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+    }
+
+    // Status: lost, retired and recovered become dated status changes. Sold
+    // is what the event log says, so it is not set from a file.
+    if let Some(Some(status)) = cell(row, "status") {
+        if status != stored_status {
+            if let Some(status) = crate::lifecycle::Lifecycle::parse(status) {
+                crate::lifecycle::set_status_in(tx, id, status, &now[..10], "CSV import", now)
+                    .map_err(|e| invalid(e.to_string()))?;
+            }
+        }
     }
 
     // Quantity: a changed figure is a correction, recorded as an event so the
@@ -664,10 +726,7 @@ fn apply_update(
     Ok(())
 }
 
-fn logged_quantity(
-    tx: &rusqlite::Transaction<'_>,
-    id: &str,
-) -> Result<am_core::Decimal, CsvError> {
+fn logged_quantity(tx: &rusqlite::Connection, id: &str) -> Result<am_core::Decimal, CsvError> {
     let mut stmt = tx.prepare("SELECT quantity_delta FROM asset_events WHERE asset_id = ?1")?;
     let deltas: Vec<String> = stmt.query_map([id], |r| r.get(0))?.collect::<Result<_, _>>()?;
     let mut total = am_core::Decimal::ZERO;
@@ -678,7 +737,7 @@ fn logged_quantity(
 }
 
 fn record_event_in(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &rusqlite::Connection,
     id: &str,
     kind: &str,
     date: &str,
@@ -693,6 +752,8 @@ fn record_event_in(
     )?;
     crate::events::refresh_quantity_cache_in(tx, id, now)
         .map_err(|e| CsvError::Invalid { line: 0, reason: e.to_string() })?;
+    crate::events::rebuild_cost_in(tx, id)
+        .map_err(|e| CsvError::Invalid { line: 0, reason: e.to_string() })?;
     crate::valuations::refresh_current_value_in(tx, id, now)
         .map_err(|e| CsvError::Invalid { line: 0, reason: e.to_string() })?;
     Ok(())
@@ -704,7 +765,7 @@ fn record_event_in(
 /// spreadsheet is a hand valuation, and the precedence rule says a market
 /// refresh must not overwrite one.
 fn record_manual_value_in(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &rusqlite::Connection,
     id: &str,
     amount_minor: i64,
     currency: &str,
@@ -726,11 +787,7 @@ fn record_manual_value_in(
     Ok(())
 }
 
-fn apply_insert(
-    tx: &rusqlite::Transaction<'_>,
-    row: &ParsedRow,
-    now: &str,
-) -> Result<(), CsvError> {
+fn apply_insert(tx: &rusqlite::Connection, row: &ParsedRow, now: &str) -> Result<(), CsvError> {
     let id = {
         let raw = row.values.get("asset_id").map(|s| s.trim()).unwrap_or("");
         if raw.is_empty() {
@@ -775,13 +832,29 @@ fn apply_insert(
 
     // Ownership starts as an event, exactly as it does for the UI path —
     // dated when it was acquired, as a plain date.
+    // The acquire event carries the cost, as it does for the UI path: cost
+    // is replayed from the log, so a cost only on the asset row would be lost
+    // at the next change.
     let effective = acquired_date.unwrap_or_else(|| now[..10].to_string());
+    let cost_minor = get("acquired_amount_minor").and_then(|v| v.parse::<i64>().ok());
+    let cost_currency = cost_minor.and(get("acquired_currency").map(str::to_ascii_uppercase));
     tx.execute(
         "INSERT INTO asset_events
-           (event_id, asset_id, event_type, effective_date, quantity_delta, recorded_at)
-         VALUES (?1, ?2, 'acquire', ?3, ?4, ?5)",
-        rusqlite::params![uuid_v4(), &id, effective, quantity, now],
+           (event_id, asset_id, event_type, effective_date, quantity_delta, amount_minor,
+            currency, recorded_at)
+         VALUES (?1, ?2, 'acquire', ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![uuid_v4(), &id, &effective, quantity, cost_minor, cost_currency, now],
     )?;
+    // A lost or retired item is dated from the import: its earlier history,
+    // if any, is not known.
+    if let Some(status) = get("status").and_then(crate::lifecycle::Lifecycle::parse) {
+        if status != crate::lifecycle::Lifecycle::Active {
+            crate::lifecycle::set_status_in(tx, &id, status, &now[..10], "CSV import", now)
+                .map_err(|e| CsvError::Invalid { line: row.line, reason: e.to_string() })?;
+        }
+    }
+    crate::lifecycle::refresh_status_in(tx, &id)
+        .map_err(|e| CsvError::Invalid { line: row.line, reason: e.to_string() })?;
 
     // A value in the file is a valuation, not a bare cache entry: without the
     // row, portfolio totals — which read valuations — would ignore it.

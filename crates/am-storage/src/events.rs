@@ -167,6 +167,10 @@ pub fn normalize_date(raw: &str) -> Result<String, EventError> {
 /// - **Dispose** records the sale date and, if given, what it sold for.
 /// - **Correct** fixes the count and leaves cost alone: it is a data fix, not
 ///   a trade.
+///
+/// These are applied by replaying the whole log in effective-date order (see
+/// [`rebuild_cost_in`]), so the result does not depend on the order changes
+/// were typed in.
 pub fn record(vault: &Vault, event: &NewEvent, now: &str) -> Result<String, EventError> {
     let effective_date = normalize_date(&event.effective_date)?;
     let exists: i64 = vault.conn().query_row(
@@ -188,9 +192,8 @@ pub fn record(vault: &Vault, event: &NewEvent, now: &str) -> Result<String, Even
         check_removal_fits(vault, &event.asset_id, &effective_date, event.quantity_delta)?;
     }
 
-    let previous = quantity_as_of(vault, &event.asset_id, None)?;
     let event_id = uuid_v4();
-    let tx = vault.conn().unchecked_transaction()?;
+    let tx = crate::atomic::begin(vault.conn())?;
 
     tx.execute(
         "INSERT INTO asset_events
@@ -210,8 +213,20 @@ pub fn record(vault: &Vault, event: &NewEvent, now: &str) -> Result<String, Even
         ],
     )?;
 
-    let remaining = refresh_quantity_cache_in(&tx, &event.asset_id, now)?;
-    apply_cost_basis(&tx, event, &effective_date, previous, remaining)?;
+    refresh_quantity_cache_in(&tx, &event.asset_id, now)?;
+    rebuild_cost_in(&tx, &event.asset_id)?;
+    if event.event_type == EventType::Dispose {
+        tx.execute(
+            "UPDATE assets SET sold_date = ?1, sold_amount_minor = ?2, sold_currency = ?3
+             WHERE asset_id = ?4",
+            rusqlite::params![
+                &effective_date,
+                event.amount_minor,
+                event.amount_minor.and(event.currency.clone()),
+                &event.asset_id
+            ],
+        )?;
+    }
     crate::valuations::refresh_current_value_in(&tx, &event.asset_id, now)
         .map_err(|e| EventError::BadQuantity(e.to_string()))?;
     tx.commit()?;
@@ -314,78 +329,216 @@ pub(crate) fn check_acquisition_move(
     Ok(())
 }
 
-/// Keep the single position cost consistent with a quantity change.
-fn apply_cost_basis(
-    tx: &rusqlite::Transaction<'_>,
-    event: &NewEvent,
-    effective_date: &str,
-    previous: Decimal,
-    remaining: Decimal,
-) -> Result<(), EventError> {
-    let (cost, cost_currency): (Option<i64>, Option<String>) = tx.query_row(
-        "SELECT acquired_amount_minor, acquired_currency FROM assets WHERE asset_id = ?1",
-        [&event.asset_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
+/// One entry in the cost replay.
+struct CostStep {
+    date: String,
+    recorded_at: String,
+    kind: EventType,
+    delta: Decimal,
+    amount: Option<(i64, String)>,
+}
 
-    match event.event_type {
-        EventType::Add => {
-            let paid = event.amount_minor.zip(event.currency.as_deref());
-            match (cost, cost_currency.as_deref(), paid) {
-                (Some(cost), Some(code), Some((paid, paid_currency)))
-                    if code == paid_currency =>
-                {
-                    let total = cost.checked_add(paid).ok_or(EventError::AmountOverflow)?;
-                    tx.execute(
-                        "UPDATE assets SET acquired_amount_minor = ?1 WHERE asset_id = ?2",
-                        rusqlite::params![total, &event.asset_id],
-                    )?;
+/// The owner's latest statement of what the holding cost.
+struct CostStatement {
+    date: String,
+    recorded_at: String,
+    amount: Option<(i64, String)>,
+    covers_holding: bool,
+}
+
+/// The position's cost as the history says it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedCost {
+    /// `None`: unknown. Zero is a known cost (a gift).
+    pub amount: Option<(i64, String)>,
+    /// False when part of the holding arrived at an unknown cost.
+    pub complete: bool,
+}
+
+/// Replay the log, in effective-date order, into the position's cost.
+///
+/// Starts from the latest cost statement (the owner saying "what I hold cost
+/// this much"), or from nothing. Changes dated after the statement apply in
+/// date order; changes dated before it but *recorded* after it apply right
+/// after it, because the statement could not have accounted for them. With
+/// no statement, every change applies in date order from the acquisition.
+pub fn derive_cost(
+    conn: &rusqlite::Connection,
+    asset_id: &str,
+) -> Result<DerivedCost, EventError> {
+    let mut stmt = conn.prepare(
+        "SELECT effective_date, recorded_at, event_type, quantity_delta, amount_minor, currency
+         FROM asset_events WHERE asset_id = ?1 ORDER BY effective_date, recorded_at, rowid",
+    )?;
+    let raw = stmt
+        .query_map([asset_id], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<i64>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(stmt);
+    let mut steps = Vec::with_capacity(raw.len());
+    for (date, recorded_at, kind, delta, minor, currency) in raw {
+        steps.push(CostStep {
+            date,
+            recorded_at,
+            kind: EventType::parse(&kind).unwrap_or(EventType::Correct),
+            delta: parse_decimal(&delta).map_err(|_| EventError::BadQuantity(delta))?,
+            amount: minor.zip(currency),
+        });
+    }
+
+    let statement: Option<CostStatement> = conn
+        .query_row(
+            "SELECT effective_date, recorded_at, amount_minor, currency, covers_holding
+             FROM cost_statements WHERE asset_id = ?1
+             ORDER BY effective_date DESC, recorded_at DESC LIMIT 1",
+            [asset_id],
+            |r| {
+                let minor: Option<i64> = r.get(2)?;
+                let currency: Option<String> = r.get(3)?;
+                Ok(CostStatement {
+                    date: r.get(0)?,
+                    recorded_at: r.get(1)?,
+                    amount: minor.zip(currency),
+                    covers_holding: r.get::<_, i64>(4)? != 0,
+                })
+            },
+        )
+        .map(Some)
+        .or_else(|e| match e {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+
+    let mut cost = DerivedCost { amount: None, complete: true };
+    let mut held = Decimal::ZERO;
+    let sequence: Vec<&CostStep> = match &statement {
+        None => steps.iter().collect(),
+        Some(s) => {
+            cost = DerivedCost { amount: s.amount.clone(), complete: s.covers_holding };
+            let mut late = Vec::new();
+            let mut after = Vec::new();
+            for step in &steps {
+                if step.date > s.date {
+                    after.push(step);
+                } else if step.recorded_at > s.recorded_at {
+                    late.push(step);
+                } else {
+                    // Known when the statement was made: it is in the total.
+                    held += step.delta;
+                }
+            }
+            late.into_iter().chain(after).collect()
+        }
+    };
+
+    for step in sequence {
+        let before = held;
+        held += step.delta;
+        match step.kind {
+            EventType::Acquire | EventType::Add if before <= Decimal::ZERO => {
+                // Nothing was held, so this starts a fresh position: its cost
+                // is what was paid now, not added to a sold one's.
+                cost = DerivedCost { amount: step.amount.clone(), complete: true };
+            }
+            EventType::Acquire | EventType::Add => match (&cost.amount, &step.amount) {
+                (Some((total, code)), Some((paid, paid_code))) if code == paid_code => {
+                    let sum = total.checked_add(*paid).ok_or(EventError::AmountOverflow)?;
+                    cost.amount = Some((sum, code.clone()));
                 }
                 // A known cost, and units whose cost is unknown or in another
-                // currency: adding would produce a figure that looks exact
-                // and is not, so the cost stands but no longer covers
-                // everything.
-                (Some(_), Some(_), _) => {
-                    tx.execute(
-                        "UPDATE assets SET cost_complete = 0 WHERE asset_id = ?1",
-                        [&event.asset_id],
-                    )?;
-                }
+                // currency: adding would produce a figure that looks exact and
+                // is not, so the cost stands but no longer covers everything.
+                (Some(_), _) => cost.complete = false,
                 // No recorded cost: still unknown.
-                _ => {}
-            }
-        }
-        EventType::Remove => {
-            if let Some(cost) = cost {
-                if previous > Decimal::ZERO && remaining >= Decimal::ZERO {
-                    let scaled = (Decimal::from(cost) * remaining / previous)
-                        .round_dp_with_strategy(
-                            0,
-                            rust_decimal::RoundingStrategy::MidpointNearestEven,
-                        );
-                    let scaled: i64 = scaled.try_into().unwrap_or(cost);
-                    tx.execute(
-                        "UPDATE assets SET acquired_amount_minor = ?1 WHERE asset_id = ?2",
-                        rusqlite::params![scaled, &event.asset_id],
-                    )?;
+                (None, _) => {}
+            },
+            EventType::Remove => {
+                if let Some((total, code)) = &cost.amount {
+                    if before > Decimal::ZERO && held >= Decimal::ZERO {
+                        let scaled = (Decimal::from(*total) * held / before)
+                            .round_dp_with_strategy(
+                                0,
+                                rust_decimal::RoundingStrategy::MidpointNearestEven,
+                            );
+                        let scaled: i64 = scaled.try_into().unwrap_or(*total);
+                        cost.amount = Some((scaled, code.clone()));
+                    }
                 }
             }
+            EventType::Dispose | EventType::Correct => {}
         }
-        EventType::Dispose => {
-            tx.execute(
-                "UPDATE assets SET sold_date = ?1, sold_amount_minor = ?2, sold_currency = ?3
-                 WHERE asset_id = ?4",
-                rusqlite::params![
-                    effective_date,
-                    event.amount_minor,
-                    event.amount_minor.and(event.currency.clone()),
-                    &event.asset_id
-                ],
-            )?;
-        }
-        EventType::Acquire | EventType::Correct => {}
     }
-    Ok(())
+    Ok(cost)
+}
+
+/// Write the replayed cost into the asset's cached cost columns.
+pub(crate) fn rebuild_cost_in(
+    conn: &rusqlite::Connection,
+    asset_id: &str,
+) -> Result<DerivedCost, EventError> {
+    let cost = derive_cost(conn, asset_id)?;
+    let (minor, currency) = match &cost.amount {
+        Some((m, c)) => (Some(*m), Some(c.as_str())),
+        None => (None, None),
+    };
+    conn.execute(
+        "UPDATE assets SET acquired_amount_minor = ?1, acquired_currency = ?2, cost_complete = ?3
+         WHERE asset_id = ?4",
+        rusqlite::params![minor, currency, i64::from(cost.complete), asset_id],
+    )?;
+    Ok(cost)
+}
+
+/// The owner states what everything held cost in total — a correction of the
+/// purchase price, or a restated total after buying more at an unknown price.
+///
+/// With nothing but the acquisition on record, the acquisition's price is
+/// simply corrected. Otherwise a statement is recorded, dated no earlier than
+/// the latest change, so it covers everything known when it was made.
+pub fn restate_cost_in(
+    conn: &rusqlite::Connection,
+    asset_id: &str,
+    cost: Option<(i64, String)>,
+    note: &str,
+    now: &str,
+) -> Result<DerivedCost, EventError> {
+    let (others, statements, latest): (i64, i64, Option<String>) = conn.query_row(
+        "SELECT (SELECT count(*) FROM asset_events WHERE asset_id = ?1 AND event_type <> 'acquire'),
+                (SELECT count(*) FROM cost_statements WHERE asset_id = ?1),
+                (SELECT max(effective_date) FROM asset_events WHERE asset_id = ?1)",
+        [asset_id],
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let (minor, currency) = match &cost {
+        Some((m, c)) => (Some(*m), Some(c.clone())),
+        None => (None, None),
+    };
+    if others == 0 && statements == 0 {
+        conn.execute(
+            "UPDATE asset_events SET amount_minor = ?1, currency = ?2
+             WHERE asset_id = ?3 AND event_type = 'acquire'",
+            rusqlite::params![minor, currency, asset_id],
+        )?;
+    } else {
+        let today = now.get(..10).unwrap_or(now).to_string();
+        let date = latest.filter(|d| *d > today).unwrap_or(today);
+        conn.execute(
+            "INSERT INTO cost_statements
+               (statement_id, asset_id, effective_date, amount_minor, currency, covers_holding,
+                note, recorded_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 1, ?6, ?7)",
+            rusqlite::params![uuid_v4(), asset_id, date, minor, currency, note, now],
+        )?;
+    }
+    rebuild_cost_in(conn, asset_id)
 }
 
 /// Quantity held as of a date, by replaying the log.
@@ -436,14 +589,14 @@ pub fn refresh_quantity_cache(
     asset_id: &str,
     now: &str,
 ) -> Result<Decimal, EventError> {
-    let tx = vault.conn().unchecked_transaction()?;
+    let tx = crate::atomic::begin(vault.conn())?;
     let total = refresh_quantity_cache_in(&tx, asset_id, now)?;
     tx.commit()?;
     Ok(total)
 }
 
 pub(crate) fn refresh_quantity_cache_in(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &rusqlite::Connection,
     asset_id: &str,
     now: &str,
 ) -> Result<Decimal, EventError> {
@@ -466,19 +619,10 @@ pub(crate) fn refresh_quantity_cache_in(
         rusqlite::params![total.to_string(), sort_key(total), now, asset_id],
     )?;
 
-    // A fully disposed holding is retired rather than deleted, so its past
-    // contribution survives while it stops counting toward today's total.
-    if total == Decimal::ZERO {
-        tx.execute(
-            "UPDATE assets SET status = 'sold' WHERE asset_id = ?1 AND status = 'active'",
-            [asset_id],
-        )?;
-    } else {
-        tx.execute(
-            "UPDATE assets SET status = 'active' WHERE asset_id = ?1 AND status = 'sold'",
-            [asset_id],
-        )?;
-    }
+    // A fully disposed holding is marked sold rather than deleted, so its
+    // past contribution survives while it stops counting toward today's
+    // total.
+    crate::lifecycle::refresh_status_in(tx, asset_id)?;
 
     Ok(total)
 }
@@ -787,14 +931,17 @@ mod tests {
             == 1
     }
 
+    /// What the acquisition cost. Cost is replayed from the log, so it is
+    /// recorded on the acquire event, as `assets::create` does.
     fn set_cost(v: &Vault, minor: i64) {
         v.conn()
             .execute(
-                "UPDATE assets SET acquired_amount_minor=?1, acquired_currency='USD'
-                 WHERE asset_id='a1'",
+                "UPDATE asset_events SET amount_minor=?1, currency='USD'
+                 WHERE asset_id='a1' AND event_type='acquire'",
                 [minor],
             )
             .unwrap();
+        rebuild_cost_in(v.conn(), "a1").unwrap();
     }
 
     #[test]
@@ -888,6 +1035,105 @@ mod tests {
         record(&v, &add, NOW).unwrap();
         assert!(cost_complete(&v));
         assert_eq!(cost(&v), Some(22_000));
+    }
+
+    fn priced(kind: EventType, delta: &str, date: &str, minor: i64) -> NewEvent {
+        let mut e = event(kind, delta, date);
+        e.amount_minor = Some(minor);
+        e.currency = Some("USD".into());
+        e
+    }
+
+    #[test]
+    fn cost_follows_effective_dates_not_typing_order() {
+        // January: 10 for $100. September: 10 more for $200. A February sale
+        // of 5, entered last. In date order: $100 → $50 after the sale →
+        // $250 after September. Applied in typing order it came to $225.
+        let (_d, v) = setup();
+        record(&v, &priced(EventType::Acquire, "10", "2026-01-10", 10_000), NOW).unwrap();
+        record(&v, &priced(EventType::Add, "10", "2026-09-01", 20_000), NOW).unwrap();
+        record(&v, &event(EventType::Remove, "-5", "2026-02-01"), "2026-09-19T00:00:05Z")
+            .unwrap();
+        assert_eq!(cost(&v), Some(25_000));
+        assert!(cost_complete(&v));
+    }
+
+    #[test]
+    fn any_typing_order_gives_the_same_cost() {
+        let changes = [
+            priced(EventType::Add, "4", "2026-03-01", 8_000),
+            event(EventType::Remove, "-6", "2026-05-01"),
+            priced(EventType::Add, "2", "2026-07-01", 5_000),
+            event(EventType::Remove, "-3", "2026-08-01"),
+        ];
+        let mut results = Vec::new();
+        for order in [[0, 1, 2, 3], [3, 2, 1, 0], [2, 0, 3, 1]] {
+            let (_d, v) = setup();
+            record(&v, &priced(EventType::Acquire, "10", "2026-01-01", 10_000), NOW).unwrap();
+            for (n, &i) in order.iter().enumerate() {
+                // Some orders are refused on the way (a sale before the
+                // purchase it needs); what is accepted must agree.
+                let _ = record(&v, &changes[i], &format!("2026-09-19T00:00:{n:02}Z"));
+            }
+            if quantity_as_of(&v, "a1", None).unwrap() == Decimal::from(7) {
+                results.push(cost(&v));
+            }
+        }
+        assert!(results.len() >= 2, "at least two orders record everything");
+        assert!(results.windows(2).all(|w| w[0] == w[1]), "{results:?}");
+    }
+
+    #[test]
+    fn selling_everything_then_buying_again_starts_a_fresh_cost() {
+        let (_d, v) = setup();
+        record(&v, &priced(EventType::Acquire, "2", "2026-01-01", 10_000), NOW).unwrap();
+        record(&v, &event(EventType::Dispose, "-2", "2026-02-01"), NOW).unwrap();
+        record(&v, &priced(EventType::Add, "1", "2026-03-01", 7_000), NOW).unwrap();
+        assert_eq!(cost(&v), Some(7_000), "not the sold position's cost plus this");
+    }
+
+    #[test]
+    fn a_restated_total_holds_and_later_backdated_changes_apply_after_it() {
+        let (_d, v) = setup();
+        record(&v, &priced(EventType::Acquire, "10", "2026-01-01", 10_000), NOW).unwrap();
+        record(&v, &event(EventType::Add, "10", "2026-06-01"), NOW).unwrap();
+        assert!(!cost_complete(&v), "added at an unknown price");
+
+        // The owner states what all 20 cost.
+        restate_cost_in(
+            v.conn(),
+            "a1",
+            Some((30_000, "USD".into())),
+            "",
+            "2026-09-19T00:00:01Z",
+        )
+        .unwrap();
+        assert_eq!(cost(&v), Some(30_000));
+        assert!(cost_complete(&v));
+
+        // A sale of 5 in March, only now remembered: it applies to the stated
+        // total at average cost, 15 of 20.
+        record(&v, &event(EventType::Remove, "-5", "2026-03-01"), "2026-09-19T00:00:02Z")
+            .unwrap();
+        assert_eq!(cost(&v), Some(22_500));
+    }
+
+    #[test]
+    fn restating_with_only_the_purchase_on_record_corrects_its_price() {
+        let (_d, v) = setup();
+        record(&v, &priced(EventType::Acquire, "1", "2026-01-01", 10_000), NOW).unwrap();
+        restate_cost_in(v.conn(), "a1", Some((12_000, "USD".into())), "", NOW).unwrap();
+        let (statements, acquire): (i64, i64) = v
+            .conn()
+            .query_row(
+                "SELECT (SELECT count(*) FROM cost_statements),
+                        (SELECT amount_minor FROM asset_events WHERE event_type = 'acquire')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((statements, acquire), (0, 12_000), "a typo fix, not a new statement");
+        assert_eq!(cost(&v), Some(12_000));
     }
 
     #[test]

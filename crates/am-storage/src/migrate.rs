@@ -7,7 +7,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 struct Migration {
     version: i64,
@@ -20,6 +20,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration { version: 3, sql: include_str!("../migrations/003_catalog.sql") },
     Migration { version: 4, sql: include_str!("../migrations/004_cost_completeness.sql") },
     Migration { version: 5, sql: include_str!("../migrations/005_firearms.sql") },
+    Migration { version: 6, sql: include_str!("../migrations/006_dated_history.sql") },
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -186,6 +187,46 @@ mod tests {
         assert_eq!(complete("priced"), 1, "every purchase priced in the cost's currency");
         assert_eq!(complete("foreign"), 0, "a purchase in another currency was never added");
         assert_eq!(complete("unknown"), 1, "no cost at all is unknown, not partial");
+    }
+
+    #[test]
+    fn v6_dates_existing_statuses_and_keeps_every_cost() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("catalog.db");
+        let conn = open_encrypted(path.to_str().unwrap(), &key()).unwrap();
+        migrate_to(&conn, 5);
+
+        // A cost shaped by recording order, and a lost item with no date.
+        conn.execute_batch(
+            "INSERT INTO assets (asset_id, type_id, name, status, acquired_amount_minor,
+                                 acquired_currency, cost_complete, created_at, updated_at)
+             VALUES ('a','generic','A','active',22500,'USD',1,'2026-01-01','2026-09-01T10:00:00Z'),
+                    ('b','watch','B','lost',NULL,NULL,1,'2026-01-01','2026-08-20T10:00:00Z');
+             INSERT INTO asset_events (event_id, asset_id, event_type, effective_date,
+                                       quantity_delta, amount_minor, currency, recorded_at)
+             VALUES ('e1','a','acquire','2026-01-10','10',10000,'USD','2026-01-10'),
+                    ('e2','a','add','2026-09-01','10',20000,'USD','2026-09-01'),
+                    ('e3','a','remove','2026-02-01','-5',NULL,NULL,'2026-09-02'),
+                    ('e4','b','acquire','2026-01-01','1',NULL,NULL,'2026-01-01');",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+
+        let (status, date): (String, String) = conn
+            .query_row(
+                "SELECT status, effective_date FROM status_events WHERE asset_id = 'b'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), date.as_str()), ("lost", "2026-08-20"));
+
+        let derived = crate::events::derive_cost(&conn, "a").unwrap();
+        assert_eq!(
+            derived.amount,
+            Some((22_500, "USD".to_string())),
+            "the recorded figure survives the upgrade unchanged"
+        );
     }
 
     /// Apply migrations up to and including `version`, as an older build did.
