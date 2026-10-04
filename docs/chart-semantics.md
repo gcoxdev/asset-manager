@@ -62,6 +62,16 @@ does not keep. Saying so is better than approximating it.
 
 ---
 
+**"Proportionally" is computed, not assumed.** A valuation is the value of
+the *whole* holding at its recorded `quantity_at_time`. When the quantity held
+on a date differs — half sold, more bought — the valuation in effect is scaled
+by `quantity_then / quantity_at_time`, rounded once at the end. A valuation
+recorded at quantity zero carries no ratio and is used as is.
+
+Market-priced holdings (metals and coins that follow a quote) are revalued
+whenever a quote or the quantity changes, so for them the scaled figure is
+replaced by a fresh one at the next price update.
+
 ## 3. How coverage gaps are shown
 
 A portfolio total is a sum over the assets that could be priced. That is fine

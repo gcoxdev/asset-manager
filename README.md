@@ -4,7 +4,8 @@ A local-first desktop app for cataloging and valuing physical and digital
 assets — precious metals, comics, trading cards, coins, crypto, and other
 collectibles.
 
-> **Status: pre-alpha.** Foundations only. There is no application to run yet.
+> **Status: alpha.** Feature-complete for personal use on Linux. Not yet
+> signed or released; see [Before a public release](#before-a-public-release).
 
 ## Why
 
@@ -17,6 +18,39 @@ Two jobs, in priority order:
 
 Metals and crypto have real price feeds. Collectibles mostly do not, so manual
 valuation is a first-class path rather than a fallback.
+
+## What it does
+
+- **Catalog anything** — precious metals, crypto, comics, sports and TCG cards,
+  collector coins, watches, jewelry, art, memorabilia, sealed product, video
+  games, vinyl, instruments, wine, cash, or a general item. Graded
+  collectibles validate the grade against the grader's own scale (PSA has no
+  65, PCGS no 9.8) and name themselves from their fields.
+- **Photos**, encrypted before they reach the disk, with a cover photo,
+  thumbnails and a full-size viewer. Scan a slab label's barcode from a photo
+  to fill in the certificate number.
+- **Values that stay honest.** Metals follow spot (gross vs. fine weight,
+  purity and premium handled explicitly — melt and market shown apart); coins
+  follow their CoinGecko price at full precision; everything else is valued by
+  hand, with a date, a basis and a note. Typing a value by hand switches an
+  asset off market tracking, so a refresh never overwrites it. Unpriced items
+  are counted, never treated as zero.
+- **History.** Buying more, selling some, selling all and fixing a miscount
+  are dated events, so the value chart shows what you held *then* — a sale
+  ends an item's contribution without erasing its past.
+- **Overview** with total value, gain against cost (only where cost is known,
+  and saying over how many), allocation, largest holdings, what needs a value
+  and what is due for a revalue reminder.
+- **Bulk value entry** in the holdings list, and a **CSV round trip** for
+  editing a few hundred items in a spreadsheet — blank cells preserve, `-`
+  clears, stale exports are refused, reimport is idempotent.
+- **Insurance report** to print or save as PDF, with photos, identifying
+  details and the source of every figure; storage locations are left out
+  unless you include them.
+- **Backup and restore** of the whole encrypted vault, without signing out.
+  Passphrase change and recovery-key rotation in Settings.
+- **Watch-only Bitcoin balances**, behind their own opt-in. Seed phrases and
+  private keys are refused before they can be stored.
 
 ## Security
 
@@ -53,10 +87,12 @@ protects a powered-off machine only.
 
 ### Network access
 
-Everything works offline. Price fetching is optional, manual, and off until you
-add an API key; nothing is fetched in the background. Asking a provider for
-prices does tell it which assets you hold — see the threat model's network
-section before enabling it.
+Everything works offline. Price fetching is optional and off until you add an
+API key (free tiers of [metals.dev](https://metals.dev) and
+[CoinGecko](https://www.coingecko.com/en/api) are enough); updates happen when
+you ask, plus an opt-in metals refresh on unlock. Asking a provider for prices
+does tell it which assets you hold — see the threat model's network section
+before enabling it.
 
 ## Building
 
@@ -66,9 +102,12 @@ platform.
 
 ```bash
 npm --prefix apps/desktop install
-cargo test --workspace          # Rust tests
+cargo test --workspace          # Rust tests, including an end-to-end IPC test
 npm run dev                     # run the app
 ```
+
+In debug builds, `AM_VAULT_DIR=/some/dir npm run dev` points the app at a
+throwaway vault instead of your real one. Release builds ignore it.
 
 One script per bundle target, each forwarding extra arguments to Tauri:
 
@@ -101,12 +140,19 @@ WebKitGTK/Mesa issue, not a configuration problem.
 
 | Path | Purpose |
 |---|---|
+| `crates/am-core` | Money, quantities, metal and coin valuation, collectible schemas — pure functions |
 | `crates/am-crypto` | Key hierarchy, key wrapping, encrypted object format |
-| `crates/am-storage` | Vault header, schema, lifecycle, backup/restore |
-| `apps/desktop` | Tauri shell and frontend |
+| `crates/am-storage` | Vault header, schema, assets, events, valuations, pricing, CSV, backup/restore |
+| `apps/desktop/src-tauri` | Tauri shell: IPC commands, the `asset://` media handler, price providers |
+| `apps/desktop/src` | Frontend — plain ES modules, no framework; `views/` holds one file per screen |
 | `docs/vault-format.md` | Normative on-disk format specification |
+| `docs/chart-semantics.md` | What a point on the value chart means |
+| `docs/threat-model.md` | What the encryption does and does not protect |
 
-Encrypted photo storage, valuation, and price providers are not built yet.
+## Before a public release
+
+- Release signing and reproducible builds.
+- AppImage tested on a clean system with the supported WebKitGTK baseline.
 
 ## License
 

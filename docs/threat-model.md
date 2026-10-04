@@ -104,7 +104,13 @@ own encryption — FDE protects a powered-off machine only.
 CSV exports, insurance reports, printed recovery sheets and photos you export
 are **plaintext by intent**, at destinations you choose. Once written they are
 outside the vault entirely. The app warns before writing a CSV export and
-states that it is neither encrypted nor a backup.
+states that it is neither encrypted nor a backup. The insurance report leaves
+storage locations and notes out unless you tick them in — a list of where
+valuables are kept is the most damaging thing a leaked report could contain.
+
+Backups are **not** in this category: a backup is a ciphertext copy of the
+vault — header, database and objects — and is as safe to store on an external
+drive or synced folder as the vault itself.
 
 ### 4.4 A weak passphrase
 
@@ -140,14 +146,17 @@ in combination with a compromised key.
 
 ## 5. Network exposure
 
-The application works fully offline. All network access is **optional,
-manual, and initiated by you** — nothing is fetched in the background.
+The application works fully offline. All network access is **optional and
+off by default**. Price updates happen when you press a button, with one
+exception you must opt into separately: "refresh metals on unlock", which makes
+at most one metals.dev request every 30 hours, from a share of the monthly
+allowance reserved for it. Nothing else is fetched without you asking.
 
 | Feature | Discloses | To whom | Default |
 |---|---|---|---|
 | Metals prices | Your IP, that you asked for metal prices | metals.dev | Off; needs a key |
 | Crypto prices | Your IP, **which coins you asked about** | CoinGecko | Off; needs a key |
-| Watch-only balances | Your IP **and the addresses you query** | block explorer | Off; separate opt-in, not yet implemented |
+| Watch-only balances | Your IP **and the addresses you query** | blockstream.info | Off; separate opt-in in Settings → Privacy |
 
 The middle row is worth reading twice: asking for prices reveals which assets
 you hold, even though it does not reveal how much. The third is gated behind a

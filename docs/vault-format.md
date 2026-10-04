@@ -83,7 +83,8 @@ Pretty-printed JSON. Unencrypted — it must be readable before any key exists.
   "key_epoch": 1,                      // increments on credential change
   "created_at": "2026-09-19T00:00:00Z",
   "passphrase_slot": { "salt": "<32 hex>", "params": {...}, "wrapped": {...} },
-  "recovery_slot":   { "salt": "<32 hex>", "params": {...}, "wrapped": {...} },
+  "recovery_slot":   { "salt": "<32 hex>", "params": {...}, "wrapped": {...},
+                       "wrapped_at_epoch": 1 },   // optional; see below
   "recovery_fingerprint": "<base32>"
 }
 ```
@@ -103,7 +104,7 @@ AAD is canonical JSON of exactly these fields, in this order:
 | `format_version` | |
 | `purpose` | `am/v1/wrap/passphrase` or `am/v1/wrap/recovery` |
 | `vault_id` | |
-| `key_epoch` | |
+| `key_epoch` | the slot's `wrapped_at_epoch` if present, else the header's `key_epoch` |
 | `created_at` | |
 | `slot_salt` | **only the slot being unwrapped** |
 | `slot_params` | **only the slot being unwrapped** |
@@ -114,6 +115,28 @@ AAD is canonical JSON of exactly these fields, in this order:
 
 Only the *relevant* slot's salt and params are included, so rotating one
 credential does not invalidate the other.
+
+### Slot epochs
+
+Changing a credential advances `key_epoch` but can re-wrap only that
+credential's slot: the other slot's KEK derives from a secret the app does not
+hold. So before the epoch advances, the untouched slot records the epoch it is
+authenticated under as `wrapped_at_epoch`, and its AAD uses that value from
+then on. A re-wrapped slot clears the field and follows the header again.
+
+The field is absent until the first credential change, and absent means
+"use the header's `key_epoch`" — exactly how every slot was authenticated
+before the field existed, so older headers are unchanged. Its value is inside
+the AAD, so editing it breaks the unwrap like any other tampering.
+
+> **Repair of older vaults.** Builds before slot epochs advanced the epoch
+> without pinning the other slot, which silently disabled it: a passphrase
+> change killed the recovery key and vice versa. The wrapped key itself was
+> intact. On unlock, if the normal unwrap fails and the slot has no
+> `wrapped_at_epoch`, the KEK is derived once and the unwrap retried at each
+> earlier epoch. A match must still pass the header↔database pairing check
+> before it is accepted and pinned into the header. A wrong credential never
+> matches; an edited epoch gains nothing, because pairing fails.
 
 Field order is part of the format: reordering the `AuthenticatedHeader` struct
 changes the AAD and breaks every existing vault.
@@ -224,6 +247,14 @@ undecryptable vault, and the failure *looks like a wrong passphrase*, sending
 the user after the wrong problem. On mismatch, refuse to open and say so.
 
 `key_epoch` increments on every credential change or rewrap.
+
+### Schema versions
+
+| Version | Change |
+|---|---|
+| 1 | Initial schema |
+| 2 | `app_settings` (per-vault settings, including privacy opt-ins) |
+| 3 | Effective dates normalized to calendar dates; type categories and the types the forms create; collectibles saved as `generic` reclassified from their fields; `pricing` (`manual`/`market`) and `review_every_days` on assets; FTS index extended to type-specific attributes |
 
 ---
 
