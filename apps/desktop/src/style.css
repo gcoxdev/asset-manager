@@ -1025,3 +1025,5 @@ tr.row-error td { background: color-mix(in srgb, var(--bad-bg) 60%, transparent)
 details.evidence { margin-top: 4px; font-size: 12.5px; }
 details.evidence summary { cursor: pointer; color: var(--text-2); }
 details.evidence ul { margin: 4px 0 0; padding-left: 18px; }
+
+.custody-now { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }

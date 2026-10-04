@@ -61,7 +61,7 @@ export async function renderAsset(root, params, ctx) {
     ),
     h("div", { class: "asset-layout" },
       h("div", { class: "asset-main" }, gallery(a, detail.photos, reload), documentsCard(a, detail.photos, reload), detailsCard(a, detail), notesCard(a)),
-      h("div", { class: "asset-side" }, valueCard(a, detail, reload), historyCard(a, detail, reload), careCard(a, detail, reload), eventsCard(detail))
+      h("div", { class: "asset-side" }, valueCard(a, detail, reload), historyCard(a, detail, reload), custodyCard(a, detail, reload), careCard(a, detail, reload), eventsCard(detail))
     )
   );
 }
@@ -588,6 +588,85 @@ async function editHistory(a, reload) {
         )
       : h("p", { class: "muted" }, "No edits yet. Each time you save changes, the version before is kept here."),
   });
+}
+
+// ------------------------------------------------------------ custody
+
+/**
+ * Where it is: home, or lent, consigned, at repair, in storage, shipped —
+ * and the history of handoffs. Ownership and value are not affected.
+ */
+function custodyCard(a, detail, reload) {
+  const card = h("section", { class: "card" });
+  call("list_custody", { assetId: a.asset_id }).then((entries) => {
+    const away = entries[0] && entries[0].kind !== "returned" ? entries[0] : null;
+    const today = fmt.todayIso();
+    const action = away
+      ? h("button", { class: "btn btn-secondary btn-sm", onclick: () => handoff(a, detail, reload, true) }, "Mark as back…")
+      : h("button", { class: "btn btn-secondary btn-sm", onclick: () => handoff(a, detail, reload, false) }, "Hand over…");
+    mount(card,
+      h("div", { class: "card-head" }, h("h2", {}, "Where it is"), action),
+      away
+        ? h("div", { class: "custody-now" },
+            h("strong", {}, `${fmt.CUSTODY_LABELS[away.kind]} — ${away.party ?? ""}`),
+            h("span", { class: "muted small" }, [`since ${fmt.date(away.date)}`, away.reference ? `ref. ${away.reference}` : null].filter(Boolean).join(" · ")),
+            away.due_back ? h("span", { class: away.due_back < today ? "badge badge-attention" : "badge badge-muted" }, `${away.due_back < today ? "Overdue — was due" : "Due back"} ${fmt.date(away.due_back)}`) : null)
+        : h("p", { class: "muted small" }, a.storage_location ? `Home — ${a.storage_location}.` : "Home."),
+      entries.length
+        ? h("details", { class: "disclosure" }, h("summary", {}, `History (${entries.length})`),
+            h("ul", { class: "doc-list" }, entries.map((e) => h("li", {},
+              h("div", { class: "doc-text" },
+                h("strong", {}, fmt.CUSTODY_LABELS[e.kind] ?? e.kind, e.party ? ` — ${e.party}` : ""),
+                h("span", { class: "muted small" }, [fmt.date(e.date), e.reference ? `ref. ${e.reference}` : null, e.contact, e.document_title ? `Document: ${e.document_title}` : null].filter(Boolean).join(" · ")),
+                e.note ? h("span", { class: "doc-note" }, e.note) : null),
+              h("div", { class: "doc-actions" }, h("button", { class: "icon-btn", "aria-label": "Remove this entry", onclick: async () => {
+                if (!(await confirmDialog({ title: "Remove this entry?", message: "It is removed from where-it-is history.", confirmLabel: "Remove", danger: true }))) return;
+                try { await call("delete_custody", { custodyId: e.custody_id }); reload(); } catch (err) { toast(describe(err), { kind: "error" }); }
+              } }, icon("trash", { size: 16 }))))
+            )))
+        : null
+    );
+  }).catch(() => card.remove());
+  return card;
+}
+
+function handoff(a, detail, reload, returning) {
+  const docs = detail.photos.filter((p) => p.doc_kind !== "photo");
+  const kind = select(["lent", "consigned", "repair", "storage", "shipped"].map((k) => [k, fmt.CUSTODY_LABELS[k]]), "lent");
+  const party = h("input", { type: "text", maxlength: 200, placeholder: "Who has it" });
+  const contact = h("input", { type: "text", maxlength: 300, placeholder: "Optional — phone or email" });
+  const date = h("input", { type: "date", value: fmt.todayIso(), max: fmt.todayIso() });
+  const due = h("input", { type: "date" });
+  const reference = h("input", { type: "text", maxlength: 200, placeholder: "Consignment, ticket or tracking number" });
+  const receipt = select([["", "None"], ...docs.map((d) => [d.object_id, d.title ?? fmt.DOC_KIND_LABELS[d.doc_kind]])], "");
+  const note = h("input", { type: "text", maxlength: 2000 });
+  const save = h("button", { class: "btn btn-primary" }, returning ? "Mark as back" : "Record handoff");
+  const m = modal({
+    title: returning ? "Back home" : "Hand it over",
+    subtitle: a.name,
+    size: "md",
+    body: h("div", { class: "form-grid" },
+      returning ? null : field("What", kind),
+      returning ? null : field("To", party),
+      field(returning ? "Came back on" : "On", date),
+      returning ? null : field("Due back", due),
+      returning ? null : field("Contact", contact, { hint: "Kept in the vault; never in exports or reports." }),
+      field("Reference", reference),
+      docs.length ? field("Receipt or document", receipt) : null,
+      field("Note", note, { span: 2 })
+    ),
+    footer: (close) => [h("button", { class: "btn btn-ghost", onclick: () => close() }, "Cancel"), save],
+  });
+  save.addEventListener("click", () => busy(save, async () => {
+    await call("record_custody", { entry: {
+      asset_id: a.asset_id, kind: returning ? "returned" : kind.value, party: returning ? null : party.value.trim() || null,
+      contact: returning ? null : contact.value.trim() || null, date: date.value, due_back: returning ? null : due.value || null,
+      reference: reference.value.trim() || null, object_id: receipt.value || null, note: note.value.trim(),
+    } });
+    store.invalidate();
+    m.close();
+    reload();
+  }));
 }
 
 // ------------------------------------------------------------ care

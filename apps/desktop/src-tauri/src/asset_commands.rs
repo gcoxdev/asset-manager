@@ -1409,6 +1409,8 @@ mod tests {
             deleted_at: None,
             tags: Vec::new(),
             document_count: 0,
+            away: None,
+            away_with: None,
             acquired_from: None,
             storage_location: None,
             notes: String::new(),

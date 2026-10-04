@@ -65,10 +65,19 @@ function backupReminder(ctx) {
 /** Services, inspections and warranties due in the next two months. */
 function careDueCard(ctx) {
   const card = h("section", { class: "card" });
-  call("care_due", { withinDays: 60 }).then((due) => {
-    if (!due.length) return card.remove();
+  Promise.all([call("care_due", { withinDays: 60 }), call("away_list")]).then(([due, away]) => {
+    const soon = fmt.daysAgoIso(-60);
+    const returns = away.filter((x) => x.overdue || (x.entry?.due_back ?? x.due_back) && (x.entry?.due_back ?? x.due_back) <= soon);
+    if (!due.length && !returns.length) return card.remove();
     mount(card,
-      h("div", { class: "card-head" }, h("h2", {}, "Coming up"), h("span", { class: "muted small" }, "Care and warranties due within 60 days")),
+      h("div", { class: "card-head" }, h("h2", {}, "Coming up"), h("span", { class: "muted small" }, "Care, warranties and returns due within 60 days")),
+      returns.length ? h("ul", { class: "brief-list" }, returns.map((x) => {
+        const e = x.entry ?? x;
+        return h("li", { class: "attention-item" },
+          h("button", { class: "brief", onclick: () => ctx.navigate("asset", { id: e.asset_id }) },
+            h("span", { class: "brief-text" }, h("strong", {}, x.asset_name), h("span", {}, `${fmt.CUSTODY_LABELS[e.kind] ?? e.kind}${e.party ? ` — ${e.party}` : ""}`))),
+          h("span", { class: x.overdue ? "badge badge-attention" : "badge badge-muted" }, `${x.overdue ? "Overdue — was due back" : "Due back"} ${fmt.date(e.due_back)}`));
+      })) : null,
       h("ul", { class: "brief-list" }, due.slice(0, 8).map((d) =>
         h("li", { class: "attention-item" },
           h("button", { class: "brief", onclick: () => ctx.navigate("asset", { id: d.asset_id }) },

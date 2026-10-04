@@ -290,6 +290,7 @@ the user after the wrong problem. On mismatch, refuse to open and say so.
 | 8 | Attachment details on `asset_media`: `doc_kind` (photo, receipt, appraisal, certificate, warranty, manual, other), `title`, `doc_date`, `note`; only photos can be the cover |
 | 9 | `tags` and `asset_tags` (many per asset, case-insensitive names); saved holdings views are stored as a setting |
 | 10 | `care_events`: services, repairs, inspections, cleanings, appraisals, batteries and warranties, with provider, cost, an optional linked document and a next-due date |
+| 11 | `custody_events`: lent, consigned, at repair, in outside storage, shipped, returned — who, contact, dates, due back, reference, optional document. Contacts never appear in exports or reports |
 
 ---
 

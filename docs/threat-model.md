@@ -136,6 +136,10 @@ no secret: by design it opens nothing on its own. It does say that a
 catalog of valuables exists and where, so treat it like any document that
 says where valuables are, and keep it apart from the recovery key sheet.
 
+Custody records can hold **someone else's contact details** (a borrower, a
+consignment dealer). They are encrypted like everything else and are
+deliberately left out of CSV exports, insurance reports and claim packets.
+
 ### 4.4 A weak passphrase
 
 Argon2id at 64 MiB makes guessing expensive, not impossible. A passphrase found

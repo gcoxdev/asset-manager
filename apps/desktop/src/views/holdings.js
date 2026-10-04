@@ -69,7 +69,7 @@ export async function renderHoldings(root, params, ctx) {
   const missingSelect = select([
     ["", "Any condition"], ["value", "No value"], ["stale", "Value over a year old"], ["review", "Due for review"],
     ["partial_cost", "Cost incomplete"], ["insurance", "No insured value"], ["underinsured", "Insured below value"],
-    ["photo", "No photo"], ["document", "No documents"],
+    ["photo", "No photo"], ["document", "No documents"], ["away", "Away from home"],
   ], prefs.missing, { "aria-label": "Needs attention" });
   missingSelect.addEventListener("change", () => { prefs.missing = missingSelect.value; shown = PAGE; draw(); });
 
@@ -361,7 +361,8 @@ function thumb(a, size = 44) {
 }
 
 function subtitle(a) {
-  return [a.type_label, a.storage_location].filter(Boolean).join(" · ");
+  const where = a.away ? `${fmt.CUSTODY_LABELS[a.away] ?? a.away}${a.away_with ? ` — ${a.away_with}` : ""}` : a.storage_location;
+  return [a.type_label, where].filter(Boolean).join(" · ");
 }
 
 function gainCell(a) {

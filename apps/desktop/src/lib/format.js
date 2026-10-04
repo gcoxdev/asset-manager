@@ -250,6 +250,15 @@ export const CARE_LABELS = {
   other: "Other care",
 };
 
+export const CUSTODY_LABELS = {
+  lent: "Lent",
+  consigned: "Consigned",
+  repair: "At repair",
+  storage: "In outside storage",
+  shipped: "Shipped",
+  returned: "Back home",
+};
+
 export const STATUS_LABELS = { active: "Held", sold: "Sold", lost: "Lost", retired: "Retired" };
 
 /** "player_or_character" → "Player or character". */

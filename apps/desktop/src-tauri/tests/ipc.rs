@@ -199,6 +199,40 @@ fn the_frontend_contract_holds_end_to_end() {
     ok(&w, "delete_care", json!({ "careId": care_id }));
     assert_eq!(ok(&w, "care_due", json!({})), json!([]));
 
+    // Custody: consigned, shown as away, then back.
+    ok(
+        &w,
+        "record_custody",
+        json!({ "entry": { "asset_id": comic, "kind": "consigned", "party": "Heritage",
+                           "contact": "consign@example.com", "date": "2026-01-05",
+                           "due_back": "2026-02-01", "reference": "C-123" } }),
+    );
+    let away = ok(&w, "away_list", json!({}));
+    assert_eq!(away[0]["overdue"], true);
+    let row = ok(&w, "list_assets", json!({}));
+    let row = row
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["asset_id"] == comic.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(
+        (row["away"].as_str(), row["away_with"].as_str()),
+        (Some("consigned"), Some("Heritage"))
+    );
+    ok(
+        &w,
+        "record_custody",
+        json!({ "entry": { "asset_id": comic, "kind": "returned", "date": "2026-02-02" } }),
+    );
+    assert_eq!(ok(&w, "away_list", json!({})), json!([]));
+    let csv = ok(&w, "export_csv", json!({}));
+    assert!(
+        !csv["csv"].as_str().unwrap().contains("consign@example.com"),
+        "contacts never leave"
+    );
+
     // Organizing: tags, a location move, a bulk change, a duplicate, a view.
     ok(&w, "set_asset_tags", json!({ "assetId": comic, "tags": ["Key issues", "Insured"] }));
     assert_eq!(ok(&w, "list_tags", json!({})).as_array().unwrap().len(), 2);

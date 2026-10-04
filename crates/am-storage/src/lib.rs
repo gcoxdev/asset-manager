@@ -9,6 +9,7 @@ pub mod assets;
 pub mod atomic;
 pub mod care;
 pub mod csv;
+pub mod custody;
 pub mod events;
 pub mod header;
 pub mod lifecycle;

@@ -27,6 +27,7 @@ export const CHECKS = {
   photo: (a) => !a.primary_photo,
   document: (a) => !a.document_count,
   review: (a) => Boolean(a.review_due),
+  away: (a) => Boolean(a.away),
 };
 
 /** Where something is kept, at the top level: "Safe / Top shelf" → "Safe". */

@@ -8,6 +8,7 @@ pub mod collectible_commands;
 pub mod commands;
 pub mod crypto_commands;
 pub mod crypto_provider;
+pub mod custody_commands;
 pub mod ipc;
 pub mod metals_commands;
 pub mod metals_provider;
@@ -124,6 +125,11 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             care_commands::add_care,
             care_commands::delete_care,
             care_commands::care_due,
+            // Custody
+            custody_commands::list_custody,
+            custody_commands::record_custody,
+            custody_commands::delete_custody,
+            custody_commands::away_list,
             // Organizing
             organize_commands::list_tags,
             organize_commands::set_asset_tags,

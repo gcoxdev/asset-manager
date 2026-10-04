@@ -86,6 +86,11 @@ pub struct AssetRecord {
     pub tags: Vec<String>,
     /// Receipts, appraisals and other documents attached.
     pub document_count: i64,
+    /// Away from home now: "lent", "consigned", "repair", "storage" or
+    /// "shipped". `None` when it is home.
+    pub away: Option<String>,
+    /// Who has it, when away.
+    pub away_with: Option<String>,
     pub storage_location: Option<String>,
     pub notes: String,
     #[serde(serialize_with = "minor_as_string")]
@@ -126,7 +131,9 @@ const SELECT: &str = "
            (SELECT group_concat(t.name, char(31)) FROM asset_tags at
               JOIN tags t ON t.tag_id = at.tag_id WHERE at.asset_id = a.asset_id),
            (SELECT count(*) FROM asset_media m JOIN objects o ON o.object_id = m.object_id
-             WHERE m.asset_id = a.asset_id AND o.gc_state = 'live' AND m.doc_kind <> 'photo')
+             WHERE m.asset_id = a.asset_id AND o.gc_state = 'live' AND m.doc_kind <> 'photo'),
+           (SELECT c.kind || char(31) || coalesce(c.party, '') FROM custody_events c
+             WHERE c.asset_id = a.asset_id ORDER BY c.date DESC, c.recorded_at DESC LIMIT 1)
     FROM assets a JOIN asset_types t ON t.type_id = a.type_id";
 
 fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
@@ -171,6 +178,23 @@ fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
             tags
         },
         document_count: r.get(34)?,
+        away: {
+            let latest: Option<String> = r.get(35)?;
+            latest
+                .as_deref()
+                .and_then(|l| l.split('\u{1f}').next())
+                .filter(|k| *k != "returned")
+                .map(str::to_string)
+        },
+        away_with: {
+            let latest: Option<String> = r.get(35)?;
+            latest
+                .as_deref()
+                .filter(|l| !l.starts_with("returned"))
+                .and_then(|l| l.split('\u{1f}').nth(1))
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+        },
         acquired_from: r.get(12)?,
         storage_location: r.get(13)?,
         notes: r.get(14)?,
