@@ -31,6 +31,7 @@ import { renderMarkets } from "./views/markets.js";
 import { renderReports } from "./views/reports.js";
 import { renderSettings, rotateRecovery } from "./views/settings.js";
 import { renderHelp } from "./views/help.js";
+import { loadTheme } from "./lib/theme.js";
 
 const app = document.getElementById("app");
 
@@ -300,7 +301,8 @@ window.addEventListener("keydown", (event) => {
 
 async function boot() {
   try {
-    const status = await call("vault_status");
+    // The theme first, so the first screen already looks as chosen.
+    const [status] = await Promise.all([call("vault_status"), loadTheme()]);
     if (status.unlocked) return enterApp();
     showOnboarding(app, { mode: status.exists ? "unlock" : "welcome", ...onboardingHooks });
   } catch (error) {

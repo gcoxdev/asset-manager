@@ -59,8 +59,11 @@
   --shadow-lg: 0 12px 40px rgba(15, 20, 25, 0.18), 0 2px 8px rgba(15, 20, 25, 0.08);
 }
 
+/* Dark: when the computer is dark and Light is not chosen in Settings, or
+   whenever Dark is chosen. The two blocks must stay identical — a test
+   (tests/theme.test.mjs) compares them. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     color-scheme: dark;
     --bg: #0e1113;
     --surface: #161a1d;
@@ -96,6 +99,44 @@
     --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.55);
   }
 }
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #0e1113;
+  --surface: #161a1d;
+  --surface-2: #1b2024;
+  --surface-3: #242a2f;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.15);
+  --text: #eef0f1;
+  --text-2: #b7bec3;
+  --muted: #868d92;
+
+  --primary: #e8c14f;
+  --primary-hover: #f0cd66;
+  --primary-ink: #17232b;
+  --gold-ink: #e8c14f;
+
+  --focus: #5598e7;
+  --data: #3987e5;
+  --data-wash: rgba(57, 135, 229, 0.12);
+
+  --good: #3cc03c;
+  --good-bg: rgba(12, 163, 12, 0.14);
+  --bad: #ff8a80;
+  --bad-bg: rgba(208, 59, 59, 0.16);
+  --attention-bg: rgba(250, 178, 25, 0.14);
+  --attention-ink: #f5c65a;
+  --info-bg: rgba(57, 135, 229, 0.14);
+  --info-ink: #8dbaf0;
+
+  --sidebar-bg: #0b1318;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.55);
+}
+
+:root[data-theme="light"] { color-scheme: light; }
 
 * { box-sizing: border-box; }
 

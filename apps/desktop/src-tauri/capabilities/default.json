@@ -1,10 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimal permissions: file dialogs for picking photos and choosing CSV paths, plus message/confirm for the export warning. No filesystem, shell, or network plugin permissions — file IO goes through two narrow commands that take a user-chosen path, so the vault stays the only data path.",
-  "windows": ["main"],
+  "description": "Minimal permissions: file dialogs for picking photos and choosing CSV paths, plus message/confirm for the export warning, and setting the window's light/dark theme to match the app's. No filesystem, shell, or network plugin permissions \u2014 file IO goes through two narrow commands that take a user-chosen path, so the vault stays the only data path.",
+  "windows": [
+    "main"
+  ],
   "permissions": [
     "core:default",
+    "core:window:allow-set-theme",
     "dialog:allow-open",
     "dialog:allow-save",
     "dialog:allow-message",

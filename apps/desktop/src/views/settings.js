@@ -7,7 +7,8 @@ import { h, mount } from "../lib/dom.js";
 import { icon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
 import * as store from "../lib/store.js";
-import { busy, toast, modal, field, select, toggle, callout, confirmDialog } from "../ui/components.js";
+import { busy, toast, toastError, modal, field, select, segmented, toggle, callout, confirmDialog } from "../ui/components.js";
+import { THEMES, theme, saveTheme } from "../lib/theme.js";
 import { recoveryCeremony, restoreDialog, restoredMessage, runPrint } from "./onboarding.js";
 
 const CURRENCIES = [
@@ -50,6 +51,7 @@ export async function renderSettings(root, params, ctx) {
     emergencyCard(info, centre),
     feedsCard(settings, metals, crypto, save, ctx),
     privacyCard(settings, save),
+    appearanceCard(),
     displayCard(settings, save),
     aboutCard(info)
   );
@@ -597,6 +599,14 @@ function privacyCard(settings, save) {
     row("Watch-only balance lookup",
       "Checking a crypto address's balance sends it to a public block explorer (blockstream.info), which learns that someone at your IP address is interested in it. The balance was already public; the link to you is not. Separate from price fetching, and off by default.",
       toggle("", settings.balance_lookup, (on) => save({ balance_lookup: on })))
+  );
+}
+
+function appearanceCard() {
+  const choice = segmented(THEMES, theme(), (v) => saveTheme(v).catch(toastError));
+  return h("section", { class: "card", id: "appearance" },
+    h("div", { class: "card-head" }, h("h2", {}, icon("contrast", { size: 18 }), " Appearance")),
+    row("Theme", "System follows your computer's light or dark setting. This choice belongs to this computer, not the vault, so it applies on the unlock screen too.", choice.el)
   );
 }
 

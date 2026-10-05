@@ -1256,6 +1256,21 @@ No item names, values, photos or locations are ever sent.`,
 
   // ------------------------------------------------------------ reference
   {
+    id: "theme",
+    section: "reference",
+    title: "Light and dark theme",
+    summary: "Follow the computer's setting, or always use light or dark.",
+    keywords: "theme dark mode light mode appearance colors colours night",
+    body: `Open {{settings|Settings}} → «Appearance» → «Theme» and choose:
+
+- «System» — follow your computer's light or dark setting, and change with it.
+- «Light» or «Dark» — always use that, whatever the computer is set to.
+
+The choice belongs to this computer rather than the vault, so it also applies on the unlock screen — and a vault restored on another computer uses that computer's choice.
+
+Printed reports, claims, labels and recovery sheets are always printed dark on white.`,
+  },
+  {
     id: "shortcuts",
     section: "reference",
     title: "Keyboard shortcuts",

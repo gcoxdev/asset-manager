@@ -17,6 +17,7 @@ pub mod metals_commands;
 pub mod metals_provider;
 pub mod organize_commands;
 pub mod paths;
+pub mod prefs_commands;
 pub mod protocol;
 pub mod report_commands;
 pub mod session;
@@ -94,6 +95,9 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
         .invoke_handler(tauri::generate_handler![
             // Vault, credentials, backup, settings
             commands::vault_status,
+            // Preferences of this computer, readable while locked
+            prefs_commands::get_preferences,
+            prefs_commands::set_theme,
             commands::create_vault,
             commands::unlock_vault,
             commands::lock_vault,

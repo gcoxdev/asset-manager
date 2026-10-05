@@ -76,6 +76,17 @@ fn the_frontend_contract_holds_end_to_end() {
         .expect("app builds");
     let w = tauri::WebviewWindowBuilder::new(&app, "main", Default::default()).build().unwrap();
 
+    // --- preferences: this computer's, readable before any vault exists ----
+    assert_eq!(ok(&w, "get_preferences", json!({}))["theme"], "system");
+    assert_eq!(ok(&w, "set_theme", json!({ "theme": "dark" }))["theme"], "dark");
+    assert_eq!(ok(&w, "get_preferences", json!({}))["theme"], "dark");
+    assert!(invoke(&w, "set_theme", json!({ "theme": "neon" })).is_err());
+    assert!(
+        dir.path().join("preferences.json").exists(),
+        "kept beside the vault folder, not inside it"
+    );
+    ok(&w, "set_theme", json!({ "theme": "system" }));
+
     // --- vault lifecycle ---------------------------------------------------
     assert_eq!(
         ok(&w, "vault_status", json!({})),
