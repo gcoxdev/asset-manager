@@ -17,7 +17,14 @@ import { importSpreadsheet } from "./spreadsheet-import.js";
 import { openInventory, printLabels } from "./inventory.js";
 import { addToSet, dividePurchase, openSets } from "./sets.js";
 
-const PAGE = 300;
+// Rows render a chunk at a time as the end of the list comes into view:
+// building ten thousand table rows at once froze the window for seconds,
+// while filtering and sorting the whole catalog in memory takes a blink.
+const CHUNK = 200;
+
+// One collator for every comparison: localeCompare with options builds a
+// new one each call, which made sorting a large catalog by name crawl.
+const BY_NAME = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 
 const SORTS = [
   ["updated", "Recently changed"],
@@ -43,7 +50,7 @@ export async function renderHoldings(root, params, ctx) {
   ]);
   let searchIds = null;
   let bulk = false;
-  let shown = PAGE;
+  let stopLoading = () => {};
   // Selecting many for one change. Kept across redraws (sorting, filtering)
   // until the action is done or selection is turned off.
   let selecting = false;
@@ -58,22 +65,22 @@ export async function renderHoldings(root, params, ctx) {
   const chips = h("div", { class: "chips", role: "group", "aria-label": "Category" });
 
   const statusSelect = select([["active", "Held"], ["sold", "Sold"], ["inactive", "Lost & retired"], ["all", "Everything"]], prefs.status, { "aria-label": "Status" });
-  statusSelect.addEventListener("change", () => { prefs.status = statusSelect.value; shown = PAGE; draw(); });
+  statusSelect.addEventListener("change", () => { prefs.status = statusSelect.value; draw(); });
   const sortSelect = select(SORTS, prefs.sort, { "aria-label": "Sort" });
   sortSelect.addEventListener("change", () => { prefs.sort = sortSelect.value; draw(); });
   const layout = segmented([["list", "List"], ["grid", "Grid"]], prefs.layout, (v) => { prefs.layout = v; draw(); });
 
   // --- filters beyond category and status ---------------------------------
   const tagSelect = select([["", "Any tag"], ...tagList.map((t) => [t.name, `${t.name} (${t.count})`])], prefs.tag, { "aria-label": "Tag" });
-  tagSelect.addEventListener("change", () => { prefs.tag = tagSelect.value; shown = PAGE; draw(); });
+  tagSelect.addEventListener("change", () => { prefs.tag = tagSelect.value; draw(); });
   const locationSelect = select([["", "Any location"], ...locationList.map((l) => [l.name, l.name])], prefs.location, { "aria-label": "Location" });
-  locationSelect.addEventListener("change", () => { prefs.location = locationSelect.value; shown = PAGE; draw(); });
+  locationSelect.addEventListener("change", () => { prefs.location = locationSelect.value; draw(); });
   const missingSelect = select([
     ["", "Any condition"], ["value", "No value"], ["stale", "Value over a year old"], ["review", "Due for review"],
     ["partial_cost", "Cost incomplete"], ["insurance", "No insured value"], ["underinsured", "Insured below value"],
     ["photo", "No photo"], ["document", "No documents"], ["away", "Away from home"],
   ], prefs.missing, { "aria-label": "Needs attention" });
-  missingSelect.addEventListener("change", () => { prefs.missing = missingSelect.value; shown = PAGE; draw(); });
+  missingSelect.addEventListener("change", () => { prefs.missing = missingSelect.value; draw(); });
 
   // --- saved views ------------------------------------------------------------
   const VIEW_KEYS = ["query", "category", "status", "sort", "tag", "location", "missing"];
@@ -147,7 +154,6 @@ export async function renderHoldings(root, params, ctx) {
     }
     if (seq !== searchSeq || disposed) return;
     searchIds = ids;
-    shown = PAGE;
     draw();
   }, 160);
   search.addEventListener("input", runSearch);
@@ -188,7 +194,7 @@ export async function renderHoldings(root, params, ctx) {
     }
     const sorted = [...list];
     switch (prefs.sort) {
-      case "name": sorted.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })); break;
+      case "name": sorted.sort((a, b) => BY_NAME.compare(a.name, b.name)); break;
       // Gain exists only when value and cost share a currency, so it is in
       // the value's currency.
       // Converted values rank with the base currency; anything without a
@@ -217,7 +223,7 @@ export async function renderHoldings(root, params, ctx) {
       h("button", {
         class: prefs.category === id ? "chip active" : "chip",
         "aria-pressed": prefs.category === id ? "true" : "false",
-        onclick: () => { prefs.category = id; shown = PAGE; draw(); },
+        onclick: () => { prefs.category = id; draw(); },
       }, label, count != null ? h("span", { class: "chip-count" }, String(count)) : null);
     mount(chips, chip("all", "All", null), cats.map((c) => chip(c, fmt.categoryLabel(c), counts.get(c) ?? 0)));
   }
@@ -254,11 +260,6 @@ export async function renderHoldings(root, params, ctx) {
       return;
     }
 
-    const page = list.slice(0, shown);
-    const moreButton = list.length > shown
-      ? h("button", { class: "btn btn-secondary load-more", onclick: () => { shown = list.length; draw(); } }, `Show all ${list.length}`)
-      : null;
-
     const leaveBulk = async () => {
       const unsaved = [...drafts.values()].filter((d) => d.value !== d.original).length;
       if (unsaved && !(await confirmDialog({ title: "Discard unsaved values?", message: `${unsaved} value${unsaved === 1 ? " has" : "s have"} not been saved.`, confirmLabel: "Discard", danger: true }))) return;
@@ -266,9 +267,37 @@ export async function renderHoldings(root, params, ctx) {
       bulk = false;
       draw();
     };
-    if (bulk) mount(results, bulkTable(page, settings, drafts, () => { bulk = false; drafts.clear(); ctx.refresh(); }, leaveBulk), moreButton);
-    else if (prefs.layout === "grid") mount(results, grid(page, ctx), moreButton);
-    else mount(results, selecting ? selectionBar(list, page) : null, table(page, ctx, selecting ? { selected, onToggle: () => draw() } : null), moreButton);
+    const bar = h("div");
+    const view = bulk
+      ? bulkTable(settings, drafts, () => { bulk = false; drafts.clear(); ctx.refresh(); }, leaveBulk)
+      : prefs.layout === "grid"
+        ? grid(ctx)
+        : table(ctx, selecting ? { selected, onToggle: () => mount(bar, selectionBar(list)) } : null);
+    if (selecting && !bulk) mount(bar, selectionBar(list));
+
+    // The rest of the list follows as its end scrolls into view; the button
+    // is there for keyboards and for anyone who would rather ask.
+    let shown = 0;
+    const status = h("span", { class: "muted small" });
+    const moreButton = h("button", { class: "btn btn-secondary btn-sm", onclick: () => more() }, "Show more");
+    const footer = h("div", { class: "load-more" }, status, moreButton);
+    const more = () => {
+      const next = list.slice(shown, shown + CHUNK);
+      view.append(next, shown);
+      shown += next.length;
+      const done = shown >= list.length;
+      footer.hidden = done;
+      status.textContent = `Showing ${shown.toLocaleString()} of ${list.length.toLocaleString()}`;
+      if (done) stopLoading();
+    };
+    stopLoading();
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) more();
+    }, { rootMargin: "800px 0px" });
+    stopLoading = () => observer.disconnect();
+    mount(results, bar, view.el, footer);
+    more();
+    if (shown < list.length) observer.observe(footer);
   }
 
   mount(
@@ -291,7 +320,7 @@ export async function renderHoldings(root, params, ctx) {
   );
 
   /** What can be done to everything selected. */
-  function selectionBar(list, page) {
+  function selectionBar(list) {
     const ids = () => [...selected];
     const n = selected.size;
     const run = async (label, action) => {
@@ -347,17 +376,20 @@ export async function renderHoldings(root, params, ctx) {
         if (ok) run("Moved to trash", () => call("bulk_trash", { assetIds: ids() }));
       } }, "Trash…"),
     ];
-    const allShown = page.every((a) => selected.has(a.asset_id));
+    const allSelected = list.length > 0 && list.every((a) => selected.has(a.asset_id));
+    const syncChecks = () => {
+      for (const box of results.querySelectorAll("input[data-select]")) box.checked = selected.has(box.dataset.select);
+    };
     return h("div", { class: "bulk-bar selection-bar", role: "region", "aria-label": "Selection" },
       h("div", {},
         h("strong", {}, n ? `${n} selected` : "Select assets"),
         " ",
-        h("button", { class: "link", onclick: () => {
-          if (allShown) for (const a of page) selected.delete(a.asset_id);
-          else for (const a of page) selected.add(a.asset_id);
-          draw();
-        } }, allShown ? "Clear shown" : `Select all ${page.length} shown`),
-        list.length > page.length ? h("span", { class: "muted small" }, ` (of ${list.length} — show all to select the rest)`) : null
+        h("button", { class: "link", onclick: (e) => {
+          if (allSelected) selected.clear();
+          else for (const a of list) selected.add(a.asset_id);
+          syncChecks();
+          e.currentTarget.closest(".selection-bar").replaceWith(selectionBar(list));
+        } }, allSelected ? "Clear selection" : list.length === 1 ? "Select it" : `Select all ${list.length.toLocaleString()}`)
       ),
       h("div", { class: "bulk-actions" }, actions)
     );
@@ -368,6 +400,7 @@ export async function renderHoldings(root, params, ctx) {
   if (params.focusSearch) search.focus();
   return () => {
     disposed = true;
+    stopLoading();
   };
 }
 
@@ -399,14 +432,10 @@ function valueCell(a) {
   );
 }
 
-function table(list, ctx, selection = null) {
-  const toggleRow = (a) => {
-    if (selection.selected.has(a.asset_id)) selection.selected.delete(a.asset_id);
-    else selection.selected.add(a.asset_id);
-    selection.onToggle();
-  };
-  const open = (a) => (selection ? toggleRow(a) : ctx.navigate("asset", { id: a.asset_id }));
-  return h("table", { class: selection ? "table holdings-table selecting" : "table holdings-table" },
+/** The holdings table. Rows are added with append(assets). */
+function table(ctx, selection = null) {
+  const body = h("tbody");
+  const el = h("table", { class: selection ? "table holdings-table selecting" : "table holdings-table" },
     h("thead", {}, h("tr", {},
       selection ? h("th", { class: "col-check" }, h("span", { class: "sr-only" }, "Selected")) : null,
       h("th", { class: "col-photo" }, h("span", { class: "sr-only" }, "Photo")),
@@ -416,43 +445,60 @@ function table(list, ctx, selection = null) {
       h("th", { class: "num" }, "Value"),
       h("th", { class: "num" }, "Gain")
     )),
-    h("tbody", {}, list.map((a) =>
-      h("tr", {
-        class: "row-link",
-        tabindex: "0",
-        onclick: () => open(a),
-        "aria-selected": selection ? String(selection.selected.has(a.asset_id)) : null,
-        onkeydown: (e) => {
-          if (e.key === "Enter" || (selection && e.key === " ")) { e.preventDefault(); open(a); }
-          if (e.key === "ArrowDown") { e.preventDefault(); e.currentTarget.nextElementSibling?.focus(); }
-          if (e.key === "ArrowUp") { e.preventDefault(); e.currentTarget.previousElementSibling?.focus(); }
-        },
-      },
-        selection
-          ? h("td", { class: "col-check" }, h("input", {
-              type: "checkbox",
-              checked: selection.selected.has(a.asset_id),
-              "aria-label": `Select ${a.name}`,
-              onclick: (e) => { e.stopPropagation(); toggleRow(a); },
-            }))
-          : null,
-        h("td", { class: "col-photo" }, thumb(a)),
-        h("td", {}, h("div", { class: "name-cell" },
-          h("span", { class: "name" }, a.name, statusBadge(a.status)),
-          h("span", { class: "sub" }, subtitle(a)),
-          a.tags?.length ? h("span", { class: "tag-list" }, a.tags.map((t) => h("span", { class: "tag-chip" }, t))) : null
-        )),
-        h("td", { class: "num" }, fmt.quantity(a.quantity), h("span", { class: "unit" }, ` ${a.quantity_unit}`)),
-        h("td", { class: "num" }, a.acquired_display ? fmt.money(a.acquired_display) : h("span", { class: "muted" }, "—")),
-        h("td", { class: "num" }, valueCell(a)),
-        h("td", { class: "num" }, gainCell(a))
-      )
-    ))
+    body
   );
+
+  const row = (a) => {
+    // Selecting changes this row and the selection bar, not the whole list.
+    const toggle = () => {
+      if (selection.selected.has(a.asset_id)) selection.selected.delete(a.asset_id);
+      else selection.selected.add(a.asset_id);
+      box.checked = selection.selected.has(a.asset_id);
+      tr.setAttribute("aria-selected", String(box.checked));
+      selection.onToggle();
+    };
+    const open = () => (selection ? toggle() : ctx.navigate("asset", { id: a.asset_id }));
+    const box = selection
+      ? h("input", {
+          type: "checkbox",
+          checked: selection.selected.has(a.asset_id),
+          "data-select": a.asset_id,
+          "aria-label": `Select ${a.name}`,
+          onclick: (e) => { e.stopPropagation(); toggle(); },
+        })
+      : null;
+    const tr = h("tr", {
+      class: "row-link",
+      tabindex: "0",
+      onclick: open,
+      "aria-selected": selection ? String(selection.selected.has(a.asset_id)) : null,
+      onkeydown: (e) => {
+        if (e.key === "Enter" || (selection && e.key === " ")) { e.preventDefault(); open(); }
+        if (e.key === "ArrowDown") { e.preventDefault(); e.currentTarget.nextElementSibling?.focus(); }
+        if (e.key === "ArrowUp") { e.preventDefault(); e.currentTarget.previousElementSibling?.focus(); }
+      },
+    },
+      selection ? h("td", { class: "col-check" }, box) : null,
+      h("td", { class: "col-photo" }, thumb(a)),
+      h("td", {}, h("div", { class: "name-cell" },
+        h("span", { class: "name" }, a.name, statusBadge(a.status)),
+        h("span", { class: "sub" }, subtitle(a)),
+        a.tags?.length ? h("span", { class: "tag-list" }, a.tags.map((t) => h("span", { class: "tag-chip" }, t))) : null
+      )),
+      h("td", { class: "num" }, fmt.quantity(a.quantity), h("span", { class: "unit" }, ` ${a.quantity_unit}`)),
+      h("td", { class: "num" }, a.acquired_display ? fmt.money(a.acquired_display) : h("span", { class: "muted" }, "—")),
+      h("td", { class: "num" }, valueCell(a)),
+      h("td", { class: "num" }, gainCell(a))
+    );
+    return tr;
+  };
+  return { el, append: (list) => body.append(...list.map(row)) };
 }
 
-function grid(list, ctx) {
-  return h("div", { class: "card-grid" }, list.map((a) =>
+/** The card grid. Cards are added with append(assets). */
+function grid(ctx) {
+  const el = h("div", { class: "card-grid" });
+  const card = (a) =>
     h("button", { class: "asset-card", onclick: () => ctx.navigate("asset", { id: a.asset_id }) },
       h("div", { class: "asset-card-media" },
         a.primary_photo
@@ -468,19 +514,23 @@ function grid(list, ctx) {
           a.current_display ? sourceBadge(a.value_source) : null
         )
       )
-    )
-  ));
+    );
+  return { el, append: (list) => el.append(...list.map(card)) };
 }
 
 /**
  * Bulk value entry. Each row is saved independently and reports back, so
  * one bad cell does not discard the rest.
  */
-function bulkTable(list, settings, drafts, onDone, onCancel) {
+/** Bulk value entry. Rows are added with append(assets, offset). */
+function bulkTable(settings, drafts, onDone, onCancel) {
   const asof = h("input", { type: "date", value: fmt.todayIso(), max: fmt.todayIso(), "aria-label": "Values as of" });
+  // Only rows on screen have inputs; only they can have changes to save.
   const inputs = new Map();
+  const shown = new Map();
   const errors = new Map();
   const dirty = h("span", { class: "muted" }, "No changes yet");
+  const body = h("tbody");
 
   const countChanges = () => {
     const n = [...inputs.values()].filter((i) => i.value.trim() && i.value.trim() !== i.dataset.original).length;
@@ -488,7 +538,7 @@ function bulkTable(list, settings, drafts, onDone, onCancel) {
     save.disabled = n === 0;
   };
 
-  const rows = list.map((a, index) => {
+  const row = (a, index) => {
     const original = a.current_display ? a.current_display.split(" ")[0] : "";
     const draft = drafts.get(a.asset_id);
     const input = h("input", { type: "text", inputmode: "decimal", class: "input-money bulk-input", value: draft ? draft.value : original, placeholder: "—", "aria-label": `Value of ${a.name}` });
@@ -502,6 +552,7 @@ function bulkTable(list, settings, drafts, onDone, onCancel) {
       if (e.key === "ArrowUp") { e.preventDefault(); [...inputs.values()][index - 1]?.focus(); }
     });
     inputs.set(a.asset_id, input);
+    shown.set(a.asset_id, a);
     const err = h("div", { class: "field-error" });
     errors.set(a.asset_id, err);
     return h("tr", {},
@@ -510,15 +561,15 @@ function bulkTable(list, settings, drafts, onDone, onCancel) {
       h("td", { class: "num" }, a.current_display ? fmt.money(a.current_display) : h("span", { class: "muted" }, "—")),
       h("td", { class: "num" }, h("div", { class: "input-affix" }, h("span", { class: "affix" }, a.current_currency ?? settings.currency), input), err)
     );
-  });
+  };
 
   const save = h("button", { class: "btn btn-primary", disabled: true, onclick: async () => {
     const entries = [];
-    for (const a of list) {
-      const input = inputs.get(a.asset_id);
+    for (const [id, input] of inputs) {
+      const a = shown.get(id);
       const v = input.value.trim();
       if (v && v !== input.dataset.original) {
-        entries.push({ asset_id: a.asset_id, amount: v, currency: a.current_currency ?? settings.currency, asof: asof.value });
+        entries.push({ asset_id: id, amount: v, currency: a.current_currency ?? settings.currency, asof: asof.value });
       }
     }
     await busy(save, async () => {
@@ -546,16 +597,17 @@ function bulkTable(list, settings, drafts, onDone, onCancel) {
     }, "Saving…");
   } }, "Save values");
 
-  return h("div", { class: "bulk" },
+  const el = h("div", { class: "bulk" },
     h("div", { class: "bulk-bar" },
       h("div", {}, h("strong", {}, "Update values"), h("span", { class: "muted" }, " — type the value of each whole holding. Blank rows are left alone.")),
       h("div", { class: "bulk-actions" }, h("label", { class: "inline-label" }, "As of ", asof), dirty, h("button", { class: "btn btn-ghost", onclick: onCancel }, "Cancel"), save)
     ),
     h("table", { class: "table" },
       h("thead", {}, h("tr", {}, h("th", { class: "col-photo" }), h("th", {}, "Name"), h("th", { class: "num" }, "Current"), h("th", { class: "num" }, "New value"))),
-      h("tbody", {}, rows)
+      body
     )
   );
+  return { el, append: (list, offset = 0) => { body.append(...list.map((a, i) => row(a, offset + i))); countChanges(); } };
 }
 
 /**
