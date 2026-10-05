@@ -18,7 +18,7 @@ import { importSpreadsheet, saveTemplate } from "./spreadsheet-import.js";
 
 export async function renderReports(root, params, ctx) {
   if (params?.claim?.length) setTimeout(() => openClaimWorkbench(params.claim, null));
-  const options = { include_locations: false, include_notes: false, include_photos: true, include_lost: false, include_documents: true };
+  const options = { include_locations: false, include_notes: false, include_photos: true, include_lost: false, include_documents: true, include_evidence: true };
   const check = (key, label, hint) => {
     const input = h("input", { type: "checkbox", checked: options[key], onchange: () => (options[key] = input.checked) });
     return h("label", { class: "check" }, input, h("span", {}, h("span", {}, label), h("span", { class: "check-hint" }, hint)));
@@ -44,6 +44,7 @@ export async function renderReports(root, params, ctx) {
       h("div", { class: "check-list" },
         check("include_photos", "Include photos", "Up to four per item, embedded in the document."),
         check("include_documents", "List documents on file", "Receipts, appraisals and certificates by title and date, so an assessor knows what to ask for. Their contents are not included."),
+        check("include_evidence", "Show how values were reached", "Comparable sales, the range and your confidence, where you recorded them with a value."),
         check("include_locations", "Include storage locations", "Usually unnecessary for a claim — and a list of where valuables are kept is exactly what should not leak."),
         check("include_notes", "Include notes", "Your free-text notes, as written."),
         check("include_lost", "Include items marked lost", "For a claim: each lost item with the date it was lost and its value from before.")
@@ -131,6 +132,17 @@ export function reportSheet(report, { screen, claim } = {}) {
         ];
         if (item.status === "lost") rows.unshift(["Status", `Lost${item.lost_on ? ` on ${fmt.date(item.lost_on)}` : ""}`]);
         if (item.insured) rows.push(["Insured for", fmt.money(item.insured)]);
+        const e = item.evidence;
+        if (e) {
+          const basis = [e.range ? `Range ${fmt.range(e.range)}` : null, e.confidence ? `${e.confidence[0].toUpperCase()}${e.confidence.slice(1)} confidence` : null, e.document_title ? `supported by “${e.document_title}”` : null].filter(Boolean).join(" · ");
+          if (basis) rows.push(["Basis for value", basis]);
+          if (e.comparables.length) {
+            rows.push(["Comparables", h("ul", { class: "report-comparables" }, e.comparables.map((c) => h("li", {},
+              [fmt.COMPARABLE_LABELS[c.kind] ?? c.kind, c.price ? fmt.money(c.price) : null].filter(Boolean).join(" "),
+              ` — ${c.description}`,
+              [c.date ? fmt.date(c.date) : null, c.source].filter(Boolean).length ? ` (${[c.date ? fmt.date(c.date) : null, c.source].filter(Boolean).join(", ")})` : "")))]);
+          }
+        }
         if (item.values_by_basis?.length > 1) {
           rows.push(["Values on record", item.values_by_basis.map((b) => `${fmt.BASIS_LABELS[b.basis] ?? b.basis} ${fmt.money(b.value)} (${fmt.date(b.asof)})`).join("; ")]);
         }
@@ -180,7 +192,7 @@ export async function openClaimWorkbench(preselected = [], ctx) {
   const m = modal({ title: "Prepare a claim", size: "lg", body: h("div") });
   const body = m.dialog.querySelector(".modal-body");
   const claim = { claimant: "", insurer: "", policy_number: "", claim_number: "", loss_date: fmt.todayIso(), description: "" };
-  const opts = { include_photos: true, include_documents: true, compare_bases: true, include_locations: false, include_notes: false };
+  const opts = { include_photos: true, include_documents: true, include_evidence: true, compare_bases: true, include_locations: false, include_notes: false };
 
   function chooseStep() {
     const search = h("input", { type: "search", placeholder: "Find items…", "aria-label": "Find items" });
@@ -240,6 +252,7 @@ export async function openClaimWorkbench(preselected = [], ctx) {
           h("div", { class: "check-list" },
             check("include_photos", "Photos", "Up to four per item."),
             check("include_documents", "List receipts and appraisals on file"),
+            check("include_evidence", "Show how values were reached", "Comparable sales, range and confidence."),
             check("compare_bases", "Show every value on record", "Resale, replacement and insured values side by side."),
             check("include_locations", "Storage locations", "Rarely needed for a claim."),
             check("include_notes", "Notes")

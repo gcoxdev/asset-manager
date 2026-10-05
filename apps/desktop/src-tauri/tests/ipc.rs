@@ -512,6 +512,15 @@ fn the_frontend_contract_holds_end_to_end() {
         claim["items"].as_array().unwrap().iter().find(|i| i["status"] == "lost").unwrap();
     assert_eq!(lost["lost_on"], "2026-09-01");
     assert_eq!(lost["current"], "1250000.00 USD", "its value from before the loss");
+    // …with the evidence behind that value, printed by default.
+    assert_eq!(lost["evidence"]["confidence"], "medium");
+    assert_eq!(lost["evidence"]["comparables"].as_array().unwrap().len(), 2);
+    let bare = ok(
+        &w,
+        "insurance_report",
+        json!({ "options": { "include_lost": true, "include_evidence": false } }),
+    );
+    assert!(bare["items"].as_array().unwrap().iter().all(|i| i["evidence"].is_null()));
     let detail = ok(&w, "get_asset", json!({ "assetId": comic }));
     assert_eq!(detail["status_events"][0]["status"], "lost");
 

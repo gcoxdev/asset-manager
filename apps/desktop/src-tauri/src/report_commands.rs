@@ -15,6 +15,7 @@
 use std::collections::BTreeMap;
 
 use am_core::{Currency, Money};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
@@ -53,6 +54,10 @@ pub struct ReportItem {
     pub documents: Vec<ReportDocument>,
     /// With `compare_bases`: the latest value on each basis.
     pub values_by_basis: Vec<BasisValue>,
+    /// Why the value shown is what it is — comparables, a range, how sure —
+    /// when the owner recorded it. The supporting document's title only
+    /// with `include_documents`.
+    pub evidence: Option<crate::asset_commands::EvidenceView>,
 }
 
 #[derive(Serialize)]
@@ -132,6 +137,10 @@ pub struct ReportOptions {
     /// insured, melt — side by side, as of the same date.
     #[serde(default)]
     pub compare_bases: bool,
+    /// The evidence behind each value shown. On by default, like photos:
+    /// it is what makes an owner's figure credible to an assessor.
+    #[serde(default = "yes")]
+    pub include_evidence: bool,
 }
 
 impl Default for ReportOptions {
@@ -145,6 +154,7 @@ impl Default for ReportOptions {
             asset_ids: None,
             as_of: None,
             compare_bases: false,
+            include_evidence: true,
         }
     }
 }
@@ -396,7 +406,14 @@ pub fn insurance_report(
                 } else {
                     Vec::new()
                 };
+                let evidence = if options.include_evidence && r.current_amount_minor.is_some() {
+                    let date = as_of.clone().unwrap_or_else(crate::ipc::today);
+                    evidence_behind(vault, &r.asset_id, &date, options.include_documents)?
+                } else {
+                    None
+                };
                 items.push(ReportItem {
+                    evidence,
                     values_by_basis,
                     status: r.status.clone(),
                     lost_on,
@@ -611,6 +628,38 @@ fn as_of_figures(
         }
     }
     Ok(())
+}
+
+/// The evidence recorded with the value an item shows on `date` — the same
+/// valuation `valuation_as_of` and the current-value cache pick.
+fn evidence_behind(
+    vault: &am_storage::vault::Vault,
+    asset_id: &str,
+    date: &str,
+    with_document: bool,
+) -> Result<Option<crate::asset_commands::EvidenceView>, crate::session::SessionError> {
+    let row: Option<(String, String)> = vault
+        .conn()
+        .query_row(
+            "SELECT inputs, currency FROM valuations
+             WHERE asset_id = ?1 AND voided_at IS NULL AND asof <= ?2
+             ORDER BY asof DESC, recorded_at DESC, rowid DESC LIMIT 1",
+            [asset_id, date],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()
+        .map_err(storage)?;
+    let Some((inputs, currency)) = row else { return Ok(None) };
+    let inputs: serde_json::Value = serde_json::from_str(&inputs).unwrap_or_default();
+    Ok(crate::asset_commands::evidence_view(vault, asset_id, &inputs, &currency).map(
+        |mut e| {
+            if !with_document {
+                e.document = None;
+                e.document_title = None;
+            }
+            e
+        },
+    ))
 }
 
 /// The latest value on each basis, as of a date (today if none), scaled to

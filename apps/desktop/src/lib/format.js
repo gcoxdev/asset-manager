@@ -264,6 +264,13 @@ export const CUSTODY_LABELS = {
   returned: "Back home",
 };
 
+export const COMPARABLE_LABELS = { sold: "Sold", auction: "Auction", asking: "Asking" };
+
+/** A value's range as recorded ("4000.00 USD – 5000.00 USD", "from …", "up to …"), for display. */
+export function range(text) {
+  return text.split(" – ").map((x) => (x.startsWith("from ") ? `from ${money(x.slice(5))}` : x.startsWith("up to ") ? `up to ${money(x.slice(6))}` : money(x))).join(" – ");
+}
+
 export const STATUS_LABELS = { active: "Held", sold: "Sold", lost: "Lost", retired: "Retired" };
 
 /** "player_or_character" → "Player or character". */

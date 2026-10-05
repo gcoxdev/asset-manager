@@ -210,7 +210,7 @@ pub struct ComparableView {
     pub source: Option<String>,
 }
 
-fn evidence_view(
+pub(crate) fn evidence_view(
     vault: &Vault,
     asset_id: &str,
     inputs: &serde_json::Value,

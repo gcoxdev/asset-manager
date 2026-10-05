@@ -464,20 +464,18 @@ function historyCard(a, detail, reload) {
   );
 }
 
-const COMPARABLE_LABELS = { sold: "Sold", auction: "Auction", asking: "Asking" };
-
 /** Why a value is what it is, folded away under the row. */
 function evidenceDetails(e) {
   const summary = [
     e.comparables.length ? `${e.comparables.length} comparable${e.comparables.length === 1 ? "" : "s"}` : null,
-    e.range ? `range ${e.range.split(" – ").map((x) => (x.startsWith("from ") || x.startsWith("up to ") ? x : fmt.money(x))).join(" – ")}` : null,
+    e.range ? `range ${fmt.range(e.range)}` : null,
     e.confidence ? `${e.confidence} confidence` : null,
   ].filter(Boolean).join(" · ") || "Evidence";
   return h("details", { class: "evidence" },
     h("summary", {}, summary),
     e.comparables.length
       ? h("ul", {}, e.comparables.map((c) => h("li", {},
-          `${COMPARABLE_LABELS[c.kind] ?? c.kind} ${c.price ? fmt.money(c.price) : ""} — ${c.description}`,
+          `${fmt.COMPARABLE_LABELS[c.kind] ?? c.kind} ${c.price ? fmt.money(c.price) : ""} — ${c.description}`,
           c.date ? ` (${fmt.date(c.date)})` : "")))
       : null,
     e.document_title ? h("p", { class: "muted small" }, `On file: ${e.document_title}`) : null
