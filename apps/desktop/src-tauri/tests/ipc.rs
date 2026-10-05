@@ -276,6 +276,31 @@ fn the_frontend_contract_holds_end_to_end() {
     ok(&w, "delete_asset", json!({ "assetId": bought }));
     ok(&w, "purge_trash", json!({ "assetId": bought }));
 
+    // An inventory check of the safe, with a scanned label.
+    let check = ok(&w, "start_check", json!({ "name": "Safe", "location": "Safe" }));
+    let in_scope = ok(&w, "check_items", json!({ "checkId": check }));
+    assert!(in_scope
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|i| i["storage_location"].as_str().unwrap().starts_with("Safe")));
+    let labels = ok(&w, "label_data", json!({ "assetIds": [eagles] }));
+    assert_eq!(labels[0]["payload"], format!("AM:{eagles}"), "the label is the opaque ID only");
+    let found = ok(&w, "resolve_label", json!({ "code": labels[0]["payload"] }));
+    assert_eq!(found, eagles.as_str());
+    ok(&w, "mark_item", json!({ "checkId": check, "assetId": eagles, "result": "present" }));
+    ok(&w, "finish_check", json!({ "checkId": check }));
+    let row = ok(&w, "list_assets", json!({}));
+    let row = row
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["asset_id"] == eagles.as_str())
+        .unwrap()
+        .clone();
+    assert!(row["last_seen"].as_str().is_some(), "found in a check");
+    ok(&w, "delete_check", json!({ "checkId": check }));
+
     // A type of the owner's own, validated like the built-in ones.
     let quilt = ok(
         &w,

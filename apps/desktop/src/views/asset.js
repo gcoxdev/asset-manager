@@ -11,6 +11,7 @@ import * as store from "../lib/store.js";
 import { busy, toast, confirmDialog, menuButton, sourceBadge, statusBadge, toggle, callout, modal, field, select, tagsInput } from "../ui/components.js";
 import { valueChart } from "../ui/chart.js";
 import { openEditAsset, openUpdateValue, openRecordChange } from "./asset-forms.js";
+import { printLabels } from "./inventory.js";
 
 /** Attribute keys that describe how to price an asset, not the item itself. */
 const INTERNAL = new Set(["preset", "coin_id", "symbol", "chain", "contract", "watch_address", "watch_chain", "custody", "metal", "weight_per_item", "weight_unit", "weight_basis", "purity", "premium_pct"]);
@@ -37,6 +38,7 @@ export async function renderAsset(root, params, ctx) {
       "divider",
       { label: "Edit tags…", icon: "tag", onSelect: () => editTags(a, reload) },
       { label: "Duplicate", icon: "copy", onSelect: () => duplicateAsset(a, ctx) },
+      { label: "Print label…", icon: "printer", onSelect: () => printLabels([a.asset_id]) },
       { label: "Edit history…", icon: "clock", onSelect: () => editHistory(a, reload) },
       "divider",
       { label: "Move to trash…", icon: "trash", danger: true, onSelect: () => deleteAsset(a, ctx) },
@@ -805,6 +807,7 @@ function detailsCard(a, detail) {
   if (a.acquired_date) rows.push(["Acquired", fmt.date(a.acquired_date)]);
   if (a.acquired_from) rows.push(["Acquired from", a.acquired_from]);
   if (a.storage_location) rows.push(["Location", h("span", { class: "with-icon" }, icon("pin", { size: 14 }), a.storage_location)]);
+  if (a.last_seen) rows.push(["Last seen", `${fmt.date(a.last_seen)}, in an inventory check`]);
 
   // Metal specification, shown in words: the gross/fine distinction is the
   // detail most often gotten wrong.

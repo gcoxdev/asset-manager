@@ -91,6 +91,8 @@ pub struct AssetRecord {
     pub away: Option<String>,
     /// Who has it, when away.
     pub away_with: Option<String>,
+    /// When an inventory check last found it.
+    pub last_seen: Option<String>,
     pub storage_location: Option<String>,
     pub notes: String,
     #[serde(serialize_with = "minor_as_string")]
@@ -133,7 +135,9 @@ const SELECT: &str = "
            (SELECT count(*) FROM asset_media m JOIN objects o ON o.object_id = m.object_id
              WHERE m.asset_id = a.asset_id AND o.gc_state = 'live' AND m.doc_kind <> 'photo'),
            (SELECT c.kind || char(31) || coalesce(c.party, '') FROM custody_events c
-             WHERE c.asset_id = a.asset_id ORDER BY c.date DESC, c.recorded_at DESC LIMIT 1)
+             WHERE c.asset_id = a.asset_id ORDER BY c.date DESC, c.recorded_at DESC LIMIT 1),
+           (SELECT max(substr(m.marked_at, 1, 10)) FROM inventory_marks m
+             WHERE m.asset_id = a.asset_id AND m.result <> 'missing')
     FROM assets a JOIN asset_types t ON t.type_id = a.type_id";
 
 fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
@@ -186,6 +190,7 @@ fn from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<AssetRecord> {
                 .filter(|k| *k != "returned")
                 .map(str::to_string)
         },
+        last_seen: r.get(36)?,
         away_with: {
             let latest: Option<String> = r.get(35)?;
             latest

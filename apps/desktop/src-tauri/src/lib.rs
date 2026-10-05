@@ -10,6 +10,7 @@ pub mod crypto_commands;
 pub mod crypto_provider;
 pub mod custody_commands;
 pub mod fx_commands;
+pub mod inventory_commands;
 pub mod ipc;
 pub mod metals_commands;
 pub mod metals_provider;
@@ -142,6 +143,15 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             wishlist_commands::save_wish,
             wishlist_commands::delete_wish,
             wishlist_commands::wish_acquired,
+            // Inventory checks and labels
+            inventory_commands::list_checks,
+            inventory_commands::start_check,
+            inventory_commands::check_items,
+            inventory_commands::mark_item,
+            inventory_commands::finish_check,
+            inventory_commands::delete_check,
+            inventory_commands::resolve_label,
+            inventory_commands::label_data,
             // Item types
             types_commands::list_custom_types,
             types_commands::save_custom_type,

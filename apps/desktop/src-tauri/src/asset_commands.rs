@@ -1456,6 +1456,7 @@ mod tests {
             document_count: 0,
             away: None,
             away_with: None,
+            last_seen: None,
             acquired_from: None,
             storage_location: None,
             notes: String::new(),

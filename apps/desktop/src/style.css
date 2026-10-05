@@ -1045,3 +1045,14 @@ details.evidence ul { margin: 4px 0 0; padding-left: 18px; }
 .wish { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
 .wish:last-child { border-bottom: 0; }
 .wish-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+
+.check-progress { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+.check-progress progress { flex: 1; height: 8px; }
+tr.checked-row td:first-child { opacity: 0.75; }
+.count-mark { display: inline-flex; gap: 4px; align-items: center; }
+.count-mark .input-sm { width: 70px; }
+.label-sheet { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6mm; }
+.label-cell { display: flex; align-items: center; gap: 3mm; padding: 2mm; border: 1px dashed #bbb; break-inside: avoid; }
+.label-cell img { width: 22mm; height: 22mm; }
+.label-text { display: flex; flex-direction: column; font-size: 9pt; }
+.label-text strong { font-family: var(--mono); letter-spacing: 0.08em; }
