@@ -1277,8 +1277,9 @@ pub fn import_csv(
 
     session
         .with_vault(|vault| {
-            let preview = am_storage::csv::import_assets(vault, &contents, mode, &timestamp)
-                .map_err(storage)?;
+            let preview =
+                am_storage::csv::import_assets(vault, &contents, mode, &timestamp, &today())
+                    .map_err(storage)?;
             Ok(ImportSummary {
                 creates: preview.creates,
                 updates: preview.updates,

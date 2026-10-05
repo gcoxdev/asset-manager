@@ -313,6 +313,10 @@ fn parse_metadata(line: &str) -> HashMap<String, String> {
 
 /// Import a CSV, either previewing or applying it.
 ///
+/// `now` stamps the audit trail (UTC); `today` is the owner's calendar date,
+/// used wherever a row leaves an effective date blank — when it was bought,
+/// when its status changed, when its value was set.
+///
 /// Applying runs in a single transaction: either every valid row lands or none
 /// does, so a failure halfway through cannot leave a half-edited catalog.
 pub fn import_assets(
@@ -320,6 +324,7 @@ pub fn import_assets(
     input: &str,
     mode: ImportMode,
     now: &str,
+    today: &str,
 ) -> Result<ImportPreview, CsvError> {
     if input.len() > MAX_FILE_BYTES {
         return Err(CsvError::TooLarge);
@@ -546,9 +551,9 @@ pub fn import_assets(
             })? > 0;
 
         if exists {
-            apply_update(&tx, id, row, now)?;
+            apply_update(&tx, id, row, now, today)?;
         } else {
-            apply_insert(&tx, row, now)?;
+            apply_insert(&tx, row, now, today)?;
         }
     }
     tx.commit()?;
@@ -617,6 +622,7 @@ fn apply_update(
     id: &str,
     row: &ParsedRow,
     now: &str,
+    today: &str,
 ) -> Result<(), CsvError> {
     let invalid = |reason: String| CsvError::Invalid { line: row.line, reason };
     let (stored_minor, stored_currency, stored_date, stored_status): (
@@ -690,7 +696,7 @@ fn apply_update(
     if let Some(Some(status)) = cell(row, "status") {
         if status != stored_status {
             if let Some(status) = crate::lifecycle::Lifecycle::parse(status) {
-                crate::lifecycle::set_status_in(tx, id, status, &now[..10], "CSV import", now)
+                crate::lifecycle::set_status_in(tx, id, status, today, "CSV import", now)
                     .map_err(|e| invalid(e.to_string()))?;
             }
         }
@@ -710,7 +716,7 @@ fn apply_update(
             })?;
         if am_core::parse_decimal(&stored).ok() != Some(incoming) {
             let logged = logged_quantity(tx, id)?;
-            record_event_in(tx, id, "correct", &now[..10], incoming - logged, now)?;
+            record_event_in(tx, id, "correct", today, incoming - logged, now)?;
         }
     }
 
@@ -733,7 +739,7 @@ fn apply_update(
             let asof = cell(row, "value_asof")
                 .flatten()
                 .map(|d| d[..10.min(d.len())].to_string())
-                .unwrap_or_else(|| now[..10].to_string());
+                .unwrap_or_else(|| today.to_string());
             record_manual_value_in(tx, id, amount, &currency, &asof, now)?;
         }
     }
@@ -801,7 +807,12 @@ fn record_manual_value_in(
     Ok(())
 }
 
-fn apply_insert(tx: &rusqlite::Connection, row: &ParsedRow, now: &str) -> Result<(), CsvError> {
+fn apply_insert(
+    tx: &rusqlite::Connection,
+    row: &ParsedRow,
+    now: &str,
+    today: &str,
+) -> Result<(), CsvError> {
     let id = {
         let raw = row.values.get("asset_id").map(|s| s.trim()).unwrap_or("");
         if raw.is_empty() {
@@ -849,7 +860,7 @@ fn apply_insert(tx: &rusqlite::Connection, row: &ParsedRow, now: &str) -> Result
     // The acquire event carries the cost, as it does for the UI path: cost
     // is replayed from the log, so a cost only on the asset row would be lost
     // at the next change.
-    let effective = acquired_date.unwrap_or_else(|| now[..10].to_string());
+    let effective = acquired_date.unwrap_or_else(|| today.to_string());
     let cost_minor = get("acquired_amount_minor").and_then(|v| v.parse::<i64>().ok());
     let cost_currency = cost_minor.and(get("acquired_currency").map(str::to_ascii_uppercase));
     tx.execute(
@@ -863,7 +874,7 @@ fn apply_insert(tx: &rusqlite::Connection, row: &ParsedRow, now: &str) -> Result
     // if any, is not known.
     if let Some(status) = get("status").and_then(crate::lifecycle::Lifecycle::parse) {
         if status != crate::lifecycle::Lifecycle::Active {
-            crate::lifecycle::set_status_in(tx, &id, status, &now[..10], "CSV import", now)
+            crate::lifecycle::set_status_in(tx, &id, status, today, "CSV import", now)
                 .map_err(|e| CsvError::Invalid { line: row.line, reason: e.to_string() })?;
         }
     }
@@ -881,7 +892,7 @@ fn apply_insert(tx: &rusqlite::Connection, row: &ParsedRow, now: &str) -> Result
         })?;
         let asof = get("value_asof")
             .map(|d| d[..10.min(d.len())].to_string())
-            .unwrap_or_else(|| now[..10].to_string());
+            .unwrap_or_else(|| today.to_string());
         record_manual_value_in(tx, &id, amount, &currency.to_ascii_uppercase(), &asof, now)?;
     }
     Ok(())
@@ -987,7 +998,8 @@ mod tests {
 
         // Re-import the unmodified export: nothing should change.
         let later = "2026-09-20T00:00:00Z";
-        let preview = import_assets(&v, &exported.csv, ImportMode::Apply, later).unwrap();
+        let preview =
+            import_assets(&v, &exported.csv, ImportMode::Apply, later, &later[..10]).unwrap();
         assert_eq!(preview.updates, 1);
         assert!(preview.errors.is_empty());
 
@@ -1013,8 +1025,14 @@ mod tests {
 
         let exported = export_assets(&v, NOW).unwrap();
         for _ in 0..3 {
-            import_assets(&v, &exported.csv, ImportMode::Apply, "2026-09-21T00:00:00Z")
-                .unwrap();
+            import_assets(
+                &v,
+                &exported.csv,
+                ImportMode::Apply,
+                "2026-09-21T00:00:00Z",
+                "2026-09-21",
+            )
+            .unwrap();
         }
 
         let count: i64 =
@@ -1041,7 +1059,8 @@ mod tests {
 
         // notes blank (preserve), storage_location "-" (clear).
         let csv = "asset_id,name,notes,storage_location\na1,Keep,,-\n";
-        import_assets(&v, csv, ImportMode::Apply, "2026-09-21T00:00:00Z").unwrap();
+        import_assets(&v, csv, ImportMode::Apply, "2026-09-21T00:00:00Z", "2026-09-21")
+            .unwrap();
 
         let (notes, location): (String, Option<String>) = v
             .conn()
@@ -1062,7 +1081,7 @@ mod tests {
         insert(&v, "a1", "Existing");
 
         let csv = "asset_id,name\na1,Renamed\n,Brand New\n";
-        let preview = import_assets(&v, csv, ImportMode::Preview, NOW).unwrap();
+        let preview = import_assets(&v, csv, ImportMode::Preview, NOW, &NOW[..10]).unwrap();
 
         assert_eq!(preview.updates, 1);
         assert_eq!(preview.creates, 1);
@@ -1083,7 +1102,7 @@ mod tests {
                    ,A,notanumber,,\n\
                    ,B,1,5000,\n\
                    ,C,1,notanumber,USD\n";
-        let preview = import_assets(&v, csv, ImportMode::Preview, NOW).unwrap();
+        let preview = import_assets(&v, csv, ImportMode::Preview, NOW, &NOW[..10]).unwrap();
 
         assert!(preview.errors.len() >= 3, "expected several errors, got {:?}", preview.errors);
         assert!(preview.errors.iter().any(|e| e.contains("quantity")));
@@ -1096,7 +1115,7 @@ mod tests {
         let v = vault(&dir.path().join("vault"));
 
         let csv = "asset_id,name,quantity\n,Good Row,1\n,Bad Row,notanumber\n";
-        let preview = import_assets(&v, csv, ImportMode::Apply, NOW).unwrap();
+        let preview = import_assets(&v, csv, ImportMode::Apply, NOW, &NOW[..10]).unwrap();
         assert!(!preview.errors.is_empty());
 
         let count: i64 =
@@ -1111,7 +1130,7 @@ mod tests {
         insert(&v, "a1", "One");
 
         let csv = "asset_id,name\na1,First\na1,Second\n";
-        let preview = import_assets(&v, csv, ImportMode::Preview, NOW).unwrap();
+        let preview = import_assets(&v, csv, ImportMode::Preview, NOW, &NOW[..10]).unwrap();
         assert!(preview.errors.iter().any(|e| e.contains("repeats")));
     }
 
@@ -1124,7 +1143,7 @@ mod tests {
 
         let theirs = export_assets(&b, NOW).unwrap();
         assert!(matches!(
-            import_assets(&a, &theirs.csv, ImportMode::Preview, NOW),
+            import_assets(&a, &theirs.csv, ImportMode::Preview, NOW, &NOW[..10]),
             Err(CsvError::WrongVault { .. })
         ));
     }
@@ -1148,7 +1167,7 @@ mod tests {
 
         assert!(
             matches!(
-                import_assets(&v, &exported.csv, ImportMode::Apply, NOW),
+                import_assets(&v, &exported.csv, ImportMode::Apply, NOW, &NOW[..10]),
                 Err(CsvError::StaleExport { .. })
             ),
             "an outdated spreadsheet must not silently overwrite newer edits"
@@ -1166,7 +1185,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(&dir.path().join("vault"));
         assert!(matches!(
-            import_assets(&v, "type_id,quantity\ngeneric,1\n", ImportMode::Preview, NOW),
+            import_assets(
+                &v,
+                "type_id,quantity\ngeneric,1\n",
+                ImportMode::Preview,
+                NOW,
+                &NOW[..10]
+            ),
             Err(CsvError::MissingColumn(_))
         ));
     }
@@ -1177,9 +1202,34 @@ mod tests {
         let v = vault(&dir.path().join("vault"));
         let huge = "x".repeat(MAX_FILE_BYTES + 1);
         assert!(matches!(
-            import_assets(&v, &huge, ImportMode::Preview, NOW),
+            import_assets(&v, &huge, ImportMode::Preview, NOW, &NOW[..10]),
             Err(CsvError::TooLarge)
         ));
+    }
+
+    #[test]
+    fn blank_dates_fall_on_the_owners_calendar_not_utc() {
+        // 9pm on the 19th in New York is already the 20th in UTC.
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir.path().join("vault"));
+        import_assets(
+            &v,
+            "asset_id,name,quantity,current_amount_minor,current_currency\n,Evening buy,1,5000,USD\n",
+            ImportMode::Apply,
+            "2026-09-20T01:00:00Z",
+            "2026-09-19",
+        )
+        .unwrap();
+        let (held, valued): (String, String) = v
+            .conn()
+            .query_row(
+                "SELECT e.effective_date, m.asof FROM asset_events e
+                 JOIN valuations m ON m.asset_id = e.asset_id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((held.as_str(), valued.as_str()), ("2026-09-19", "2026-09-19"));
     }
 
     #[test]
@@ -1187,8 +1237,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(&dir.path().join("vault"));
 
-        import_assets(&v, "asset_id,name,quantity\n,Imported,3\n", ImportMode::Apply, NOW)
-            .unwrap();
+        import_assets(
+            &v,
+            "asset_id,name,quantity\n,Imported,3\n",
+            ImportMode::Apply,
+            NOW,
+            &NOW[..10],
+        )
+        .unwrap();
 
         let (kind, delta): (String, String) = v
             .conn()
@@ -1213,6 +1269,7 @@ mod tests {
             "asset_id,name,quantity\nx1,Silver rounds,10\n",
             ImportMode::Apply,
             NOW,
+            &NOW[..10],
         )
         .unwrap();
 
@@ -1221,6 +1278,7 @@ mod tests {
             "asset_id,name,quantity\nx1,Silver rounds,7\n",
             ImportMode::Apply,
             NOW,
+            &NOW[..10],
         )
         .unwrap();
 
@@ -1247,7 +1305,7 @@ mod tests {
         let v = vault(&dir.path().join("vault"));
         let csv = "asset_id,name,quantity,current_amount_minor,current_currency,value_asof\n\
                    c1,Comic,1,45000,USD,2026-09-01\n";
-        import_assets(&v, csv, ImportMode::Apply, NOW).unwrap();
+        import_assets(&v, csv, ImportMode::Apply, NOW, &NOW[..10]).unwrap();
 
         assert_eq!(count(&v, "SELECT count(*) FROM valuations WHERE asset_id='c1'"), 1);
         let total = crate::valuations::portfolio_total_as_of(
@@ -1263,7 +1321,7 @@ mod tests {
         let updated =
             "asset_id,name,current_amount_minor,current_currency\nc1,Comic,52000,USD\n";
         for _ in 0..3 {
-            import_assets(&v, updated, ImportMode::Apply, NOW).unwrap();
+            import_assets(&v, updated, ImportMode::Apply, NOW, &NOW[..10]).unwrap();
         }
         assert_eq!(count(&v, "SELECT count(*) FROM valuations WHERE asset_id='c1'"), 2);
         let current: i64 = v
@@ -1283,7 +1341,7 @@ mod tests {
         v.conn().execute("UPDATE assets SET pricing='market' WHERE asset_id='m1'", []).unwrap();
 
         let csv = "asset_id,name,current_amount_minor,current_currency\nm1,Eagles,250000,USD\n";
-        import_assets(&v, csv, ImportMode::Apply, NOW).unwrap();
+        import_assets(&v, csv, ImportMode::Apply, NOW, &NOW[..10]).unwrap();
         let pricing: String = v
             .conn()
             .query_row("SELECT pricing FROM assets WHERE asset_id='m1'", [], |r| r.get(0))
@@ -1299,7 +1357,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(&dir.path().join("vault"));
         let csv = "asset_id,name,quantity,acquired_date\nd1,Old coin,1,2019-04-02\n";
-        import_assets(&v, csv, ImportMode::Apply, NOW).unwrap();
+        import_assets(&v, csv, ImportMode::Apply, NOW, &NOW[..10]).unwrap();
         let date: String = v
             .conn()
             .query_row("SELECT effective_date FROM asset_events WHERE asset_id='d1'", [], |r| {
@@ -1318,7 +1376,7 @@ mod tests {
                    ,B,generic,misplaced,2026-01-01,1\n\
                    ,C,generic,active,January,1\n\
                    ,D,generic,active,2026-01-01,-2\n";
-        let preview = import_assets(&v, csv, ImportMode::Apply, NOW).unwrap();
+        let preview = import_assets(&v, csv, ImportMode::Apply, NOW, &NOW[..10]).unwrap();
         assert_eq!(preview.errors.len(), 4, "{:?}", preview.errors);
         assert!(preview.errors[0].contains("spaceship"));
         assert!(preview.errors[1].contains("status"));
