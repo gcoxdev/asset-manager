@@ -16,7 +16,7 @@
     "build:windows": "node scripts/build.mjs msi",
     "build:macos": "node scripts/build.mjs dmg",
     "build:macos-universal": "node scripts/build.mjs dmg-universal",
-    "test": "node --test tests/",
+    "test": "node --test \"tests/*.test.mjs\"",
     "test:fixtures": "cd src-tauri && UI_FIXTURES_DIR=../tests-ui/.fixtures cargo test --quiet --test ui_fixtures",
     "test:ui": "npm run build && npm run test:fixtures && playwright test -c tests-ui/playwright.config.mjs",
     "screenshots": "npm run build && cd src-tauri && UI_DEMO_DIR=../tests-ui/.fixtures cargo test --quiet --test demo_fixtures && cd .. && UI_FIXTURES=demo.json SCREENSHOTS=1 playwright test -c tests-ui/playwright.config.mjs screenshots && (command -v pngquant >/dev/null && pngquant --quality 85-98 --speed 1 --force --ext .png ../../docs/screenshots/*.png || true)"
