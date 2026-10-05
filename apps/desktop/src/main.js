@@ -30,6 +30,7 @@ import { renderAsset } from "./views/asset.js";
 import { renderMarkets } from "./views/markets.js";
 import { renderReports } from "./views/reports.js";
 import { renderSettings, rotateRecovery } from "./views/settings.js";
+import { renderHelp } from "./views/help.js";
 
 const app = document.getElementById("app");
 
@@ -40,6 +41,7 @@ const NAV = [
   ["markets", "Markets", "markets"],
   ["reports", "Reports", "reports"],
   ["settings", "Settings", "settings"],
+  ["help", "Help", "info"],
 ];
 
 const VIEWS = {
@@ -50,6 +52,7 @@ const VIEWS = {
   markets: renderMarkets,
   reports: renderReports,
   settings: renderSettings,
+  help: renderHelp,
 };
 
 let current = { view: "overview", params: {} };
@@ -278,6 +281,12 @@ async function remindUnsavedRecoveryKey() {
 window.addEventListener("keydown", (event) => {
   if (phase !== "unlocked") return;
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName ?? "");
+  // "?" opens the help.
+  if (event.key === "?" && !typing && !document.querySelector(".modal-backdrop")) {
+    event.preventDefault();
+    navigate("help", { focusSearch: true });
+    return;
+  }
   if (event.key === "/" && !typing && !document.querySelector(".modal-backdrop")) {
     const search = document.querySelector("[data-search]");
     if (search) {

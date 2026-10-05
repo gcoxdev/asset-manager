@@ -1,5 +1,6 @@
 // Welcome, unlock, restore, and the recovery-key ceremony.
 
+import { openHelpDialog } from "./help.js";
 import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import QRCode from "qrcode";
 
@@ -36,7 +37,10 @@ export function showOnboarding(root, { mode, onUnlocked, onSessionOpened, notice
         )
       )
     ),
-    h("section", { class: "onboard-form" }, panel)
+    h("section", { class: "onboard-form" },
+      // Help matters most before you are in: a forgotten passphrase, a restore.
+      h("button", { class: "btn btn-ghost btn-sm onboard-help", onclick: () => openHelpDialog(mode === "welcome" ? "create-vault" : "unlocking") }, icon("info", { size: 15 }), "Help"),
+      panel)
   );
   mount(root, page);
 
