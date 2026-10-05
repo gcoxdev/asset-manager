@@ -109,6 +109,7 @@ test("a PDF document opens in the viewer and renders its pages", async ({ page }
     return dark;
   }), { timeout: 10_000 }).toBeGreaterThan(200);
   await expect(viewer.getByRole("img", { name: "Page 2 of 2" })).toHaveCount(1);
+  expect(await callsTo(page, "read_attachment")).toEqual([{ assetId: ids().comic, objectId: ids().pdf }]);
 
   await viewer.getByRole("button", { name: "Zoom in" }).click();
   await expect(viewer.locator(".pdf-zoom")).toHaveText(/%$/);
@@ -122,14 +123,16 @@ test("a PDF document opens in the viewer and renders its pages", async ({ page }
   await expect(page.locator(".pdf-page canvas")).toHaveCount(0);
 });
 
-test("a password-protected PDF says so instead of failing", async ({ page }) => {
+test.describe("with a password-protected PDF", () => {
   // The sample appraisal, encrypted with qpdf (user password "secret").
-  const encrypted = readFileSync(new URL("./encrypted.pdf", import.meta.url));
-  await page.route("http://asset.localhost/media/**", (route) => route.fulfill({ status: 200, contentType: "application/pdf", body: encrypted }));
+  test.use({ media: async ({}, use) => use(() => readFileSync(new URL("./encrypted.pdf", import.meta.url))) });
+
+  test("the viewer says so instead of failing", async ({ page }) => {
   await page.goto("/");
   await openAsset(page, "Amazing Fantasy #15");
   await page.getByRole("button", { name: "Appraisal 2026", exact: true }).click();
   await expect(page.getByRole("dialog").locator(".pdf-error")).toContainText("password-protected");
+  });
 });
 
 test("sets show how complete they are", async ({ page }) => {

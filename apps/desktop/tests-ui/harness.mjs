@@ -59,6 +59,12 @@ function installBackend({ calls }) {
       }
       if (cmd.startsWith("plugin:")) return null;
       state.calls.push({ cmd, args: structuredClone(args) });
+      // Raw-byte commands answer with an ArrayBuffer, as Tauri's do.
+      if (cmd === "read_attachment") {
+        const response = await fetch(`/__test-bytes/${args.assetId}/${args.objectId}`);
+        if (!response.ok) throw { kind: "internal", message: "that file is not attached to this asset" };
+        return response.arrayBuffer();
+      }
       // A test's own answer, worked out on the test side (no eval here:
       // the page runs under the app's CSP).
       const o = await window.__override(cmd, args);
@@ -91,7 +97,11 @@ export const test = base.extend({
   /** This test's own copy of the overrides, to change while it runs. */
   answers: async ({ overrides }, use) => use({ ...overrides }),
 
-  page: async ({ page, answers }, use) => {
+  /** Attachment bytes by `(assetId, objectId)`; null when not attached. */
+  media: async ({}, use) =>
+    use((assetId, objectId) => (assetId === fixtures().ids.comic && objectId === fixtures().ids.pdf ? readFileSync(pdfPath) : null)),
+
+  page: async ({ page, answers, media }, use) => {
     const data = fixtures();
     await page.exposeFunction("__override", async (cmd, args) => {
       if (!(cmd in answers)) return { handled: false };
@@ -108,11 +118,19 @@ export const test = base.extend({
       const response = await route.fetch();
       await route.fulfill({ response, headers: { ...response.headers(), "content-security-policy": CSP } });
     });
-    // Vault media, as the asset:// handler would serve it.
+    // Vault media, as the asset:// handler would serve it — to images
+    // only. The handler is another origin to the page and sends no CORS
+    // headers, so WebKit refuses a script that tries to read it; refuse the
+    // same here rather than let such code pass.
     await page.route("http://asset.localhost/media/**", async (route) => {
-      const id = new URL(route.request().url()).pathname.split("/").pop();
-      if (id === data.ids.pdf) return route.fulfill({ status: 200, contentType: "application/pdf", body: readFileSync(pdfPath) });
+      if (["fetch", "xhr"].includes(route.request().resourceType())) return route.abort("accessdenied");
       return route.fulfill({ status: 404 });
+    });
+    // What read_attachment returns, by asset and object.
+    await page.route("http://127.0.0.1:4173/__test-bytes/**", async (route) => {
+      const [, , assetId, objectId] = new URL(route.request().url()).pathname.split("/");
+      const body = media(assetId, objectId);
+      return body ? route.fulfill({ status: 200, body }) : route.fulfill({ status: 404 });
     });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));

@@ -200,15 +200,15 @@ permits no remote origins. Decrypted images are served over a custom protocol
 with `Cache-Control: no-store`, so the WebView does not cache plaintext to
 disk.
 
-PDFs open in the app through a bundled pdf.js: the document's bytes are
-fetched from the same protocol into memory and drawn onto canvases, which are
-emptied when the viewer closes. A PDF is untrusted input, so the viewer runs
+PDFs open in the app through a bundled pdf.js: the document's bytes come
+over IPC (`read_attachment`, scoped to the asset like "Save a copy…") into
+memory and are drawn onto canvases, which are emptied when the viewer closes. A PDF is untrusted input, so the viewer runs
 it with the least pdf.js offers — no document scripts, no XFA forms, no
 `eval` (the CSP forbids it regardless), and no WebAssembly (the plain-JS
 image decoders are used instead, so the CSP need not allow
 `wasm-unsafe-eval`). Parsing happens in a worker loaded from the app itself.
-`connect-src` allows `'self'` (pdf.js's fonts and character maps, shipped
-with the app) and the read-only media protocol; still no remote origin.
+`connect-src` adds only `'self'`, for pdf.js's fonts and character maps
+shipped with the app; still no remote origin.
 
 ---
 

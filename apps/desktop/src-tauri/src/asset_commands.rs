@@ -1136,24 +1136,54 @@ pub fn export_attachment<R: Runtime>(
         return Err(bad_input("choose a location outside the vault folder"));
     }
     let bytes = session
-        .with_vault(|vault| {
-            let attached: i64 = vault
-                .conn()
-                .query_row(
-                    "SELECT count(*) FROM asset_media WHERE asset_id = ?1 AND object_id = ?2",
-                    [&asset_id, &object_id],
-                    |r| r.get(0),
-                )
-                .map_err(storage)?;
-            if attached == 0 {
-                return Err(storage("that file is not attached to this asset"));
-            }
-            am_storage::objects::load_object(vault, &root, &object_id).map_err(storage)
-        })
+        .with_vault(|vault| load_attached(vault, &root, &asset_id, &object_id))
         .map_err(IpcError::from)?;
     // Written outside the vault lock: a slow disk must not hold the session.
     std::fs::write(&target, bytes.as_slice())
         .map_err(|e| IpcError { kind: "unwritable_file".into(), message: e.to_string() })
+}
+
+/// An attachment's decrypted bytes, for the in-app viewer. Returned as a
+/// raw IPC body — an ArrayBuffer in the WebView, never written to disk.
+///
+/// Not fetched from the asset:// handler: that is another origin to the
+/// page, and WebKit refuses a script's cross-origin read of it (images are
+/// exempt, which is why the gallery works).
+#[tauri::command]
+pub fn read_attachment<R: Runtime>(
+    app: AppHandle<R>,
+    session: State<'_, Session>,
+    asset_id: String,
+    object_id: String,
+) -> IpcResult<tauri::ipc::Response> {
+    session.touch();
+    let root = vault_root(&app).map_err(other)?;
+    let bytes = session
+        .with_vault(|vault| load_attached(vault, &root, &asset_id, &object_id))
+        .map_err(IpcError::from)?;
+    Ok(tauri::ipc::Response::new(bytes.to_vec()))
+}
+
+/// Decrypt an object, but only as an attachment of the asset named: an ID
+/// alone, from anywhere, opens nothing.
+fn load_attached(
+    vault: &Vault,
+    root: &std::path::Path,
+    asset_id: &str,
+    object_id: &str,
+) -> Result<zeroize::Zeroizing<Vec<u8>>, SessionError> {
+    let attached: i64 = vault
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM asset_media WHERE asset_id = ?1 AND object_id = ?2",
+            [asset_id, object_id],
+            |r| r.get(0),
+        )
+        .map_err(storage)?;
+    if attached == 0 {
+        return Err(storage("that file is not attached to this asset"));
+    }
+    am_storage::objects::load_object(vault, root, object_id).map_err(storage)
 }
 
 /// What an attachment is, as the frontend sends it.

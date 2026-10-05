@@ -38,6 +38,27 @@ fn invoke(
     .map(|body| body.deserialize::<Value>().unwrap())
 }
 
+/// Invoke a command that answers with raw bytes (an ArrayBuffer in the UI).
+fn raw(webview: &WebviewWindow<tauri::test::MockRuntime>, cmd: &str, args: Value) -> Vec<u8> {
+    let body = get_ipc_response(
+        webview,
+        InvokeRequest {
+            cmd: cmd.into(),
+            callback: CallbackFn(0),
+            error: CallbackFn(1),
+            url: "tauri://localhost".parse().unwrap(),
+            body: InvokeBody::Json(args),
+            headers: Default::default(),
+            invoke_key: INVOKE_KEY.to_string(),
+        },
+    )
+    .unwrap_or_else(|e| panic!("{cmd} failed: {e}"));
+    match body {
+        tauri::ipc::InvokeResponseBody::Raw(bytes) => bytes,
+        other => panic!("{cmd} answered with JSON, not bytes: {other:?}"),
+    }
+}
+
 /// Invoke and insist on success, with the error in the panic message.
 fn ok(webview: &WebviewWindow<tauri::test::MockRuntime>, cmd: &str, args: Value) -> Value {
     invoke(webview, cmd, args).unwrap_or_else(|e| panic!("{cmd} failed: {e}"))
@@ -693,6 +714,15 @@ fn the_frontend_contract_holds_end_to_end() {
         json!({ "assetId": btc, "path": pdf_path.to_str().unwrap(),
                 "details": { "kind": "receipt", "date": "2024-01-02" } }),
     );
+    // The viewer reads it as bytes over IPC, from this asset only.
+    let read = json!({ "assetId": btc, "objectId": receipt["object_id"] });
+    assert_eq!(raw(&w, "read_attachment", read), b"%PDF-1.4 receipt");
+    assert!(invoke(
+        &w,
+        "read_attachment",
+        json!({ "assetId": eagles, "objectId": receipt["object_id"] })
+    )
+    .is_err());
     let attached = ok(&w, "list_photos", json!({ "assetId": btc }));
     let doc =
         attached.as_array().unwrap().iter().find(|p| p["object_id"] == receipt["object_id"]);

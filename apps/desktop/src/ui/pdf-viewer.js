@@ -1,13 +1,13 @@
 // An in-app viewer for PDF documents in the vault.
 //
-// The bytes come from the asset:// handler — decrypted in memory, never
-// written to disk — and pdf.js draws each page onto a canvas. Nothing runs
+// The bytes come over IPC — decrypted in memory, never written to disk —
+// and pdf.js draws each page onto a canvas. Nothing runs
 // from the document: no scripts, no forms, no eval, no WebAssembly. The
 // library loads on first use so it costs nothing until a PDF is opened.
 
 import { h } from "../lib/dom.js";
 import { icon } from "../lib/icons.js";
-import { mediaUrl } from "../lib/media.js";
+import { call } from "../lib/api.js";
 import { modal } from "./components.js";
 
 const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3];
@@ -24,10 +24,10 @@ async function pdfjs() {
 }
 
 /**
- * Open a PDF attachment. `title` heads the viewer; `actions` are extra
- * header buttons (e.g. "Save a copy…").
+ * Open a PDF attached to an asset. `title` heads the viewer; `actions` are
+ * extra header buttons (e.g. "Save a copy…").
  */
-export async function viewPdf(objectId, { title, actions = [] } = {}) {
+export async function viewPdf(assetId, objectId, { title, actions = [] } = {}) {
   const pages = h("div", { class: "pdf-pages", tabindex: "0", "aria-label": `${title}, document` });
   const status = h("span", { class: "pdf-status", "aria-live": "polite" }, "Opening…");
   const zoomLabel = h("span", { class: "pdf-zoom" }, "Fit");
@@ -73,9 +73,10 @@ export async function viewPdf(objectId, { title, actions = [] } = {}) {
   });
 
   try {
-    const [lib, response] = await Promise.all([pdfjs(), fetch(mediaUrl(objectId))]);
-    if (!response.ok) throw new Error("The document could not be read. Is the vault still unlocked?");
-    const data = new Uint8Array(await response.arrayBuffer());
+    // Not fetch() from the asset:// handler: to WebKit that is another
+    // origin, and a script may not read it.
+    const [lib, bytes] = await Promise.all([pdfjs(), call("read_attachment", { assetId, objectId })]);
+    const data = new Uint8Array(bytes);
     if (closed) return;
     const base = new URL("pdfjs/", document.baseURI).href;
     task = lib.getDocument({

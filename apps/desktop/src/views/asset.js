@@ -216,7 +216,7 @@ function documentsCard(a, attachments, reload) {
 function viewDocument(a, d) {
   const title = d.title || fmt.DOC_KIND_LABELS[d.doc_kind] || "Document";
   if (d.media_type === "application/pdf") {
-    viewPdf(d.object_id, {
+    viewPdf(a.asset_id, d.object_id, {
       title,
       actions: [h("button", { class: "btn btn-ghost btn-sm", onclick: () => saveAttachmentCopy(a, d) }, icon("download", { size: 14 }), "Save a copy…")],
     });
