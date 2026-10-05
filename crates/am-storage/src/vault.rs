@@ -112,7 +112,12 @@ impl Vault {
         conn.execute(
             "INSERT INTO vault_meta (id, vault_id, key_epoch, schema_version, created_at)
              VALUES (1, ?1, ?2, ?3, ?4)",
-            rusqlite::params![hex(&header.vault_id), header.key_epoch, SCHEMA_VERSION, now],
+            rusqlite::params![
+                hex(&header.vault_id),
+                epoch_to_sql(header.key_epoch)?,
+                SCHEMA_VERSION,
+                now
+            ],
         )?;
 
         write_header_atomic(root, &header)?;
@@ -170,7 +175,7 @@ impl Vault {
             // working on the next unlock.
             conn.execute(
                 "UPDATE vault_meta SET key_epoch = ?1 WHERE id = 1",
-                rusqlite::params![opened.key_epoch],
+                rusqlite::params![epoch_to_sql(opened.key_epoch)?],
             )?;
             opened
         } else if let Some(paired) = [Some(&current), staged.as_ref()]
@@ -324,7 +329,7 @@ impl Vault {
     fn advance_db_epoch(&self, epoch: u64) -> Result<(), VaultError> {
         self.conn.execute(
             "UPDATE vault_meta SET key_epoch = ?1 WHERE id = 1",
-            rusqlite::params![epoch],
+            rusqlite::params![epoch_to_sql(epoch)?],
         )?;
         Ok(())
     }
@@ -378,11 +383,20 @@ fn unlock_header(
 }
 
 fn db_pairing(conn: &Connection) -> Result<([u8; 16], u64), VaultError> {
-    let (db_vault_id, db_epoch): (String, u64) =
+    let (db_vault_id, db_epoch): (String, i64) =
         conn.query_row("SELECT vault_id, key_epoch FROM vault_meta WHERE id = 1", [], |r| {
             Ok((r.get(0)?, r.get(1)?))
         })?;
+    let db_epoch = u64::try_from(db_epoch)
+        .map_err(|_| VaultError::Other("the database's key epoch is negative".into()))?;
     Ok((parse_hex16(&db_vault_id)?, db_epoch))
+}
+
+/// SQLite integers are signed 64-bit. The key epoch is a small counter;
+/// stored exactly as earlier builds stored it (rusqlite used to convert
+/// u64 the same way, failing above i64::MAX).
+fn epoch_to_sql(epoch: u64) -> Result<i64, VaultError> {
+    i64::try_from(epoch).map_err(|_| VaultError::Other("key epoch out of range".into()))
 }
 
 fn read_header(path: &Path) -> Result<VaultHeader, VaultError> {
