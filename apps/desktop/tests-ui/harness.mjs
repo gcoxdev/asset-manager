@@ -3,7 +3,8 @@
 import { readFileSync } from "node:fs";
 import { test as base, expect } from "@playwright/test";
 
-const fixturesPath = new URL("./.fixtures/fixtures.json", import.meta.url);
+// The recorded responses: the test catalog, or the demo one for screenshots.
+const fixturesPath = new URL(`./.fixtures/${process.env.UI_FIXTURES ?? "fixtures.json"}`, import.meta.url);
 const pdfPath = new URL("./.fixtures/sample.pdf", import.meta.url);
 const conf = JSON.parse(readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"));
 

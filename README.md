@@ -7,6 +7,15 @@ collectibles.
 > **Status: alpha.** Feature-complete for personal use on Linux. Not yet
 > signed or released; see [Before a public release](#before-a-public-release).
 
+![The overview: collection value, gain against cost, and value over the past year](docs/screenshots/overview.png)
+
+| | |
+|---|---|
+| ![Unlocking the encrypted vault](docs/screenshots/unlock.png) | ![The holdings list, sorted by value](docs/screenshots/holdings.png) |
+| Unlock with a passphrase — or the recovery key | Every holding, its cost, value, source and gain |
+
+<sub>Screenshots use a made-up demo catalog, built through the app's own commands (`npm --prefix apps/desktop run screenshots`).</sub>
+
 ## Why
 
 Two jobs, in priority order:
@@ -56,6 +65,9 @@ valuation is a first-class path rather than a fallback.
 - **Documents viewed in the app**: PDFs open in a built-in viewer, decrypted
   in memory only. "Save a copy…" writes a decrypted photo or PDF where you
   choose, after saying it will be unencrypted.
+- **Built-in help** covering every feature step by step, searchable, and
+  reachable from the unlock screen for when you cannot get in. Press `?`
+  anywhere.
 - **Watch-only Bitcoin balances**, behind their own opt-in. Seed phrases and
   private keys are refused before they can be stored.
 
