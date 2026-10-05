@@ -222,6 +222,48 @@ mod tests {
         assert_ne!(db.as_ref(), &data_key, "subkey must not equal the data key");
     }
 
+    /// Exact outputs, pinned. "Deterministic" is not enough: a library
+    /// upgrade that changed these would still be deterministic, and every
+    /// existing vault would stop opening. Each value was checked against an
+    /// independent implementation — Argon2id against the reference C
+    /// `argon2` tool and argon2-cffi, HKDF and the fingerprint against
+    /// Python's hmac/hashlib.
+    #[test]
+    fn derivations_match_pinned_known_answers() {
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let params = KdfParams { memory_cost_kib: 8 * 1024, iterations: 1, parallelism: 1 };
+        let kek =
+            derive_kek("correct horse battery staple", &[7u8; SALT_LEN], &params).unwrap();
+        assert_eq!(
+            hex(kek.as_ref()),
+            "c3e5799580604bcbebe0747e39899402f27880aae8eab2500327c934a565de64"
+        );
+
+        let data_key = [1u8; KEY_LEN];
+        for (purpose, expected) in [
+            (
+                Purpose::Database,
+                "1b70edd0302c612ccf1aa0c228ac7279857adaf662998e34764181a2eb7ff090",
+            ),
+            (
+                Purpose::Object,
+                "cc4de6b9394cb4641ff7a224a14e8738d618ff3d8e29c4b72c09b94fc5c6ade6",
+            ),
+            (
+                Purpose::Thumbnail,
+                "770a3b7b7ffc4aae8baa9ad3c833df3b574aea6c9cf78774d77f178376e7ce4b",
+            ),
+        ] {
+            assert_eq!(
+                hex(derive_subkey(&data_key, purpose).as_ref()),
+                expected,
+                "{purpose:?}"
+            );
+        }
+
+        assert_eq!(recovery_fingerprint("ABCD-EFGH-IJKL-MNOP-QRST-UVWX-YZ23-4567"), "NQWZJJRC");
+    }
+
     #[test]
     fn subkey_derivation_is_stable() {
         // Guards the on-disk format: if this changes, existing vaults break.

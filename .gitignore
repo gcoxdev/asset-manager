@@ -24,6 +24,10 @@ target/
 *.db-shm
 *.db-wal
 vault/
+# …except the test fixtures: vaults written by earlier builds, which
+# protect nothing and must be committed (crates/am-storage/tests/compat.rs).
+!crates/am-storage/tests/fixtures/*/vault/
+!crates/am-storage/tests/fixtures/*/vault/catalog.db
 test-vault/
 
 # Editor / OS

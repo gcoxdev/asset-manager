@@ -1,0 +1,32 @@
+{
+  "format": "asset-manager-vault-v1",
+  "format_version": 1,
+  "vault_id": "4287a8b000b842e20e80040df38ec5ab",
+  "key_epoch": 1,
+  "created_at": "2026-10-05T00:00:00Z",
+  "passphrase_slot": {
+    "salt": "69a2c28f7d7929ac359bfac2d44d29de",
+    "params": {
+      "memory_cost_kib": 8192,
+      "iterations": 1,
+      "parallelism": 1
+    },
+    "wrapped": {
+      "nonce": "d95a242d37de3ff987d84f6026fbc27fdb17d1c373661b25",
+      "ciphertext": "331c6a6866c7303ed81470d847bf8a6f502284e06c4e6522d33334d90835e30edca4698b06eec8376227a645ed486272"
+    }
+  },
+  "recovery_slot": {
+    "salt": "3276eb3a658df76e83467482a201d1fb",
+    "params": {
+      "memory_cost_kib": 8192,
+      "iterations": 1,
+      "parallelism": 1
+    },
+    "wrapped": {
+      "nonce": "3372c324be6f0ea79b3fc6ddfeb1f08ca3603f8957a9707f",
+      "ciphertext": "0aa2c94ab3a3d96a19f57b5693a16ac0565105179048899193e45cfe452e03b885c5f3bd86238f8b84e90c6539acf872"
+    }
+  },
+  "recovery_fingerprint": "NT4NVMKP"
+}
