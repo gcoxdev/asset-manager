@@ -77,9 +77,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: rustsec/audit-check@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+      # The pinned toolchain, and cargo-audit built from its own lockfile:
+      # installed unlocked, it pulls dependencies that need a newer Rust than
+      # the pinned one, and the job fails before auditing anything.
+      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Rust advisories
+        # Fails on a vulnerability; unmaintained or unsound crates are
+        # reported as warnings.
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
       - uses: actions/setup-node@v4
         with:
           node-version: 22
