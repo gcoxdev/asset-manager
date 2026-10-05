@@ -14,7 +14,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { parseAst } from "rollup/parseAst";
+// Vite exports its bundler's parser (Rollup in 7, Rolldown in 8).
+import { parseAst } from "vite";
 
 const here = new URL("..", import.meta.url).pathname;
 const SRC = join(here, "src");
