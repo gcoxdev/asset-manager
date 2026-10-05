@@ -468,6 +468,33 @@ fn the_frontend_contract_holds_end_to_end() {
     assert_eq!(detail["asset"]["insured_display"], "15000.00 CHF", "stored currency wins");
     ok(&w, "update_settings", settings_in("USD"));
 
+    // Split part of a holding off; put both in a set.
+    let part = ok(
+        &w,
+        "split_asset",
+        json!({ "assetId": eagles, "quantity": "2", "name": "Gold Eagles — pair" }),
+    );
+    let pair = ok(&w, "get_asset", json!({ "assetId": part }));
+    assert_eq!(pair["asset"]["quantity"], "2");
+    let rest = ok(&w, "get_asset", json!({ "assetId": eagles }));
+    assert_eq!(rest["events"][0]["event_type"], "split");
+    let set = ok(
+        &w,
+        "save_set",
+        json!({ "name": "Eagles", "targetCount": 10, "add": [eagles, part] }),
+    );
+    assert_eq!(ok(&w, "list_sets", json!({}))[0]["members"], 2);
+    assert_eq!(ok(&w, "get_asset", json!({ "assetId": part }))["sets"][0][1], "Eagles");
+    let shares = ok(
+        &w,
+        "allocate_purchase",
+        json!({ "assetIds": [eagles, part], "total": "100.01", "byValue": false }),
+    );
+    assert_eq!(shares[0][1], "50.01 USD");
+    ok(&w, "delete_set", json!({ "setId": set }));
+    ok(&w, "delete_asset", json!({ "assetId": part }));
+    ok(&w, "purge_trash", json!({ "assetId": part }));
+
     // --- reports and charts -----------------------------------------------------
     let report = ok(
         &w,

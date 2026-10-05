@@ -12,6 +12,7 @@ import { busy, toast, confirmDialog, menuButton, sourceBadge, statusBadge, toggl
 import { valueChart } from "../ui/chart.js";
 import { openEditAsset, openUpdateValue, openRecordChange } from "./asset-forms.js";
 import { printLabels } from "./inventory.js";
+import { addToSet, openSets, splitAsset } from "./sets.js";
 
 /** Attribute keys that describe how to price an asset, not the item itself. */
 const INTERNAL = new Set(["preset", "coin_id", "symbol", "chain", "contract", "watch_address", "watch_chain", "custody", "metal", "weight_per_item", "weight_unit", "weight_basis", "purity", "premium_pct"]);
@@ -38,6 +39,8 @@ export async function renderAsset(root, params, ctx) {
       "divider",
       { label: "Edit tags…", icon: "tag", onSelect: () => editTags(a, reload) },
       { label: "Duplicate", icon: "copy", onSelect: () => duplicateAsset(a, ctx) },
+      a.status === "active" && Number(a.quantity) > 0 ? { label: "Split off part…", icon: "swap", onSelect: () => splitAsset(a, ctx) } : null,
+      { label: "Add to a set…", icon: "box", onSelect: () => addToSet([a.asset_id], { refresh: reload }) },
       { label: "Print label…", icon: "printer", onSelect: () => printLabels([a.asset_id]) },
       { label: "Edit history…", icon: "clock", onSelect: () => editHistory(a, reload) },
       "divider",
@@ -56,6 +59,9 @@ export async function renderAsset(root, params, ctx) {
           h("p", { class: "page-sub" }, [a.type_label, fmt.categoryLabel(a.category), a.storage_location].filter(Boolean).join(" · ")),
           a.tags?.length
             ? h("button", { class: "tag-list tag-list-button", title: "Edit tags", onclick: () => editTags(a, reload) }, a.tags.map((t) => h("span", { class: "tag-chip" }, t)))
+            : null,
+          detail.sets?.length
+            ? h("p", { class: "muted small" }, "In ", detail.sets.map(([id, name], i) => [i ? ", " : "", h("button", { class: "link", onclick: () => openSets(ctx, { focus: id }) }, name)]))
             : null
         )
       ),

@@ -292,6 +292,8 @@ pub struct AssetDetail {
     pub events: Vec<EventView>,
     /// Lost, retired and recovered, newest first.
     pub status_events: Vec<am_storage::lifecycle::StatusEvent>,
+    /// Sets this asset belongs to, as (set_id, name).
+    pub sets: Vec<(String, String)>,
     pub valuations: Vec<ValuationView>,
     pub photos: Vec<PhotoRef>,
     pub market: Option<MarketView>,
@@ -443,9 +445,25 @@ pub fn get_asset(session: State<'_, Session>, asset_id: String) -> IpcResult<Ass
             let mut status_events =
                 am_storage::lifecycle::history(vault, &asset_id).map_err(storage)?;
             status_events.reverse();
+            let sets = {
+                let mut stmt = vault
+                    .conn()
+                    .prepare(
+                        "SELECT s.set_id, s.name FROM set_members m JOIN sets s ON s.set_id = m.set_id
+                         WHERE m.asset_id = ?1 ORDER BY s.name",
+                    )
+                    .map_err(storage)?;
+                let rows = stmt
+                    .query_map([&asset_id], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map_err(storage)?
+                    .collect::<Result<Vec<(String, String)>, _>>()
+                    .map_err(storage)?;
+                rows
+            };
             Ok(AssetDetail {
                 events,
                 status_events,
+                sets,
                 valuations: valuations_of(vault, &asset_id)?,
                 photos: photos_of(vault, &asset_id)?,
                 market,

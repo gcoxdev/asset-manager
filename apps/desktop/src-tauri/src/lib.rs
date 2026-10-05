@@ -3,6 +3,7 @@
 pub mod asset_commands;
 pub mod backup_commands;
 pub mod balance_provider;
+pub mod bundles_commands;
 pub mod care_commands;
 pub mod collectible_commands;
 pub mod commands;
@@ -152,6 +153,14 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             inventory_commands::delete_check,
             inventory_commands::resolve_label,
             inventory_commands::label_data,
+            // Splits, sets and divided purchases
+            bundles_commands::split_asset,
+            bundles_commands::list_sets,
+            bundles_commands::set_members,
+            bundles_commands::save_set,
+            bundles_commands::remove_from_set,
+            bundles_commands::delete_set,
+            bundles_commands::allocate_purchase,
             // Item types
             types_commands::list_custom_types,
             types_commands::save_custom_type,

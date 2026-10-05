@@ -62,6 +62,9 @@ pub enum EventType {
     /// The recorded quantity was wrong. Adjusts without implying a trade, so
     /// a data-entry fix is not rendered as a purchase.
     Correct,
+    /// Part of the holding became an item of its own. Leaves like a removal
+    /// — cost reduced in proportion — but is not a sale.
+    Split,
 }
 
 impl EventType {
@@ -72,6 +75,7 @@ impl EventType {
             EventType::Remove => "remove",
             EventType::Dispose => "dispose",
             EventType::Correct => "correct",
+            EventType::Split => "split",
         }
     }
 
@@ -82,6 +86,7 @@ impl EventType {
             "remove" => EventType::Remove,
             "dispose" => EventType::Dispose,
             "correct" => EventType::Correct,
+            "split" => EventType::Split,
             _ => return None,
         })
     }
@@ -460,7 +465,7 @@ pub fn derive_cost(
                 // No recorded cost: still unknown.
                 (None, _) => {}
             },
-            EventType::Remove => {
+            EventType::Remove | EventType::Split => {
                 if let Some((total, code)) = &cost.amount {
                     if before > Decimal::ZERO && held >= Decimal::ZERO {
                         let scaled = (Decimal::from(*total) * held / before)

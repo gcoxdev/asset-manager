@@ -296,6 +296,7 @@ the user after the wrong problem. On mismatch, refuse to open and say so.
 | 14 | `fx_rates`: owner-recorded exchange rates (1 from = rate to, dated). Totals convert at the latest rate on or before their date; either direction serves; originals are never rewritten |
 | 15 | `wishes`: the wishlist — wanted items with a target price, quantity and priority, in their own table so no asset query can count them; a bought wish records the asset it became |
 | 16 | `inventory_checks` and `inventory_marks`: physical checks of a location (present, missing, counted), resumable; an asset's "last seen" comes from them. Labels encode only `AM:<asset id>` |
+| 17 | `asset_events` gains the `split` type (part of a holding moved to a new asset; cost scales like a removal and the new asset opens with the moved share). `sets` and `set_members`: named groups with an optional target count; a set has no value of its own |
 
 ---
 

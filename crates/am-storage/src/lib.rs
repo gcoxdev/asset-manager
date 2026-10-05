@@ -7,6 +7,7 @@
 
 pub mod assets;
 pub mod atomic;
+pub mod bundles;
 pub mod care;
 pub mod csv;
 pub mod custody;

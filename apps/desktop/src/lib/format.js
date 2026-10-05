@@ -227,6 +227,7 @@ export const EVENT_LABELS = {
   remove: "Sold some",
   dispose: "Sold",
   correct: "Corrected count",
+  split: "Split off",
 };
 
 export const DOC_KINDS = ["receipt", "appraisal", "certificate", "warranty", "manual", "other"];

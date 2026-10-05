@@ -15,6 +15,7 @@ import { openAddAsset } from "./asset-forms.js";
 import { exportCsv, importCsv } from "./reports.js";
 import { importSpreadsheet } from "./spreadsheet-import.js";
 import { openInventory, printLabels } from "./inventory.js";
+import { addToSet, dividePurchase, openSets } from "./sets.js";
 
 const PAGE = 300;
 
@@ -159,6 +160,7 @@ export async function renderHoldings(root, params, ctx) {
     { label: "Update many values…", icon: "edit", onSelect: () => { bulk = true; prefs.layout = "list"; draw(); } },
     { label: "Tags & locations…", icon: "tag", onSelect: () => manageNames(tagList, locationList, ctx) },
     { label: "Inventory checks…", icon: "check", onSelect: () => openInventory(ctx) },
+    { label: "Sets…", icon: "box", onSelect: () => openSets(ctx) },
     "divider",
     { label: "Import a spreadsheet…", icon: "upload", onSelect: () => importSpreadsheet(() => ctx.refresh()) },
     { label: "Re-import an export…", icon: "upload", onSelect: () => importCsv(() => ctx.refresh()) },
@@ -338,6 +340,8 @@ export async function renderHoldings(root, params, ctx) {
       } }, "Reminder…"),
       h("button", { class: "btn btn-secondary btn-sm", disabled: !n, onclick: () => ctx.navigate("reports", { claim: ids() }) }, "Start a claim…"),
       h("button", { class: "btn btn-secondary btn-sm", disabled: !n, onclick: () => printLabels(ids()) }, "Print labels…"),
+      h("button", { class: "btn btn-secondary btn-sm", disabled: !n, onclick: () => addToSet(ids(), ctx) }, "Add to set…"),
+      h("button", { class: "btn btn-secondary btn-sm", disabled: n < 2, onclick: () => dividePurchase(ids(), ctx) }, "Divide a purchase…"),
       h("button", { class: "btn btn-ghost btn-sm danger-text", disabled: !n, onclick: async () => {
         const ok = await confirmDialog({ title: `Move ${n} asset${n === 1 ? "" : "s"} to the trash?`, message: "They leave the catalog, totals and reports, and can be restored from Settings → Trash for 30 days.", confirmLabel: "Move to trash", danger: true });
         if (ok) run("Moved to trash", () => call("bulk_trash", { assetIds: ids() }));
