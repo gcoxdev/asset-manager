@@ -257,6 +257,25 @@ fn the_frontend_contract_holds_end_to_end() {
     ok(&w, "delete_asset", json!({ "assetId": euro }));
     ok(&w, "purge_trash", json!({ "assetId": euro }));
 
+    // A wish is never owned; buying it records the asset it became.
+    let wish = ok(
+        &w,
+        "save_wish",
+        json!({ "form": { "name": "Daytona", "type_id": "watch", "target": "15,000", "priority": "high" } }),
+    );
+    let wishes = ok(&w, "list_wishes", json!({}));
+    assert_eq!(wishes[0]["target_display"], "15000.00 USD");
+    let bought = ok(
+        &w,
+        "create_asset",
+        json!({ "form": { "type_id": "watch", "name": "Daytona", "acquired_price": "14500" } }),
+    );
+    ok(&w, "wish_acquired", json!({ "wishId": wish, "assetId": bought }));
+    assert_eq!(ok(&w, "list_wishes", json!({}))[0]["acquired_asset_id"], bought);
+    ok(&w, "delete_wish", json!({ "wishId": wish }));
+    ok(&w, "delete_asset", json!({ "assetId": bought }));
+    ok(&w, "purge_trash", json!({ "assetId": bought }));
+
     // A type of the owner's own, validated like the built-in ones.
     let quilt = ok(
         &w,

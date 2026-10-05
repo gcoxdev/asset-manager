@@ -1040,3 +1040,8 @@ details.evidence ul { margin: 4px 0 0; padding-left: 18px; }
 .rate-form { flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
 .rate-form select { width: auto; }
 .rate-form input[type="date"] { width: auto; }
+
+.wish-list { list-style: none; margin: 0; padding: 0; }
+.wish { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.wish:last-child { border-bottom: 0; }
+.wish-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }

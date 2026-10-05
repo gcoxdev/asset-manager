@@ -25,6 +25,7 @@ import { toast, closeAllModals, clearToasts, modal } from "./ui/components.js";
 import { showOnboarding } from "./views/onboarding.js";
 import { renderOverview } from "./views/overview.js";
 import { renderHoldings } from "./views/holdings.js";
+import { renderWishlist } from "./views/wishlist.js";
 import { renderAsset } from "./views/asset.js";
 import { renderMarkets } from "./views/markets.js";
 import { renderReports } from "./views/reports.js";
@@ -35,6 +36,7 @@ const app = document.getElementById("app");
 const NAV = [
   ["overview", "Overview", "overview"],
   ["holdings", "Holdings", "holdings"],
+  ["wishlist", "Wishlist", "star"],
   ["markets", "Markets", "markets"],
   ["reports", "Reports", "reports"],
   ["settings", "Settings", "settings"],
@@ -43,6 +45,7 @@ const NAV = [
 const VIEWS = {
   overview: renderOverview,
   holdings: renderHoldings,
+  wishlist: renderWishlist,
   asset: renderAsset,
   markets: renderMarkets,
   reports: renderReports,

@@ -185,6 +185,13 @@ function metalTypeFor(metal, preset) {
   return METAL_TYPE[metal] ?? "gold_bullion";
 }
 
+/** The kind whose form creates a given type. */
+export function kindForType(typeId) {
+  if (["gold_bullion", "silver_bullion", "platinum_bullion", "palladium_bullion", "junk_silver", "sovereign_coin"].includes(typeId)) return "metal";
+  if (typeId === "crypto") return "crypto";
+  return allKinds().find((k) => k.type === typeId)?.id ?? "generic";
+}
+
 /** Which form an existing asset uses. */
 function kindOf(asset, collectibleIds) {
   if (asset.attrs.metal) return "metal";
@@ -202,13 +209,13 @@ function amountOf(display) {
 // ------------------------------------------------------------ add / edit
 
 /** Open the add flow: choose a kind, then fill the form. */
-export async function openAddAsset({ onSaved, kind } = {}) {
+export async function openAddAsset({ onSaved, kind, seed } = {}) {
   await loadCustomKinds();
   const m = modal({ title: "Add to your catalog", subtitle: "What are you adding?", size: "lg", body: h("div") });
   const body = m.dialog.querySelector(".modal-body");
 
   const showForm = (kindId) => {
-    renderForm(m, body, { mode: "create", kindId, onSaved: (id) => { m.close(id); onSaved?.(id); } });
+    renderForm(m, body, { mode: "create", kindId, asset: seed, onSaved: (id) => { m.close(id); onSaved?.(id); } });
   };
 
   if (kind) return showForm(kind), m.done;

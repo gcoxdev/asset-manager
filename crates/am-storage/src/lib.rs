@@ -28,6 +28,7 @@ pub mod summary;
 pub mod thumbs;
 pub mod valuations;
 pub mod vault;
+pub mod wishlist;
 
 use rusqlite::Connection;
 use zeroize::Zeroizing;

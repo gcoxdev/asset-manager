@@ -21,6 +21,7 @@ pub mod session;
 pub mod spreadsheet_commands;
 pub mod types_commands;
 pub mod valuation_commands;
+pub mod wishlist_commands;
 
 use std::time::Duration;
 
@@ -136,6 +137,11 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             fx_commands::list_rates,
             fx_commands::record_rate,
             fx_commands::delete_rate,
+            // Wishlist
+            wishlist_commands::list_wishes,
+            wishlist_commands::save_wish,
+            wishlist_commands::delete_wish,
+            wishlist_commands::wish_acquired,
             // Item types
             types_commands::list_custom_types,
             types_commands::save_custom_type,
