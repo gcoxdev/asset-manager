@@ -13,7 +13,7 @@ argon2 = "0.6"
 chacha20poly1305 = { version = "0.10", features = ["std"] }
 chrono = { version = "0.4", features = ["serde"] }
 data-encoding = "2"
-hkdf = "0.12"
+hkdf = "0.13"
 # default-features off: we want no image formats we do not explicitly allow,
 # and none of the codec surface we are not serving.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
