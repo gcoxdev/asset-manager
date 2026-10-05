@@ -181,3 +181,7 @@ WebKitGTK/Mesa issue, not a configuration problem.
 Report vulnerabilities privately — see [SECURITY.md](SECURITY.md). How
 releases are checked and signed, and how to verify a download, is in
 [docs/releasing.md](docs/releasing.md).
+
+Release signing key: **none published yet**. Until a fingerprint appears
+here, releases are unsigned; check downloads against the build-provenance
+attestation instead (`gh attestation verify`, see the release notes).

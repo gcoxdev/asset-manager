@@ -6,8 +6,11 @@ who downloads it can check it is the build that was made.
 ## Before tagging
 
 - [ ] `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`,
-      `npm --prefix apps/desktop test` and the frontend build pass on the
-      pinned toolchain (`rust-toolchain.toml`) — CI runs exactly these.
+      `npm --prefix apps/desktop test`, the browser tests
+      (`npm --prefix apps/desktop run test:ui`) and the frontend build pass on
+      the pinned toolchain (`rust-toolchain.toml`) — CI runs exactly these.
+- [ ] The version in `Cargo.toml` and `apps/desktop/src-tauri/tauri.conf.json`
+      is the one being tagged (the release workflow refuses a mismatch).
 - [ ] `cargo audit` and `npm --prefix apps/desktop audit --omit=dev` are
       clean, or each finding is assessed and noted in the release notes.
 - [ ] New dependencies since the last release are reviewed: licence
@@ -36,22 +39,55 @@ the built artifact, not a development build:
 
 Do not claim a platform is supported until it has passed these.
 
-## Artifacts and checksums
+## Building, signing and publishing
 
-`npm run build:<target>` writes each artifact with a `.sha256` file beside
-it. Publish both. Then sign the checksums so a mirror cannot substitute
-both file and checksum:
+Push a tag `vX.Y.Z`. The release workflow (`.github/workflows/release.yml`)
+builds Linux (`.AppImage`, `.deb`), Windows (`.msi`) and macOS (universal
+`.dmg`), and opens a **draft** release. Nothing is published until someone
+checks the draft and publishes it by hand.
 
-- **All platforms:** collect the `.sha256` lines into `SHA256SUMS` and sign
-  it with the project's release key: `gpg --armor --detach-sign SHA256SUMS`.
-  Publish `SHA256SUMS` and `SHA256SUMS.asc`; publish the key's fingerprint
-  in the README and somewhere independent of the release page.
-- **Windows:** sign the `.msi` with an Authenticode certificate.
-- **macOS:** sign with a Developer ID certificate and notarize the `.dmg`.
-- **Linux:** the signed `SHA256SUMS` covers the `.AppImage` and `.deb`.
+Every draft carries:
 
-Users check a download with `sha256sum -c AssetManager.AppImage.sha256`
-(after verifying `SHA256SUMS.asc` with `gpg --verify`).
+- **`SHA256SUMS`**: one line per file.
+- **`SHA256SUMS.asc`**: a detached signature by the project's release key,
+  so a mirror cannot substitute both a file and its checksum.
+- **Build-provenance attestations**: a Sigstore-signed statement, in a
+  public transparency log, that each file was built by this workflow from
+  the tagged commit. These need no key of ours and are always produced.
+
+Signing turns on with repository secrets (Settings → Secrets and variables
+→ Actions). Each is optional; without it that step is skipped and the draft
+says so.
+
+| Secrets | What they sign |
+|---|---|
+| `RELEASE_GPG_KEY` (armored private key), `RELEASE_GPG_PASSPHRASE` | `SHA256SUMS` → `SHA256SUMS.asc` |
+| `WINDOWS_CERTIFICATE` (`.pfx`, base64), `WINDOWS_CERTIFICATE_PASSWORD` | Authenticode on the app and the `.msi`, timestamped |
+| `APPLE_CERTIFICATE` (`.p12`, base64), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` | Developer ID signature on the app and `.dmg` |
+| `APPLE_ID`, `APPLE_PASSWORD` (app-specific), `APPLE_TEAM_ID` | Notarization of the `.dmg` |
+
+Before the first signed release:
+
+- [ ] Create the release key on an offline machine; keep the primary key
+      offline and give the workflow a signing subkey only.
+- [ ] Publish the key's fingerprint in the README **and** somewhere
+      independent of the release page (a personal site, a keyserver), so a
+      compromised release page cannot swap both key and signature.
+
+A local build (`npm run build:<target>`) writes each artifact with a
+`.sha256` file beside it; the workflow merges these into `SHA256SUMS`.
+
+## Checking a download
+
+```bash
+gpg --verify SHA256SUMS.asc SHA256SUMS          # the key's fingerprint as published
+sha256sum --check --ignore-missing SHA256SUMS   # the files you downloaded
+gh attestation verify AssetManager.AppImage --repo gcoxdev/asset-manager
+```
+
+On Windows, the `.msi`'s Properties → Digital Signatures tab names the
+signer; on macOS, `spctl --assess --type install -v AssetManager.dmg`
+reports the Developer ID and notarization.
 
 ## What not to claim
 

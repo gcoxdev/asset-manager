@@ -1,0 +1,211 @@
+name: Release
+
+# Builds every platform from a version tag, signs what it can, and opens a
+# DRAFT release for a person to check and publish. Nothing is published
+# automatically.
+#
+# Signing is switched on by repository secrets; each step is skipped
+# without its secret, so a fork or an unconfigured repository still gets
+# checksums and provenance attestations, only unsigned installers.
+#
+#   RELEASE_GPG_KEY, RELEASE_GPG_PASSPHRASE
+#       Armored private key that signs SHA256SUMS.
+#   WINDOWS_CERTIFICATE, WINDOWS_CERTIFICATE_PASSWORD
+#       Authenticode certificate (.pfx, base64) for the app and the .msi.
+#   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY
+#       Developer ID Application certificate (.p12, base64) and its name.
+#   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+#       Notarization: Apple ID, app-specific password, team ID.
+#
+# See docs/releasing.md.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The oldest supported Ubuntu, so the AppImage runs on older glibc.
+          - os: ubuntu-22.04
+            target: linux
+            dir: target/release/bundle
+          - os: windows-latest
+            target: msi
+            dir: target/release/bundle
+          - os: macos-latest
+            target: dmg-universal
+            dir: target/universal-apple-darwin/release/bundle
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      id-token: write # Sigstore signing of the provenance attestation
+      attestations: write
+    env:
+      # Whether a secret is set, readable in step conditions (a step's own
+      # env is not).
+      HAS_WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tag matches the app version
+        shell: bash
+        run: |
+          version=$(node -p "require('./apps/desktop/src-tauri/tauri.conf.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match the app version $version"
+            exit 1
+          fi
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libssl-dev patchelf file
+
+      - uses: dtolnay/rust-toolchain@1.93.1
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm --prefix apps/desktop ci
+
+      # Authenticode: the certificate goes into the user store and Tauri signs
+      # the executable and the installer by thumbprint, with a timestamp so
+      # signatures outlive the certificate.
+      - name: Prepare Windows signing
+        if: runner.os == 'Windows' && env.HAS_WINDOWS_CERTIFICATE == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "signing.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          $cert = Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $password
+          Remove-Item $pfx
+          $config = @{ bundle = @{ windows = @{
+            certificateThumbprint = $cert.Thumbprint
+            digestAlgorithm = "sha256"
+            timestampUrl = "http://timestamp.digicert.com"
+          } } } | ConvertTo-Json -Depth 4
+          Set-Content -Path (Join-Path $env:RUNNER_TEMP "signing.json") -Value $config
+          "SIGN_ARGS=--config $(Join-Path $env:RUNNER_TEMP 'signing.json')" >> $env:GITHUB_ENV
+
+      # macOS signing and notarization are read by Tauri from these variables
+      # when they are set; unset, the .dmg is built unsigned.
+      - name: Build
+        shell: bash
+        working-directory: apps/desktop
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          # An empty variable would ask Tauri to sign with nothing.
+          for v in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+            if [ -z "${!v}" ]; then unset "$v"; fi
+          done
+          node scripts/build.mjs ${{ matrix.target }} $SIGN_ARGS
+
+      - name: Collect artifacts
+        shell: bash
+        run: |
+          mkdir dist
+          find "${{ matrix.dir }}" -maxdepth 2 -type f \
+            \( -name 'AssetManager.*' -o -name 'AssetManager.*.sha256' \) \
+            -exec cp {} dist/ \;
+          ls -l dist
+          test -n "$(ls dist | grep -v '\.sha256$')"
+
+      # A signed statement, recorded in a public transparency log, that these
+      # files were built by this workflow from this commit. Needs no key of
+      # ours: verify with `gh attestation verify <file> --repo <owner>/<repo>`.
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            dist/*
+            !dist/*.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.target }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      HAS_GPG_KEY: ${{ secrets.RELEASE_GPG_KEY != '' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          cat *.sha256 | sort -k2 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          rm *.sha256
+
+      - name: Sign checksums
+        if: env.HAS_GPG_KEY == 'true'
+        working-directory: dist
+        env:
+          RELEASE_GPG_KEY: ${{ secrets.RELEASE_GPG_KEY }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+        run: |
+          export GNUPGHOME="$(mktemp -d)"
+          printf '%s' "$RELEASE_GPG_KEY" | gpg --batch --import
+          printf '%s' "$RELEASE_GPG_PASSPHRASE" | gpg --batch --yes --pinentry-mode loopback \
+            --passphrase-fd 0 --armor --detach-sign SHA256SUMS
+          gpg --batch --verify SHA256SUMS.asc SHA256SUMS
+          rm -rf "$GNUPGHOME"
+
+      - name: Create draft release
+        working-directory: dist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          signed=$([ -f SHA256SUMS.asc ] && echo "signed with the release key (SHA256SUMS.asc)" || echo "NOT signed: no release key was configured")
+          cat > notes.md <<EOF
+          Draft built from ${GITHUB_SHA} by the release workflow. Check it against
+          the clean-machine list in docs/releasing.md before publishing.
+
+          Checksums: SHA256SUMS, ${signed}.
+          Every file has a build-provenance attestation:
+          \`gh attestation verify <file> --repo ${GITHUB_REPOSITORY}\`
+          EOF
+          gh release create "$GITHUB_REF_NAME" --draft --verify-tag \
+            --title "Asset Manager ${GITHUB_REF_NAME#v}" --notes-file notes.md \
+            $(ls | grep -v '^notes.md$')
