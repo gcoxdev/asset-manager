@@ -4,7 +4,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 
 const css = readFileSync(new URL("../src/style.css", import.meta.url), "utf8");
 
@@ -28,4 +28,15 @@ test("the system-dark palette applies only inside the dark-scheme query", () => 
   const block = css.indexOf(':root:not([data-theme="light"])');
   assert.ok(query >= 0 && block > query && block - query < 80, "the :not(light) block sits inside the query");
   assert.equal(css.match(/prefers-color-scheme/g).length, 1, "one query; anything else would escape the choice");
+});
+
+test("the app never sets the native window theme", () => {
+  // On Linux, setTheme(null) ("follow the system") switches GTK's
+  // prefer-dark flag off, and the WebView then reports light on a dark
+  // desktop. The CSS handles every choice on its own.
+  const src = new URL("../src", import.meta.url).pathname;
+  const files = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? files(`${dir}/${e.name}`) : e.name.endsWith(".js") ? [`${dir}/${e.name}`] : []);
+  const offenders = files(src).filter((f) => /\.setTheme\(/.test(readFileSync(f, "utf8")));
+  assert.deepEqual(offenders, []);
 });

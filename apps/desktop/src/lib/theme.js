@@ -4,8 +4,12 @@
 // prefers-color-scheme); "light" or "dark" overrides it with a data-theme
 // attribute on <html>. The choice is a preference of this computer, kept
 // outside the vault, so it applies on the unlock screen too.
+//
+// The native window theme is deliberately left alone. On Linux, Tauri's
+// setTheme(null) — "follow the system" — sets GTK's prefer-dark flag to
+// false, which makes the WebView report light even on a dark desktop.
+// tests/theme.test.mjs keeps it out.
 
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { call } from "./api.js";
 
 export const THEMES = [["system", "System"], ["light", "Light"], ["dark", "Dark"]];
@@ -16,12 +20,11 @@ export function theme() {
   return current;
 }
 
-/** Show `name` now. The window's own frame follows where the platform allows. */
+/** Show `name` now. */
 export function applyTheme(name) {
   current = THEMES.some(([id]) => id === name) ? name : "system";
   if (current === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = current;
-  getCurrentWindow().setTheme(current === "system" ? null : current).catch(() => {});
 }
 
 /** The saved theme, applied. Never fails: the default is fine. */
