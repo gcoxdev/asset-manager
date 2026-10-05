@@ -54,7 +54,7 @@ impl Recorder<'_> {
     }
 }
 
-/// A two-page PDF in the standard Helvetica font, built with a correct
+/// A three-page PDF in the standard Helvetica font, built with a correct
 /// cross-reference table so readers need not repair it.
 fn sample_pdf() -> Vec<u8> {
     let page = |text: &str| {
@@ -63,12 +63,14 @@ fn sample_pdf() -> Vec<u8> {
     };
     let objects = [
         "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
-        "<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R 4 0 R 8 0 R] /Count 3 >>".to_string(),
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R /Resources << /Font << /F1 7 0 R >> >> >>".to_string(),
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 6 0 R /Resources << /Font << /F1 7 0 R >> >> >>".to_string(),
         page("Appraisal - page one"),
         page("Appraisal - page two"),
         "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 9 0 R /Resources << /Font << /F1 7 0 R >> >> >>".to_string(),
+        page("Appraisal - page three"),
     ];
     let mut out = b"%PDF-1.4\n".to_vec();
     let mut offsets = Vec::new();

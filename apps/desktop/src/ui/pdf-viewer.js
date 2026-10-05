@@ -49,6 +49,14 @@ export async function viewPdf(assetId, objectId, { title, actions = [] } = {}) {
   let closed = false;
   let scale = null; // null: fit to width
   let effective = 1; // the scale pages are laid out at
+  // While a smooth scroll is under way, the page it is heading to — so a
+  // second press moves on from there rather than from wherever the scroll
+  // has got to.
+  let heading = null;
+  let headingTimer = null;
+  // The gap left above a page scrolled to the top: the same as above the
+  // first page (the container's padding).
+  const GAP = 16;
   let slots = [];
   const rendering = new Map();
   const observer = new IntersectionObserver((entries) => {
@@ -58,6 +66,7 @@ export async function viewPdf(assetId, objectId, { title, actions = [] } = {}) {
 
   m.done.then(() => {
     closed = true;
+    clearTimeout(headingTimer);
     observer.disconnect();
     // Decrypted pages must not outlive the viewer.
     for (const s of slots) s.canvas.width = s.canvas.height = 0;
@@ -151,28 +160,41 @@ export async function viewPdf(assetId, objectId, { title, actions = [] } = {}) {
     }
   }
 
+  /** Where a page starts within the scrolling area, in its scroll units. */
+  function topOf(n) {
+    return slots[n - 1].el.getBoundingClientRect().top - pages.getBoundingClientRect().top + pages.scrollTop;
+  }
+
   function visiblePage() {
-    const top = pages.scrollTop + pages.clientHeight / 3;
-    const i = slots.findIndex((s) => s.el.offsetTop + s.el.offsetHeight > top);
+    const line = pages.scrollTop + pages.clientHeight / 3;
+    const i = slots.findIndex((s, k) => topOf(k + 1) + s.el.offsetHeight > line);
     return i < 0 ? slots.length : i + 1;
   }
 
   function current() {
-    if (doc) status.textContent = `Page ${visiblePage()} of ${doc.numPages}`;
+    if (doc) status.textContent = `Page ${heading ?? visiblePage()} of ${doc.numPages}`;
+  }
+
+  function scrollToPage(n, behavior = "auto") {
+    pages.scrollTo({ top: Math.max(0, topOf(n) - GAP), behavior });
   }
 
   function go(d) {
     if (!doc) return;
-    const n = Math.min(doc.numPages, Math.max(1, visiblePage() + d));
-    pages.scrollTo({ top: slots[n - 1].el.offsetTop - 12, behavior: "smooth" });
+    const n = Math.min(doc.numPages, Math.max(1, (heading ?? visiblePage()) + d));
+    heading = n;
+    clearTimeout(headingTimer);
+    headingTimer = setTimeout(() => { heading = null; current(); }, 700);
+    current();
+    scrollToPage(n, "smooth");
   }
 
   function setScale(next) {
     if (!doc) return;
-    const page = visiblePage();
+    const page = heading ?? visiblePage();
     for (const job of rendering.values()) job.cancel();
     scale = next;
-    layout().then(() => pages.scrollTo({ top: slots[page - 1].el.offsetTop - 12 }));
+    layout().then(() => scrollToPage(page));
   }
 
   function zoom(d) {

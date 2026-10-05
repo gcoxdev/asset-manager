@@ -99,7 +99,7 @@ test("a PDF document opens in the viewer and renders its pages", async ({ page }
   await openAsset(page, "Amazing Fantasy #15");
   await page.getByRole("button", { name: "Appraisal 2026", exact: true }).click();
   const viewer = page.getByRole("dialog", { name: "Appraisal 2026" });
-  await expect(viewer.getByText("Page 1 of 2")).toBeVisible();
+  await expect(viewer.getByText("Page 1 of 3")).toBeVisible();
   // The first page is drawn: dark text pixels on white.
   await expect.poll(() => viewer.locator(".pdf-page canvas").first().evaluate((c) => {
     if (!c.width) return 0;
@@ -108,7 +108,7 @@ test("a PDF document opens in the viewer and renders its pages", async ({ page }
     for (let i = 0; i < data.length; i += 4) if (data[i] < 100 && data[i + 3] > 0) dark++;
     return dark;
   }), { timeout: 10_000 }).toBeGreaterThan(200);
-  await expect(viewer.getByRole("img", { name: "Page 2 of 2" })).toHaveCount(1);
+  await expect(viewer.getByRole("img", { name: "Page 3 of 3" })).toHaveCount(1);
   expect(await callsTo(page, "read_attachment")).toEqual([{ assetId: ids().comic, objectId: ids().pdf }]);
 
   await viewer.getByRole("button", { name: "Zoom in" }).click();
@@ -121,6 +121,38 @@ test("a PDF document opens in the viewer and renders its pages", async ({ page }
   await page.keyboard.press("Escape");
   await expect(viewer).toHaveCount(0);
   await expect(page.locator(".pdf-page canvas")).toHaveCount(0);
+});
+
+test("the pager brings each page's top into view", async ({ page }) => {
+  await page.goto("/");
+  await openAsset(page, "Amazing Fantasy #15");
+  await page.getByRole("button", { name: "Appraisal 2026", exact: true }).click();
+  const viewer = page.getByRole("dialog", { name: "Appraisal 2026" });
+  await expect(viewer.getByText("Page 1 of 3")).toBeVisible();
+  /** How far page n's top sits below the top of the scrolling area, once settled. */
+  const gapAbove = (n) =>
+    expect.poll(() => viewer.locator(".pdf-pages").evaluate((el, i) => {
+      const top = el.querySelectorAll(".pdf-page")[i - 1].getBoundingClientRect().top - el.getBoundingClientRect().top;
+      return Math.round(top);
+    }, n));
+
+  await viewer.getByRole("button", { name: "Next page" }).click();
+  await gapAbove(2).toBe(16);
+  await expect(viewer.getByText("Page 2 of 3")).toBeVisible();
+
+  await viewer.getByRole("button", { name: "Previous page" }).click();
+  await gapAbove(1).toBe(16);
+  await expect(viewer.getByText("Page 1 of 3")).toBeVisible();
+
+  // Two quick presses go two pages, not one twice.
+  await viewer.getByRole("button", { name: "Next page" }).click();
+  await viewer.getByRole("button", { name: "Next page" }).click();
+  await gapAbove(3).toBe(16);
+  await expect(viewer.getByText("Page 3 of 3")).toBeVisible();
+
+  // Zooming keeps the page in view, at its top.
+  await viewer.getByRole("button", { name: "Zoom in" }).click();
+  await gapAbove(3).toBe(16);
 });
 
 test.describe("with a password-protected PDF", () => {
