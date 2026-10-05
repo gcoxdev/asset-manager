@@ -32,3 +32,8 @@ test-vault/
 .vscode/*
 !.vscode/extensions.json
 *.swp
+
+# Browser tests: recorded fixtures and run output
+apps/desktop/tests-ui/.fixtures/
+apps/desktop/test-results/
+apps/desktop/playwright-report/

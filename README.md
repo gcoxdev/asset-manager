@@ -110,7 +110,16 @@ platform.
 ```bash
 npm --prefix apps/desktop install
 cargo test --workspace          # Rust tests, including an end-to-end IPC test
+npm --prefix apps/desktop test  # frontend unit tests and the IPC contract check
 npm run dev                     # run the app
+```
+
+Browser tests drive the built frontend in Chromium under the production CSP,
+against responses recorded from the real commands. They use a system Chromium
+when there is one (otherwise `npx playwright install chromium` first):
+
+```bash
+npm --prefix apps/desktop run test:ui
 ```
 
 In debug builds, `AM_VAULT_DIR=/some/dir npm run dev` points the app at a
