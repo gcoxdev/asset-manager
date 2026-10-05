@@ -12,12 +12,13 @@ import { busy, toast, textInput, select, field, callout, emptyState } from "../u
 const METAL_ICON_CLASS = { XAU: "gold", XAG: "silver", XPT: "platinum", XPD: "palladium" };
 
 export async function renderMarkets(root, _params, ctx) {
-  const [spots, metalsStatus, cryptoStatus, coins, settings] = await Promise.all([
+  const [spots, metalsStatus, cryptoStatus, coins, settings, rates] = await Promise.all([
     call("spot_prices"),
     call("metals_provider_status"),
     call("crypto_provider_status"),
     call("crypto_prices"),
     store.settings(),
+    call("list_rates"),
   ]);
 
   const afterPrices = (summary) => {
@@ -38,7 +39,52 @@ export async function renderMarkets(root, _params, ctx) {
     ),
     metalsSection(spots, metalsStatus, settings, afterPrices, ctx),
     cryptoSection(coins, cryptoStatus, afterPrices, ctx),
+    ratesSection(rates, settings, ctx),
     calculator
+  );
+}
+
+/**
+ * Exchange rates the owner records. Totals convert other currencies at the
+ * latest rate on or before their date; nothing is fetched, because asking
+ * a provider would say which currencies are held.
+ */
+function ratesSection(rates, settings, ctx) {
+  const from = select(fmt.COMMON_CURRENCIES.filter((c) => c !== settings.currency).map((c) => [c, c]), "EUR", { "aria-label": "From currency" });
+  const to = select(fmt.COMMON_CURRENCIES.map((c) => [c, c]), settings.currency, { "aria-label": "To currency" });
+  const rate = h("input", { type: "text", inputmode: "decimal", placeholder: "e.g. 1.0842", "aria-label": "Rate", class: "input-sm" });
+  const asof = h("input", { type: "date", value: fmt.todayIso(), max: fmt.todayIso(), "aria-label": "As of" });
+  const add = h("button", { class: "btn btn-primary btn-sm", onclick: () => busy(add, async () => {
+    await call("record_rate", { from: from.value, to: to.value, rate: rate.value, asof: asof.value });
+    store.invalidate();
+    toast("Rate recorded. Totals now include that currency.", { kind: "success" });
+    ctx.refresh();
+  }) }, "Add rate");
+  // The latest of each pair, then older ones folded away.
+  const seen = new Set();
+  const latest = rates.filter((r) => {
+    const key = [r.from_currency, r.to_currency].sort().join("/");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const row = (r) => h("tr", {},
+    h("td", {}, `1 ${r.from_currency} = ${r.rate} ${r.to_currency}`),
+    h("td", { class: "muted small" }, fmt.date(r.asof)),
+    h("td", { class: "row-action" }, h("button", { class: "icon-btn", "aria-label": "Delete this rate", onclick: async () => {
+      try { await call("delete_rate", { rateId: r.rate_id }); store.invalidate(); ctx.refresh(); } catch (e) { toast(describe(e), { kind: "error" }); }
+    } }, icon("x", { size: 14 })))
+  );
+  return h("section", { class: "card", id: "rates" },
+    h("div", { class: "card-head" }, h("div", {}, h("h2", {}, "Exchange rates"), h("p", { class: "card-sub" }, `Holdings valued in another currency count toward ${settings.currency} totals at the latest rate on or before each total's date. Their own values are never changed.`))),
+    h("div", { class: "inline-form rate-form" }, h("span", {}, "1"), from, h("span", {}, "="), rate, to, h("span", {}, "as of"), asof, add),
+    latest.length
+      ? h("table", { class: "table compact" }, h("tbody", {}, latest.map(row)))
+      : h("p", { class: "muted small" }, "No rates yet. Without one, holdings in other currencies are listed but left out of totals."),
+    rates.length > latest.length
+      ? h("details", { class: "disclosure" }, h("summary", {}, `Earlier rates (${rates.length - latest.length})`),
+          h("table", { class: "table compact" }, h("tbody", {}, rates.filter((r) => !latest.includes(r)).map(row))))
+      : null
   );
 }
 

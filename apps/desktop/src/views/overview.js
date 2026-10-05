@@ -183,8 +183,11 @@ function hero(d) {
     h("div", { class: "hero-value" }, fmt.amount(d.total)),
     h("div", { class: "hero-meta" }, coverage, gain),
     partial,
+    d.converted?.length
+      ? h("p", { class: "muted small" }, `Includes ${d.converted.map((c) => `${c.from_currency} at ${c.rate} (${fmt.date(c.asof)})`).join(", ")} — rates you recorded.`)
+      : null,
     d.skipped_currencies.length
-      ? h("p", { class: "muted small" }, `Excludes holdings valued in ${d.skipped_currencies.join(", ")} — there is no currency conversion yet.`)
+      ? h("p", { class: "muted small" }, `Excludes holdings valued in ${d.skipped_currencies.join(", ")} — record an exchange rate under Markets to include them.`)
       : null
   );
 }

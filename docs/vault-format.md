@@ -293,6 +293,7 @@ the user after the wrong problem. On mismatch, refuse to open and say so.
 | 11 | `custody_events`: lent, consigned, at repair, in outside storage, shipped, returned — who, contact, dates, due back, reference, optional document. Contacts never appear in exports or reports |
 | 12 | More types: vehicle, boat, home or building, land, electronics, appliance, furniture, tools, sports gear, fashion, books, stamp, toys, stock/bond/fund; categories investments, household, vehicles, property |
 | 13 | `custom_types`: owner-defined types (an `asset_types` row plus field definitions — text, number, date, yes/no, choice; required or not), validated in the backend on every save |
+| 14 | `fx_rates`: owner-recorded exchange rates (1 from = rate to, dated). Totals convert at the latest rate on or before their date; either direction serves; originals are never rewritten |
 
 ---
 

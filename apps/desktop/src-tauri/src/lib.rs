@@ -9,6 +9,7 @@ pub mod commands;
 pub mod crypto_commands;
 pub mod crypto_provider;
 pub mod custody_commands;
+pub mod fx_commands;
 pub mod ipc;
 pub mod metals_commands;
 pub mod metals_provider;
@@ -131,6 +132,10 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             custody_commands::record_custody,
             custody_commands::delete_custody,
             custody_commands::away_list,
+            // Exchange rates
+            fx_commands::list_rates,
+            fx_commands::record_rate,
+            fx_commands::delete_rate,
             // Item types
             types_commands::list_custom_types,
             types_commands::save_custom_type,

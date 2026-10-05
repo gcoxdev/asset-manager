@@ -38,6 +38,8 @@ pub enum ValuationError {
     #[error(transparent)]
     History(#[from] crate::events::EventError),
     #[error(transparent)]
+    Fx(#[from] crate::fx::FxError),
+    #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 }
 
@@ -453,17 +455,24 @@ pub fn portfolio_total_as_of(
 
         match valuation_as_of(vault, &asset_id, as_of)? {
             Some(valuation) => {
-                if &valuation.value.currency != currency {
-                    // No FX conversion yet, so a foreign-currency holding is
-                    // reported separately rather than added incorrectly.
-                    skipped_currencies.push(valuation.value.currency.code().to_string());
-                    unvalued += 1;
-                    continue;
-                }
                 // The valuation covers the holding as it was then; scale it
                 // to what was held on this date.
                 let held =
                     scale_to_quantity(&valuation.value, valuation.quantity_at_time, quantity)?;
+                // Another currency counts at the rate in effect on this date;
+                // without one it is named rather than added incorrectly.
+                let held = if &held.currency != currency {
+                    match crate::fx::convert(vault.conn(), &held, currency, as_of)? {
+                        Some((converted, _)) => converted,
+                        None => {
+                            skipped_currencies.push(held.currency.code().to_string());
+                            unvalued += 1;
+                            continue;
+                        }
+                    }
+                } else {
+                    held
+                };
                 total = total
                     .checked_add(&held)
                     .map_err(|e| ValuationError::BadDecimal(e.to_string()))?;

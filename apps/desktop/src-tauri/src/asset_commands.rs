@@ -57,6 +57,10 @@ pub struct AssetView {
     pub gain_display: Option<String>,
     pub next_review: Option<String>,
     pub review_due: bool,
+    /// The current value in the base currency, when it is in another one
+    /// and a rate is on record — for totals and sorting. Never stored.
+    pub value_in_base_minor: Option<String>,
+    pub value_in_base_display: Option<String>,
 }
 
 pub fn view(record: AssetRecord, today: &str) -> AssetView {
@@ -100,6 +104,8 @@ pub fn view(record: AssetRecord, today: &str) -> AssetView {
         gain_display: gain.as_ref().map(Money::format),
         next_review,
         review_due,
+        value_in_base_minor: None,
+        value_in_base_display: None,
         record,
     }
 }
@@ -117,7 +123,27 @@ pub fn list_assets(session: State<'_, Session>) -> IpcResult<Vec<AssetView>> {
     session
         .with_vault(|vault| {
             let records = assets::list(vault).map_err(storage)?;
-            Ok(records.into_iter().map(|r| view(r, &today)).collect())
+            let base = base_currency(vault);
+            let mut out = Vec::with_capacity(records.len());
+            for r in records {
+                let mut v = view(r, &today);
+                if let (Some(minor), Some(code)) =
+                    (v.record.current_amount_minor, v.record.current_currency.as_deref())
+                {
+                    if code != base.code() {
+                        let money = Money::new(minor, Currency::new(code).map_err(storage)?);
+                        if let Some((converted, _)) =
+                            am_storage::fx::convert(vault.conn(), &money, &base, &today)
+                                .map_err(storage)?
+                        {
+                            v.value_in_base_minor = Some(converted.amount_minor.to_string());
+                            v.value_in_base_display = Some(converted.format());
+                        }
+                    }
+                }
+                out.push(v);
+            }
+            Ok(out)
         })
         .map_err(IpcError::from)
 }

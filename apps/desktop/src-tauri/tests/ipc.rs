@@ -233,6 +233,30 @@ fn the_frontend_contract_holds_end_to_end() {
         "contacts never leave"
     );
 
+    // Another currency: listed apart until a rate is recorded, then counted.
+    let euro = ok(
+        &w,
+        "create_asset",
+        json!({ "form": { "type_id": "art", "name": "Paris print", "current_value": "1000",
+                          "currency": "EUR" } }),
+    );
+    let before = ok(&w, "dashboard", json!({}));
+    assert!(before["skipped_currencies"].as_array().unwrap().iter().any(|c| c == "EUR"));
+    let rate = ok(
+        &w,
+        "record_rate",
+        json!({ "from": "EUR", "to": "USD", "rate": "1.10", "asof": null }),
+    );
+    let after = ok(&w, "dashboard", json!({}));
+    assert_eq!(after["converted"][0]["from_currency"], "EUR");
+    let listed = ok(&w, "list_assets", json!({}));
+    let row = listed.as_array().unwrap().iter().find(|a| a["asset_id"] == euro).unwrap();
+    assert_eq!(row["value_in_base_display"], "1100.00 USD");
+    assert_eq!(row["current_display"], "1000.00 EUR", "the original is never rewritten");
+    ok(&w, "delete_rate", json!({ "rateId": rate }));
+    ok(&w, "delete_asset", json!({ "assetId": euro }));
+    ok(&w, "purge_trash", json!({ "assetId": euro }));
+
     // A type of the owner's own, validated like the built-in ones.
     let quilt = ok(
         &w,

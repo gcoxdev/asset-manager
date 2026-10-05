@@ -52,3 +52,14 @@ test("a total sums one currency exactly and leaves the others out", () => {
   assert.equal(sumDisplay(assets, "USD"), "90071992547410.00 USD");
   assert.equal(sumDisplay([], "USD"), null);
 });
+
+test("a converted value joins the base-currency total; an unconverted one does not", async () => {
+  const { sumDisplay, valueInBase } = await import("../src/lib/money.js");
+  const assets = [
+    { current_amount_minor: "10000", current_currency: "USD", current_display: "100.00 USD" },
+    { current_amount_minor: "10000", current_currency: "EUR", current_display: "100.00 EUR", value_in_base_minor: "11000", value_in_base_display: "110.00 USD" },
+    { current_amount_minor: "500", current_currency: "GBP", current_display: "5.00 GBP" },
+  ];
+  assert.equal(sumDisplay(assets, "USD"), "210.00 USD");
+  assert.equal(valueInBase(assets[2], "USD"), null);
+});

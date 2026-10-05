@@ -7,7 +7,7 @@ import { mediaUrl } from "../lib/media.js";
 import { h, mount, debounce } from "../lib/dom.js";
 import { icon, typeIcon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
-import { cmpMoney, sumDisplay } from "../lib/money.js";
+import { cmpMoney, sumDisplay, valueInBase } from "../lib/money.js";
 import { CHECKS } from "../lib/health.js";
 import * as store from "../lib/store.js";
 import { sourceBadge, statusBadge, emptyState, select, segmented, busy, toast, toastError, menuButton, modal, field, confirmDialog, tagsInput, suggestInput } from "../ui/components.js";
@@ -187,7 +187,16 @@ export async function renderHoldings(root, params, ctx) {
       case "name": sorted.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })); break;
       // Gain exists only when value and cost share a currency, so it is in
       // the value's currency.
-      case "value": sorted.sort((a, b) => cmpMoney(a.current_amount_minor, a.current_currency, b.current_amount_minor, b.current_currency, settings.currency)); break;
+      // Converted values rank with the base currency; anything without a
+      // rate stays grouped by its own currency.
+      case "value": {
+        const key = (a) => {
+          const v = valueInBase(a, settings.currency);
+          return v ? [v.minor, settings.currency] : [a.current_amount_minor, a.current_currency];
+        };
+        sorted.sort((a, b) => cmpMoney(...key(a), ...key(b), settings.currency));
+        break;
+      }
       case "gain": sorted.sort((a, b) => cmpMoney(a.gain_minor, a.current_currency, b.gain_minor, b.current_currency, settings.currency)); break;
       case "acquired": sorted.sort((a, b) => (b.acquired_date ?? "").localeCompare(a.acquired_date ?? "")); break;
       default: break; // backend order: most recently changed first
@@ -214,13 +223,14 @@ export async function renderHoldings(root, params, ctx) {
     const list = filtered();
     const total = sumDisplay(list, settings.currency);
     const unpriced = list.filter((a) => a.current_amount_minor == null).length;
-    const foreign = [...new Set(list.filter((a) => a.current_amount_minor != null && a.current_currency !== settings.currency).map((a) => a.current_currency))].sort();
-    const foreignCount = list.filter((a) => a.current_amount_minor != null && a.current_currency !== settings.currency).length;
+    const unconverted = list.filter((a) => a.current_amount_minor != null && !valueInBase(a, settings.currency));
+    const foreign = [...new Set(unconverted.map((a) => a.current_currency))].sort();
+    const foreignCount = unconverted.length;
     mount(summary,
       h("span", {}, `${list.length} ${list.length === 1 ? "holding" : "holdings"}`),
       total ? h("span", {}, " · ", h("strong", {}, fmt.money(total))) : null,
       foreignCount
-        ? h("span", { class: "muted", title: "There is no currency conversion, so these are not in the total." },
+        ? h("span", { class: "muted", title: "No exchange rate is recorded for these, so they are not in the total. Add one under Markets → Exchange rates." },
             ` · ${foreignCount} valued in ${foreign.join(", ")} not included`)
         : null,
       unpriced ? h("span", { class: "muted" }, ` · ${unpriced} without a value`) : null,

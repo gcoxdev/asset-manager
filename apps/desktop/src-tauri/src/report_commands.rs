@@ -91,6 +91,8 @@ pub struct InsuranceReport {
     pub unvalued: usize,
     /// Items included because they are marked lost.
     pub lost: usize,
+    /// Other currencies converted into the totals, with the rate used.
+    pub converted: Vec<am_storage::fx::Applied>,
     pub currency: String,
     pub warning: String,
 }
@@ -264,6 +266,7 @@ pub fn insurance_report(
                 records.retain(|r| r.quantity != "0");
             }
             let mut lost = 0usize;
+            let mut converted: Vec<am_storage::fx::Applied> = Vec::new();
 
             let mut items = Vec::new();
             let mut total = Money::zero(currency.clone());
@@ -288,26 +291,45 @@ pub fn insurance_report(
                 };
                 categories[slot].1 += 1;
 
-                match (r.current_amount_minor, r.current_currency.as_deref()) {
-                    // Only same-currency items contribute; there is no FX
-                    // layer, and a silently converted total would be wrong in
-                    // a way an insurer could not see.
-                    (Some(amount), Some(c)) if c == code => {
-                        let m = Money::new(amount, currency.clone());
-                        total = total.checked_add(&m).map_err(storage)?;
-                        categories[slot].2 =
-                            categories[slot].2.checked_add(&m).map_err(storage)?;
-                        valued += 1;
+                // Another currency counts at the rate in effect on the
+                // report's date, and the report says which rate — a silently
+                // converted total would be wrong in a way an insurer could
+                // not see. Without a rate it is listed but not totalled.
+                let rate_date = as_of.clone().unwrap_or_else(crate::ipc::today);
+                let mut in_base = |amount: i64, c: &str| -> Result<Option<Money>, crate::session::SessionError> {
+                    if c == code {
+                        return Ok(Some(Money::new(amount, currency.clone())));
                     }
+                    let foreign = Money::new(amount, Currency::new(c).map_err(storage)?);
+                    Ok(match am_storage::fx::convert(vault.conn(), &foreign, &currency, &rate_date)
+                        .map_err(storage)?
+                    {
+                        Some((m, applied)) => {
+                            if !converted.iter().any(|a: &am_storage::fx::Applied| a.from_currency == applied.from_currency) {
+                                converted.push(applied);
+                            }
+                            Some(m)
+                        }
+                        None => None,
+                    })
+                };
+                match (r.current_amount_minor, r.current_currency.as_deref()) {
+                    (Some(amount), Some(c)) => match in_base(amount, c)? {
+                        Some(m) => {
+                            total = total.checked_add(&m).map_err(storage)?;
+                            categories[slot].2 =
+                                categories[slot].2.checked_add(&m).map_err(storage)?;
+                            valued += 1;
+                        }
+                        None => unvalued += 1,
+                    },
                     _ => unvalued += 1,
                 }
                 if let (Some(amount), Some(c)) =
                     (r.insured_amount_minor, r.insured_currency.as_deref())
                 {
-                    if c == code {
-                        insured_total = insured_total
-                            .checked_add(&Money::new(amount, currency.clone()))
-                            .map_err(storage)?;
+                    if let Some(m) = in_base(amount, c)? {
+                        insured_total = insured_total.checked_add(&m).map_err(storage)?;
                     }
                 }
 
@@ -432,6 +454,7 @@ pub fn insurance_report(
                 valued,
                 unvalued,
                 lost,
+                converted,
                 currency: code.clone(),
                 warning: "This report is not encrypted. It lists what you own and what it \
                           is worth — treat the file as you would the items themselves."

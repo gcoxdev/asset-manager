@@ -605,7 +605,7 @@ function displayCard(settings, save) {
   currency.addEventListener("change", () => save({ currency: currency.value }));
   return h("section", { class: "card" },
     h("div", { class: "card-head" }, h("h2", {}, icon("tag", { size: 18 }), " Currency")),
-    row("Base currency", "New values are entered in it, totals are shown in it, and price feeds are asked for it. There is no conversion: holdings already valued in another currency are listed but left out of totals.", currency)
+    row("Base currency", "New values are entered in it, totals are shown in it, and price feeds are asked for it. Holdings valued in another currency are converted into totals at rates you record under Markets; without a rate they are listed but left out.", currency)
   );
 }
 

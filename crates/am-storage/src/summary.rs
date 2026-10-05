@@ -26,6 +26,8 @@ pub enum SummaryError {
     )]
     Overflow,
     #[error(transparent)]
+    Fx(#[from] crate::fx::FxError),
+    #[error(transparent)]
     Sqlite(#[from] rusqlite::Error),
 }
 
@@ -100,6 +102,8 @@ pub struct Dashboard {
     /// Valued holdings left out of the gain because part of the holding was
     /// added at an unknown cost.
     pub partial_cost: usize,
+    /// Currencies converted into the total, and the rate each used.
+    pub converted: Vec<crate::fx::Applied>,
     pub active_count: usize,
     pub by_category: Vec<CategoryTotal>,
     pub top_holdings: Vec<Brief>,
@@ -171,6 +175,7 @@ pub fn dashboard(
     let mut covered_value = zero();
     let (mut valued, mut unvalued, mut gain_coverage) = (0usize, 0usize, 0usize);
     let mut partial_cost = 0usize;
+    let mut converted: Vec<crate::fx::Applied> = Vec::new();
     let add = |sum: &Money, minor: i64| {
         sum.checked_add(&money(minor)).map_err(|_| SummaryError::Overflow)
     };
@@ -205,31 +210,62 @@ pub fn dashboard(
         };
         categories[slot].2 += 1;
 
-        match &row.value {
-            Some((minor, c)) if c == code => {
+        // A value in another currency counts once converted at today's rate
+        // (and its cost at the same rate, so gain compares like with like);
+        // without a rate on record it is named, not added.
+        let mut to_base = |minor: i64, c: &str| -> Result<Option<i64>, SummaryError> {
+            if c == code {
+                return Ok(Some(minor));
+            }
+            let foreign =
+                Money::new(minor, Currency::new(c).map_err(|_| SummaryError::Overflow)?);
+            Ok(match crate::fx::convert(vault.conn(), &foreign, currency, today)? {
+                Some((m, applied)) => {
+                    if !converted
+                        .iter()
+                        .any(|a: &crate::fx::Applied| a.from_currency == applied.from_currency)
+                    {
+                        converted.push(applied);
+                    }
+                    Some(m.amount_minor)
+                }
+                None => None,
+            })
+        };
+        let value_in_base = match &row.value {
+            Some((minor, c)) => to_base(*minor, c)?,
+            None => None,
+        };
+        let cost_in_base = match (&row.cost, &row.value) {
+            (Some((cost, cc)), Some((_, vc))) if cc == vc => to_base(*cost, cc)?,
+            (Some((cost, cc)), _) if cc == code => Some(*cost),
+            _ => None,
+        };
+        match (&row.value, value_in_base) {
+            (Some(_), Some(minor)) => {
                 valued += 1;
-                total = add(&total, *minor)?;
-                categories[slot].1 = add(&categories[slot].1, *minor)?;
-                top.push((*minor, row));
+                total = add(&total, minor)?;
+                categories[slot].1 = add(&categories[slot].1, minor)?;
+                top.push((minor, row));
 
-                if let Some((cost, cost_code)) = &row.cost {
-                    if cost_code == code && row.cost_complete {
+                if let Some(cost) = cost_in_base {
+                    if row.cost_complete {
                         gain_coverage += 1;
-                        cost_basis = add(&cost_basis, *cost)?;
-                        covered_value = add(&covered_value, *minor)?;
-                    } else if cost_code == code {
+                        cost_basis = add(&cost_basis, cost)?;
+                        covered_value = add(&covered_value, minor)?;
+                    } else {
                         partial_cost += 1;
                     }
                 }
             }
-            Some((_, c)) => {
+            (Some((_, c)), None) => {
                 unvalued += 1;
                 categories[slot].3 += 1;
                 if !skipped.contains(c) {
                     skipped.push(c.clone());
                 }
             }
-            None => {
+            (None, _) => {
                 unvalued += 1;
                 categories[slot].3 += 1;
                 needs_value.push(brief(row, "no value recorded yet".into()));
@@ -311,6 +347,7 @@ pub fn dashboard(
         gain,
         gain_coverage,
         partial_cost,
+        converted,
         active_count: rows.len(),
         by_category,
         top_holdings,
@@ -483,5 +520,37 @@ mod tests {
         value(&v, &a, i64::MAX / 2 + 1, "USD", "2026-09-01");
         value(&v, &b, i64::MAX / 2 + 1, "USD", "2026-09-01");
         assert!(matches!(dashboard(&v, &usd(), "2026-09-19"), Err(SummaryError::Overflow)));
+    }
+
+    #[test]
+    fn another_currency_is_converted_at_the_rate_on_record() {
+        let (_d, v) = setup();
+        let a = asset(&v, "Paris print", "art", None);
+        value(&v, &a, 10_000, "EUR", "2026-01-01"); // €100
+        let d = dashboard(&v, &usd(), "2026-09-19").unwrap();
+        assert_eq!(
+            d.skipped_currencies,
+            vec!["EUR".to_string()],
+            "no rate yet: named, not added"
+        );
+        assert_eq!(d.total.minor, 0);
+
+        crate::fx::record(&v, "EUR", "USD", "1.10", "2026-03-01", "2026-09-19", NOW).unwrap();
+        crate::fx::record(&v, "EUR", "USD", "1.20", "2026-09-01", "2026-09-19", NOW).unwrap();
+        let d = dashboard(&v, &usd(), "2026-09-19").unwrap();
+        assert_eq!(d.total.minor, 12_000, "today's figure at today's rate");
+        assert!(d.skipped_currencies.is_empty());
+        assert_eq!(d.converted[0].rate, "1.2");
+
+        // History converts each date at that date's rate.
+        let usd = usd();
+        let march = crate::valuations::portfolio_total_as_of(&v, "2026-04-01", &usd).unwrap();
+        assert_eq!(march.total.amount_minor, 11_000);
+        let before = crate::valuations::portfolio_total_as_of(&v, "2026-02-01", &usd).unwrap();
+        assert_eq!(
+            before.skipped_currencies,
+            vec!["EUR".to_string()],
+            "no rate in effect then"
+        );
     }
 }

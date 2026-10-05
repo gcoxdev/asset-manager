@@ -12,6 +12,7 @@ pub mod csv;
 pub mod custody;
 pub mod custom_types;
 pub mod events;
+pub mod fx;
 pub mod header;
 pub mod lifecycle;
 pub mod migrate;

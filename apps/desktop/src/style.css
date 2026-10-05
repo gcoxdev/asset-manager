@@ -1036,3 +1036,7 @@ details.evidence ul { margin: 4px 0 0; padding-left: 18px; }
 .type-field > input[type="text"]:nth-of-type(2) { grid-column: 1 / -1; }
 .type-field-note { grid-column: 1 / -1; }
 .inline-check { white-space: nowrap; }
+
+.rate-form { flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.rate-form select { width: auto; }
+.rate-form input[type="date"] { width: auto; }

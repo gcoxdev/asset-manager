@@ -29,14 +29,26 @@ export function cmpMoney(a, aCurrency, b, bCurrency, base) {
 }
 
 /** Sum minor units exactly and lay the result out like the backend does. */
+/**
+ * A holding's value in the base currency: its own value if already in it,
+ * or the backend's conversion at today's rate. Null when neither exists.
+ */
+export function valueInBase(a, currency) {
+  if (a.current_amount_minor == null) return null;
+  if (a.current_currency === currency) return { minor: a.current_amount_minor, display: a.current_display };
+  if (a.value_in_base_minor != null) return { minor: a.value_in_base_minor, display: a.value_in_base_display };
+  return null;
+}
+
 export function sumDisplay(assets, currency) {
   let digits = null;
   let total = 0n;
   let count = 0;
   for (const a of assets) {
-    if (a.current_amount_minor == null || a.current_currency !== currency) continue;
-    digits ??= fmt.digitsOf(a.current_display);
-    total += BigInt(a.current_amount_minor);
+    const v = valueInBase(a, currency);
+    if (!v) continue;
+    digits ??= fmt.digitsOf(v.display);
+    total += BigInt(v.minor);
     count += 1;
   }
   if (!count) return null;

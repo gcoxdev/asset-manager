@@ -107,6 +107,9 @@ export function reportSheet(report, { screen, claim } = {}) {
     report.lost
       ? h("p", { class: "report-note" }, `Includes ${report.lost} item${report.lost === 1 ? "" : "s"} marked lost, valued as last recorded before the loss.`)
       : null,
+    report.converted?.length
+      ? h("p", { class: "report-note" }, `Totals convert ${report.converted.map((c) => `${c.from_currency} to ${c.to_currency} at ${c.rate} (rate of ${fmt.date(c.asof)})`).join("; ")}. Each item's own value is shown in its original currency.`)
+      : null,
     h("table", { class: "report-summary" },
       h("thead", {}, h("tr", {}, h("th", {}, "Category"), h("th", { class: "num" }, "Items"), h("th", { class: "num" }, "Value"))),
       h("tbody", {}, report.categories.map((c) => h("tr", {}, h("td", {}, fmt.categoryLabel(c.category)), h("td", { class: "num" }, String(c.count)), h("td", { class: "num" }, fmt.money(c.total))))),
