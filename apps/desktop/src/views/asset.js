@@ -4,6 +4,7 @@ import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialo
 
 import { call, describe } from "../lib/api.js";
 import { mediaUrl } from "../lib/media.js";
+import { viewPdf } from "../ui/pdf-viewer.js";
 import { h, mount } from "../lib/dom.js";
 import { icon, typeIcon } from "../lib/icons.js";
 import * as fmt from "../lib/format.js";
@@ -196,11 +197,12 @@ function documentsCard(a, attachments, reload) {
       ? h("ul", { class: "doc-list" }, docs.map((d) => h("li", {},
           h("span", { class: "doc-icon" }, icon(d.media_type === "application/pdf" ? "reports" : "image", { size: 18 })),
           h("div", { class: "doc-text" },
-            h("strong", {}, d.title || fmt.DOC_KIND_LABELS[d.doc_kind] || "Document"),
+            h("button", { class: "link doc-title", onclick: () => viewDocument(a, d) }, d.title || fmt.DOC_KIND_LABELS[d.doc_kind] || "Document"),
             h("span", { class: "muted small" }, [fmt.DOC_KIND_LABELS[d.doc_kind] ?? d.doc_kind, d.doc_date ? fmt.date(d.doc_date) : null, d.media_type === "application/pdf" ? "PDF" : "Image"].filter(Boolean).join(" · ")),
             d.note ? h("span", { class: "doc-note" }, d.note) : null
           ),
           h("div", { class: "doc-actions" },
+            h("button", { class: "icon-btn", title: "View", "aria-label": `View ${d.title ?? "this document"}`, onclick: () => viewDocument(a, d) }, icon("eye", { size: 16 })),
             h("button", { class: "icon-btn", title: "Save a copy…", "aria-label": `Save a copy of ${d.title ?? "this document"}`, onclick: () => saveAttachmentCopy(a, d) }, icon("download", { size: 16 })),
             h("button", { class: "icon-btn", title: "Edit details", "aria-label": `Edit details of ${d.title ?? "this document"}`, onclick: () => documentDetails(a, d, reload) }, icon("edit", { size: 16 })),
             h("button", { class: "icon-btn", title: "Remove", "aria-label": `Remove ${d.title ?? "this document"}`, onclick: () => removePhoto(a, d, reload) }, icon("trash", { size: 16 }))
@@ -208,6 +210,19 @@ function documentsCard(a, attachments, reload) {
         )))
       : h("p", { class: "muted small" }, "No receipts, appraisals or certificates yet. PDFs and photos of paperwork are encrypted like everything else.")
   );
+}
+
+/** Open a document in the app: PDFs in the viewer, images full size. */
+function viewDocument(a, d) {
+  const title = d.title || fmt.DOC_KIND_LABELS[d.doc_kind] || "Document";
+  if (d.media_type === "application/pdf") {
+    viewPdf(d.object_id, {
+      title,
+      actions: [h("button", { class: "btn btn-ghost btn-sm", onclick: () => saveAttachmentCopy(a, d) }, icon("download", { size: 14 }), "Save a copy…")],
+    });
+  } else {
+    lightbox([d], 0, title);
+  }
 }
 
 /** The details form for a document: what it is, its title, date and note. */

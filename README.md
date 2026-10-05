@@ -45,15 +45,17 @@ valuation is a first-class path rather than a fallback.
   editing a few hundred items in a spreadsheet — blank cells preserve, `-`
   clears, stale exports are refused, reimport is idempotent.
 - **Insurance report** to print or save as PDF, with photos, identifying
-  details and the source of every figure; storage locations are left out
+  details, the source of every figure and the evidence behind it (comparable
+  sales, range, confidence); storage locations are left out
   unless you include them.
 - **Backup and restore** of the whole encrypted vault, without signing out.
   A restore is unlocked and checked — database integrity, every photo present
   and intact — before it replaces anything. Backups list no plaintext photo
   hashes. Passphrase change and recovery-key rotation in Settings, staged so
   an interruption never leaves the vault unopenable.
-- **Attachments you can take back out**: "Save a copy…" writes a decrypted
-  photo or PDF where you choose, after saying it will be unencrypted.
+- **Documents viewed in the app**: PDFs open in a built-in viewer, decrypted
+  in memory only. "Save a copy…" writes a decrypted photo or PDF where you
+  choose, after saying it will be unencrypted.
 - **Watch-only Bitcoin balances**, behind their own opt-in. Seed phrases and
   private keys are refused before they can be stored.
 

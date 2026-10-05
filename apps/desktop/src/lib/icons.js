@@ -23,6 +23,7 @@ const PATHS = {
   back: ["M15 18l-6-6 6-6"],
   forward: ["M9 18l6-6-6-6"],
   down: ["M6 9l6 6 6-6"],
+  chevron_up: ["M6 15l6-6 6 6"],
   chevronUp: ["M6 15l6-6 6 6"],
   more: ["M5 12h.01", "M12 12h.01", "M19 12h.01"],
   edit: ["M4 20h4L18.5 9.5a2.1 2.1 0 0 0-4-4L4 16v4z", "M13.5 6.5l4 4"],

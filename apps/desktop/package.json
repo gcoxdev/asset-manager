@@ -16,14 +16,18 @@
     "build:windows": "node scripts/build.mjs msi",
     "build:macos": "node scripts/build.mjs dmg",
     "build:macos-universal": "node scripts/build.mjs dmg-universal",
-    "test": "node --test tests/"
+    "test": "node --test tests/",
+    "test:fixtures": "cd src-tauri && UI_FIXTURES_DIR=../tests-ui/.fixtures cargo test --quiet --test ui_fixtures",
+    "test:ui": "npm run build && npm run test:fixtures && playwright test -c tests-ui/playwright.config.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2.7.3",
+    "pdfjs-dist": "^6.4.299",
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tauri-apps/cli": "^2",
     "vite": "^7"
   },
