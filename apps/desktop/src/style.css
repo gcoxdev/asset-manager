@@ -436,7 +436,7 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 11px 8px 11px 13px;
+  padding: 8px 8px 8px 13px;
   border-radius: var(--radius);
   background: var(--slate-deep);
   color: #eef3f6;
@@ -444,14 +444,16 @@ input::placeholder, textarea::placeholder { color: var(--muted); }
   animation: toast-in 0.18s ease-out;
   font-size: 13.5px;
 }
-.toast .icon { margin-top: 1px; }
-.toast-text { flex: 1; padding-top: 1px; overflow-wrap: anywhere; }
-.toast-close { width: 26px; height: 26px; color: #9fb0ba; }
+/* Icon, first line of text and close button share one 26px line, so they
+   stay centred on each other however many lines the message wraps to. */
+.toast > .icon { flex: none; margin-top: 4px; }
+.toast-text { flex: 1; padding: 3px 0; line-height: 20px; overflow-wrap: anywhere; }
+.toast-close { flex: none; width: 26px; height: 26px; color: #9fb0ba; }
 .toast-close:hover { background: rgba(255, 255, 255, 0.08); color: #fff; }
-.toast-success .icon:first-child { color: #57d157; }
-.toast-error .icon:first-child { color: #ff8a80; }
-.toast-warning .icon:first-child { color: var(--gold); }
-.toast-info .icon:first-child { color: #8dbaf0; }
+.toast-success > .icon { color: #57d157; }
+.toast-error > .icon { color: #ff8a80; }
+.toast-warning > .icon { color: var(--gold); }
+.toast-info > .icon { color: #8dbaf0; }
 .toast.leaving { opacity: 0; transform: translateY(6px); transition: 0.18s; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
 
