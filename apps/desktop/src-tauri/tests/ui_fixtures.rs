@@ -171,6 +171,11 @@ fn record_ui_fixtures() {
         "list_locations",
         "list_saved_views",
         "list_sets",
+        "spot_prices",
+        "metals_provider_status",
+        "crypto_prices",
+        "crypto_provider_status",
+        "list_rates",
     ] {
         r.record(cmd, json!({}));
     }

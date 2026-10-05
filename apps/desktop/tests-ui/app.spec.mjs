@@ -179,6 +179,18 @@ test("sets show how complete they are", async ({ page }) => {
   await expect(dialog.getByRole("button", { name: "Gold Eagles", exact: true })).toBeVisible();
 });
 
+test("each metal's Set button is centred on its price box", async ({ page }) => {
+  await page.goto("/");
+  await nav(page, "Markets");
+  const forms = page.locator(".spot-form");
+  await expect(forms.first()).toBeVisible();
+  expect(await forms.count()).toBeGreaterThan(1);
+  for (const form of await forms.all()) {
+    const [box, button] = await Promise.all([form.locator(".input-affix").boundingBox(), form.getByRole("button", { name: "Set" }).boundingBox()]);
+    expect(Math.abs(box.y + box.height / 2 - (button.y + button.height / 2))).toBeLessThanOrEqual(0.5);
+  }
+});
+
 test("the insurance report shows the evidence behind a value", async ({ page }) => {
   await page.goto("/");
   await nav(page, "Reports");
