@@ -417,12 +417,17 @@ pub fn refresh_metals(session: &Session, automatic: bool) -> IpcResult<RefreshRe
 
     // Budget check before the network call, so a refused request costs
     // nothing.
-    let (allowed, currency) = session
-        .with_vault(|vault| {
+    let (token, (allowed, currency)) = session
+        .snapshot(|vault| {
             let status =
                 spot::quota_status(vault, METALS_PROVIDER, &timestamp).map_err(storage)?;
             let allowed = if automatic {
-                status.may_poll_automatically
+                am_storage::settings::get(vault, "metals_auto_refresh")
+                    .map_err(storage)?
+                    .as_deref()
+                    == Some("true")
+                    && spot::reserve_automatic_poll(vault, METALS_PROVIDER, &timestamp)
+                        .map_err(storage)?
             } else {
                 status.may_refresh_manually
             };
@@ -456,7 +461,7 @@ pub fn refresh_metals(session: &Session, automatic: bool) -> IpcResult<RefreshRe
     let source_asof = prices.first().map(|p| p.source_asof.clone());
 
     session
-        .with_vault(|vault| {
+        .with_snapshot(token, |vault| {
             let mut updated = Vec::new();
             for price in &prices {
                 let Some(metal) = Metal::parse(&price.metal) else { continue };

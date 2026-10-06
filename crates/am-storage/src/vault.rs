@@ -467,8 +467,8 @@ fn backup_closed(
 
         let mut listed = Vec::with_capacity(objects.len());
         for (object_id, bytes) in objects {
-            let src = object_path(&root.join(OBJECTS_DIR), &object_id);
-            let dst = object_path(&partial.join(OBJECTS_DIR), &object_id);
+            let src = object_path(&root.join(OBJECTS_DIR), &object_id)?;
+            let dst = object_path(&partial.join(OBJECTS_DIR), &object_id)?;
             let (copied, digest) = copy_file_hashed(&src, &dst)?;
             if copied as i64 != bytes {
                 return Err(VaultError::Other(format!(
@@ -707,6 +707,15 @@ fn fill_staging(
         return Err(VaultError::Other(format!("the backup's database is damaged: {check}")));
     }
 
+    // Pending deletions and cached variants also reach filesystem operations.
+    let mut ids = vault.conn.prepare(
+        "SELECT object_id FROM objects UNION ALL SELECT variant_object_id FROM media_variants",
+    )?;
+    for id in ids.query_map([], |r| r.get::<_, String>(0))? {
+        object_path(&staging.join(OBJECTS_DIR), &id?)?;
+    }
+    drop(ids);
+
     // The encrypted database, not the readable manifest, says which objects
     // must exist: a manifest can be edited, the database cannot without the
     // key. The manifest supplies only the digest to check each copy against.
@@ -731,7 +740,7 @@ fn fill_staging(
                 "the backup's database lists a malformed object id {object_id:?}"
             )));
         }
-        let src = object_path(&backup.join(OBJECTS_DIR), object_id);
+        let src = object_path(&backup.join(OBJECTS_DIR), object_id)?;
         let meta = require_regular_file(&src)
             .map_err(|_| VaultError::Other(format!("backup is missing object {object_id}")))?;
         if meta.len() as i64 != *bytes {
@@ -753,7 +762,7 @@ fn fill_staging(
             }
             None => None,
         };
-        let dst = object_path(&staging.join(OBJECTS_DIR), object_id);
+        let dst = object_path(&staging.join(OBJECTS_DIR), object_id)?;
         let (_, digest) = copy_file_hashed(&src, &dst)?;
         if let Some(expected) = expected {
             if !digest.eq_ignore_ascii_case(expected) {
@@ -878,13 +887,15 @@ pub fn is_object_id(s: &str) -> bool {
 /// Two-level fan-out: filesystems degrade with tens of thousands of entries in
 /// one directory.
 ///
-/// Never panics on a short or non-ASCII ID; callers that take IDs from
-/// untrusted input check them with [`is_object_id`] first.
-pub fn object_path(objects_dir: &Path, object_id: &str) -> PathBuf {
-    match (object_id.get(0..2), object_id.get(2..4)) {
-        (Some(a), Some(b)) => objects_dir.join(a).join(b).join(object_id),
-        _ => objects_dir.join(object_id),
+/// Validate at the filesystem boundary, including IDs read from the database.
+pub fn object_path(objects_dir: &Path, object_id: &str) -> std::io::Result<PathBuf> {
+    if !is_object_id(object_id) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "malformed object ID",
+        ));
     }
+    Ok(objects_dir.join(&object_id[..2]).join(&object_id[2..4]).join(object_id))
 }
 
 fn open_db(root: &Path, data_key: &[u8; KEY_LEN]) -> Result<Connection, VaultError> {
@@ -1015,20 +1026,36 @@ struct ProcessLock {
 
 impl ProcessLock {
     fn acquire(path: &Path) -> Result<Self, VaultError> {
-        let mut file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)?;
+        let mut options = fs::OpenOptions::new();
+        options.read(true).write(true).create(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            options.custom_flags(0x00200000); // FILE_FLAG_OPEN_REPARSE_POINT
+        }
+        let file = options.open(path)?;
+        let metadata = file.metadata()?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 {
+                return Err(VaultError::Other("lock file cannot be a reparse point".into()));
+            }
+        }
+        if !metadata.is_file() {
+            return Err(VaultError::Other("lock file must be a regular file".into()));
+        }
         match file.try_lock() {
             Ok(()) => {}
             Err(fs::TryLockError::WouldBlock) => return Err(VaultError::Locked),
             Err(fs::TryLockError::Error(e)) => return Err(e.into()),
         }
-        // For a person wondering which process holds it; not consulted.
-        let _ = file.set_len(0);
-        let _ = write!(file, "{}", std::process::id());
+        // Do not modify the file: even a hard link must never clobber data.
         Ok(Self { _file: file })
     }
 }
@@ -1051,6 +1078,61 @@ mod tests {
         let (vault, recovery) = Vault::create(root, PASS, &fast(), NOW).unwrap();
         drop(vault);
         recovery
+    }
+
+    #[test]
+    fn malformed_pending_and_variant_ids_never_reach_external_files() {
+        for variant in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("vault");
+            let backup = dir.path().join("backup");
+            let sentinel = dir.path().join("sentinel");
+            fs::write(&sentinel, b"untouched").unwrap();
+            let (v, _) = Vault::create(&root, PASS, &fast(), NOW).unwrap();
+            let id = if variant {
+                "00112233445566778899aabbccddeeff"
+            } else {
+                sentinel.to_str().unwrap()
+            };
+            v.conn().execute("INSERT INTO objects (object_id, plaintext_sha256, ciphertext_bytes, media_type, gc_state, created_at)
+                VALUES (?1, 'test', 0, 'image/jpeg', 'pending_delete', ?2)", [id, NOW]).unwrap();
+            if variant {
+                v.conn()
+                    .execute(
+                        "INSERT INTO media_variants VALUES (?1, 'thumb:256', ?2, ?3)",
+                        [id, sentinel.to_str().unwrap(), NOW],
+                    )
+                    .unwrap();
+            }
+            assert!(crate::objects::sweep_deleted(&v, &root).is_err());
+            v.backup_to(&backup, NOW).unwrap();
+            assert!(restore_from(
+                &backup,
+                &dir.path().join("restored"),
+                Credential::Passphrase,
+                PASS
+            )
+            .is_err());
+            assert_eq!(fs::read(&sentinel).unwrap(), b"untouched");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_lock_never_modifies_its_target_even_before_authentication() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("vault");
+        create(&root);
+        let sentinel = dir.path().join("sentinel");
+        fs::write(&sentinel, b"untouched").unwrap();
+        fs::remove_file(root.join(LOCK_FILE)).unwrap();
+        std::os::unix::fs::symlink(&sentinel, root.join(LOCK_FILE)).unwrap();
+        assert!(Vault::unlock(&root, Credential::Passphrase, "wrong").is_err());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"untouched");
+        fs::remove_file(root.join(LOCK_FILE)).unwrap();
+        fs::hard_link(&sentinel, root.join(LOCK_FILE)).unwrap();
+        assert!(Vault::unlock(&root, Credential::Passphrase, "wrong").is_err());
+        assert_eq!(fs::read(&sentinel).unwrap(), b"untouched");
     }
 
     #[test]
@@ -1310,7 +1392,7 @@ mod tests {
                 )
                 .unwrap();
 
-            let path = object_path(&root.join(OBJECTS_DIR), FAKE_ID);
+            let path = object_path(&root.join(OBJECTS_DIR), FAKE_ID).unwrap();
             fs::create_dir_all(path.parent().unwrap()).unwrap();
             fs::write(path, vec![0u8; 100]).unwrap();
 
@@ -1318,7 +1400,7 @@ mod tests {
         }
 
         // Corrupt the backup: shorten an object.
-        let copied = object_path(&backup.join(OBJECTS_DIR), FAKE_ID);
+        let copied = object_path(&backup.join(OBJECTS_DIR), FAKE_ID).unwrap();
         fs::write(&copied, vec![0u8; 50]).unwrap();
 
         let out = dir.path().join("out");
@@ -1340,25 +1422,26 @@ mod tests {
             v.conn()
                 .execute_batch(
                     "INSERT INTO objects (object_id, plaintext_sha256, ciphertext_bytes, media_type, gc_state, created_at)
-                     VALUES ('aa11bb22','h1',10,'image/jpeg','live','2026-09-19'),
-                            ('cc33dd44','h2',20,'image/jpeg','pending_delete','2026-09-19')",
+                     VALUES ('aa11bb22000000000000000000000000','h1',10,'image/jpeg','live','2026-09-19'),
+                            ('cc33dd44000000000000000000000000','h2',20,'image/jpeg','pending_delete','2026-09-19')",
                 )
                 .unwrap();
             let obj_dir = root.join(OBJECTS_DIR).join("aa").join("11");
             fs::create_dir_all(&obj_dir).unwrap();
-            fs::write(obj_dir.join("aa11bb22"), vec![0u8; 10]).unwrap();
+            fs::write(obj_dir.join("aa11bb22000000000000000000000000"), vec![0u8; 10]).unwrap();
 
             v.backup_to(&backup, NOW).unwrap()
         };
 
         assert_eq!(manifest.objects.len(), 1, "only live objects belong in the manifest");
-        assert_eq!(manifest.objects[0].object_id, "aa11bb22");
+        assert_eq!(manifest.objects[0].object_id, "aa11bb22000000000000000000000000");
     }
 
     #[test]
     fn object_paths_fan_out() {
-        let p = object_path(Path::new("/vault/objects"), "3f7a9c02deadbeef");
-        assert_eq!(p, Path::new("/vault/objects/3f/7a/3f7a9c02deadbeef"));
+        let p = object_path(Path::new("/vault/objects"), "3f7a9c02deadbeef0000000000000000")
+            .unwrap();
+        assert_eq!(p, Path::new("/vault/objects/3f/7a/3f7a9c02deadbeef0000000000000000"));
     }
 
     #[test]
@@ -1529,7 +1612,8 @@ mod tests {
         assert_eq!(manifest.manifest_version, MANIFEST_VERSION);
         let listed = &manifest.objects[0];
         assert_eq!(listed.object_id, object_id);
-        let ciphertext = fs::read(object_path(&backup.join(OBJECTS_DIR), &object_id)).unwrap();
+        let ciphertext =
+            fs::read(object_path(&backup.join(OBJECTS_DIR), &object_id).unwrap()).unwrap();
         assert_eq!(listed.ciphertext_sha256.as_deref(), Some(sha256_hex(&ciphertext).as_str()));
     }
 
@@ -1579,7 +1663,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let backup = dir.path().join("backup");
         let (_photo, object_id) = backed_up_photo(&dir.path().join("vault"), &backup);
-        let copy = object_path(&backup.join(OBJECTS_DIR), &object_id);
+        let copy = object_path(&backup.join(OBJECTS_DIR), &object_id).unwrap();
         let mut bytes = fs::read(&copy).unwrap();
         let middle = bytes.len() / 2;
         bytes[middle] ^= 0x01;
@@ -1601,7 +1685,7 @@ mod tests {
         let backup = dir.path().join("backup");
         let (_photo, object_id) = backed_up_photo(&dir.path().join("vault"), &backup);
 
-        let copy = object_path(&backup.join(OBJECTS_DIR), &object_id);
+        let copy = object_path(&backup.join(OBJECTS_DIR), &object_id).unwrap();
         let mut bytes = fs::read(&copy).unwrap();
         let middle = bytes.len() / 2;
         bytes[middle] ^= 0x01;
@@ -1645,8 +1729,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let backup = dir.path().join("backup");
         let (photo, object_id) = backed_up_photo(&dir.path().join("vault"), &backup);
-        let bytes =
-            fs::metadata(object_path(&backup.join(OBJECTS_DIR), &object_id)).unwrap().len();
+        let bytes = fs::metadata(object_path(&backup.join(OBJECTS_DIR), &object_id).unwrap())
+            .unwrap()
+            .len();
         let current = read_manifest(&backup).unwrap();
         let v1 = serde_json::json!({
             "format": current.format,

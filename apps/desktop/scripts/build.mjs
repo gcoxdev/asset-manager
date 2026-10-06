@@ -12,17 +12,17 @@
 // Here, extra arguments are passed explicitly to Tauri, and renaming happens
 // afterwards as a separate step.
 
+import { argument, outputDirectory, artifactSnapshot, freshArtifact } from "./artifact-paths.mjs";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, copyFile, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, copyFile, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
-
 const TARGETS = {
-  native: { args: [], bundles: ["appimage", "deb"] },
+  native: { args: [], bundles: process.platform === "win32" ? ["msi"] : process.platform === "darwin" ? ["dmg"] : ["appimage", "deb"] },
   binary: { args: ["--no-bundle"], bundles: [] },
   linux: { args: ["--bundles", "appimage,deb"], bundles: ["appimage", "deb"], noStrip: true },
   appimage: { args: ["--bundles", "appimage"], bundles: ["appimage"], noStrip: true },
@@ -32,7 +32,6 @@ const TARGETS = {
   "dmg-universal": {
     args: ["--target", "universal-apple-darwin", "--bundles", "dmg"],
     bundles: ["dmg"],
-    targetTriple: "universal-apple-darwin",
   },
 };
 
@@ -59,9 +58,19 @@ if (target.noStrip) {
   env.NO_STRIP = "1";
 }
 
+const buildArgs = [...target.args, ...passthrough];
+const releaseDir = outputDirectory(buildArgs, env);
+const bundles = buildArgs.includes("--no-bundle") ? [] : (argument(buildArgs, "--bundles")?.split(",") ?? target.bundles);
+const before = new Map();
+for (const bundle of bundles) {
+  const layout = BUNDLE_LAYOUT[bundle];
+  if (!layout) throw new Error(`Unsupported artifact format: ${bundle}`);
+  before.set(bundle, await artifactSnapshot(path.join(releaseDir, ...layout.dir), layout.ext));
+}
+
 const result = spawnSync(
-  "npx",
-  ["tauri", "build", ...target.args, ...passthrough],
+  process.execPath,
+  [createRequire(import.meta.url).resolve("@tauri-apps/cli/tauri.js"), "build", ...buildArgs],
   { stdio: "inherit", env, cwd: fileURLToPath(new URL("..", import.meta.url)) }
 );
 
@@ -69,7 +78,7 @@ if (result.status !== 0) {
   process.exit(result.status ?? 1);
 }
 
-const artifacts = await renameOutputs(target);
+const artifacts = await renameOutputs(bundles);
 for (const file of artifacts) await writeChecksum(file);
 
 /**
@@ -86,12 +95,8 @@ async function writeChecksum(file) {
 }
 
 /** Give artifacts a stable name so CI and release scripts need not glob. */
-async function renameOutputs({ bundles, targetTriple }) {
+async function renameOutputs(bundles) {
   const outputName = validateName(process.env.AM_OUTPUT_NAME) ?? "AssetManager";
-  const releaseDir = targetTriple
-    ? path.join(repoRoot, "target", targetTriple, "release")
-    : path.join(repoRoot, "target", "release");
-
   const written = [];
   for (const bundle of bundles) {
     const layout = BUNDLE_LAYOUT[bundle];
@@ -99,12 +104,7 @@ async function renameOutputs({ bundles, targetTriple }) {
 
     const dir = path.join(releaseDir, ...layout.dir);
     const destination = path.join(dir, `${outputName}${layout.ext}`);
-    const source = await newestArtifact(dir, layout.ext, destination);
-
-    if (!source) {
-      console.warn(`No ${bundle} artifact found in ${dir}`);
-      continue;
-    }
+    const source = await freshArtifact(dir, layout.ext, before.get(bundle));
     if (path.resolve(source) !== path.resolve(destination)) {
       const mode = (await stat(source)).mode;
       await copyFile(source, destination);
@@ -132,31 +132,4 @@ function validateName(value) {
     throw new Error("Set AM_OUTPUT_NAME without a file extension; the build adds it.");
   }
   return name;
-}
-
-async function newestArtifact(dir, ext, destination) {
-  let entries;
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-
-  const candidates = await Promise.all(
-    entries
-      .filter((e) => e.isFile() && e.name.endsWith(ext))
-      .map(async (e) => {
-        const file = path.join(dir, e.name);
-        return { file, modified: (await stat(file)).mtimeMs };
-      })
-  );
-
-  const sources = candidates
-    .filter(({ file }) => path.resolve(file) !== path.resolve(destination))
-    .sort((a, b) => b.modified - a.modified);
-
-  if (sources[0]) return sources[0].file;
-  return candidates.some(({ file }) => path.resolve(file) === path.resolve(destination))
-    ? destination
-    : null;
 }

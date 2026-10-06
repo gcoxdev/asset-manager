@@ -22,3 +22,6 @@ zeroize.workspace = true
 [dev-dependencies]
 image.workspace = true
 tempfile = "3"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

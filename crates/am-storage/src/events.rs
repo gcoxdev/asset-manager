@@ -403,7 +403,7 @@ pub fn derive_cost(
         .query_row(
             "SELECT effective_date, recorded_at, amount_minor, currency, covers_holding
              FROM cost_statements WHERE asset_id = ?1
-             ORDER BY effective_date DESC, recorded_at DESC LIMIT 1",
+             ORDER BY effective_date DESC, recorded_at DESC, rowid DESC LIMIT 1",
             [asset_id],
             |r| {
                 let minor: Option<i64> = r.get(2)?;
@@ -555,9 +555,17 @@ pub fn quantity_as_of(
     asset_id: &str,
     as_of: Option<&str>,
 ) -> Result<Decimal, EventError> {
+    quantity_as_of_in(vault.conn(), asset_id, as_of)
+}
+
+pub(crate) fn quantity_as_of_in(
+    conn: &rusqlite::Connection,
+    asset_id: &str,
+    as_of: Option<&str>,
+) -> Result<Decimal, EventError> {
     let deltas: Vec<String> = match as_of {
         Some(date) => {
-            let mut stmt = vault.conn().prepare(
+            let mut stmt = conn.prepare(
                 "SELECT quantity_delta FROM asset_events
                  WHERE asset_id = ?1 AND effective_date <= ?2
                  ORDER BY effective_date, recorded_at",
@@ -568,7 +576,7 @@ pub fn quantity_as_of(
             v
         }
         None => {
-            let mut stmt = vault.conn().prepare(
+            let mut stmt = conn.prepare(
                 "SELECT quantity_delta FROM asset_events
                  WHERE asset_id = ?1
                  ORDER BY effective_date, recorded_at",
@@ -580,7 +588,9 @@ pub fn quantity_as_of(
 
     let mut total = Decimal::ZERO;
     for raw in deltas {
-        total += parse_decimal(&raw).map_err(|_| EventError::BadQuantity(raw))?;
+        total = total
+            .checked_add(parse_decimal(&raw).map_err(|_| EventError::BadQuantity(raw.clone()))?)
+            .ok_or_else(|| EventError::BadQuantity(raw))?;
     }
     Ok(total)
 }

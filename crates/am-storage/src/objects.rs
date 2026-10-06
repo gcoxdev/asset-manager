@@ -142,7 +142,7 @@ pub fn import_object(
     .map_err(|_| ObjectError::Corrupt(object_id.clone()))?;
 
     // File first, then the database row. See the module note on ordering.
-    let path = object_path(&root.join(OBJECTS_DIR), &object_id);
+    let path = object_path(&root.join(OBJECTS_DIR), &object_id)?;
     write_bytes_atomic(&path, &ciphertext)?;
 
     vault.conn().execute(
@@ -177,7 +177,7 @@ pub fn load_object(
         return Err(ObjectError::Missing(object_id.to_string()));
     }
 
-    let path = object_path(&root.join(OBJECTS_DIR), object_id);
+    let path = object_path(&root.join(OBJECTS_DIR), object_id)?;
     let ciphertext =
         fs::read(&path).map_err(|_| ObjectError::Missing(object_id.to_string()))?;
 
@@ -386,7 +386,7 @@ pub fn sweep_deleted(vault: &Vault, root: &Path) -> Result<usize, ObjectError> {
         crate::thumbs::purge_variants(vault, root, &object_id)
             .map_err(|e| ObjectError::Io(std::io::Error::other(e.to_string())))?;
 
-        let path = object_path(&root.join(OBJECTS_DIR), &object_id);
+        let path = object_path(&root.join(OBJECTS_DIR), &object_id)?;
         match fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // already gone
@@ -482,7 +482,7 @@ mod tests {
         let photo = jpeg(0xCD, 5000);
         let stored = import_object(&vault, &root, &photo, NOW).unwrap();
 
-        let path = object_path(&root.join(OBJECTS_DIR), &stored.object_id);
+        let path = object_path(&root.join(OBJECTS_DIR), &stored.object_id).unwrap();
         let on_disk = fs::read(&path).unwrap();
 
         assert!(!on_disk.starts_with(b"\xFF\xD8\xFF"), "stored object is plaintext JPEG");
@@ -579,7 +579,7 @@ mod tests {
         let vault = open_vault(&root);
 
         let stored = import_object(&vault, &root, &jpeg(0x33, 5000), NOW).unwrap();
-        let path = object_path(&root.join(OBJECTS_DIR), &stored.object_id);
+        let path = object_path(&root.join(OBJECTS_DIR), &stored.object_id).unwrap();
 
         let mut bytes = fs::read(&path).unwrap();
         let last = bytes.len() - 1;
@@ -599,7 +599,7 @@ mod tests {
         let vault = open_vault(&root);
 
         let stored = import_object(&vault, &root, &jpeg(0x44, 200_000), NOW).unwrap();
-        let path = object_path(&root.join(OBJECTS_DIR), &stored.object_id);
+        let path = object_path(&root.join(OBJECTS_DIR), &stored.object_id).unwrap();
 
         let bytes = fs::read(&path).unwrap();
         fs::write(&path, &bytes[..bytes.len() / 2]).unwrap();
@@ -636,7 +636,7 @@ mod tests {
         detach_from_asset(&vault, "a2", &stored.object_id).unwrap();
         assert_eq!(sweep_deleted(&vault, &root).unwrap(), 1, "last reference gone");
 
-        let path = object_path(&root.join(OBJECTS_DIR), &stored.object_id);
+        let path = object_path(&root.join(OBJECTS_DIR), &stored.object_id).unwrap();
         assert!(!path.exists(), "swept object file must be gone");
     }
 
@@ -686,7 +686,7 @@ mod tests {
 
         for id in &variant_ids {
             assert!(
-                !crate::thumbs::variant_path(&root, id).exists(),
+                !crate::thumbs::variant_path(&root, id).unwrap().exists(),
                 "thumbnail outlived the photo it came from"
             );
         }
@@ -708,7 +708,7 @@ mod tests {
             )
             .unwrap();
 
-        let path = object_path(&root.join(OBJECTS_DIR), &stored.object_id);
+        let path = object_path(&root.join(OBJECTS_DIR), &stored.object_id).unwrap();
         fs::remove_file(&path).unwrap(); // file already gone, row still present
 
         assert_eq!(sweep_deleted(&vault, &root).unwrap(), 1, "must tolerate a missing file");
@@ -771,8 +771,8 @@ mod tests {
             )
             .unwrap();
 
-        let src = object_path(&root_a.join(OBJECTS_DIR), &stored.object_id);
-        let dst = object_path(&root_b.join(OBJECTS_DIR), &stored.object_id);
+        let src = object_path(&root_a.join(OBJECTS_DIR), &stored.object_id).unwrap();
+        let dst = object_path(&root_b.join(OBJECTS_DIR), &stored.object_id).unwrap();
         fs::create_dir_all(dst.parent().unwrap()).unwrap();
         fs::copy(&src, &dst).unwrap();
 

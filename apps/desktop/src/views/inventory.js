@@ -143,7 +143,7 @@ export async function openInventory(ctx) {
     const present = items.length - missing.length - counts.length - unchecked.length;
     const open = (i) => { m.close(); ctx.navigate("asset", { id: i.asset_id }); };
     const correct = async (i, button) => busy(button, async () => {
-      await call("change_quantity", { change: { asset_id: i.asset_id, kind: "correct", quantity: i.counted, effective_date: null, amount: null, currency: null, note: "Inventory check" } });
+      await call("reconcile_check_count", { checkId, assetId: i.asset_id });
       store.invalidate();
       toast(`${i.name}: count corrected to ${fmt.quantity(i.counted)}.`, { kind: "success" });
       reviewStep(checkId);
@@ -158,9 +158,9 @@ export async function openInventory(ctx) {
     mount(body,
       callout(missing.length || counts.length ? "warning" : "success",
         `${present} found as recorded. `, missing.length ? `${missing.length} missing. ` : "", counts.length ? `${counts.length} with a different count. ` : "", unchecked.length ? `${unchecked.length} not checked.` : ""),
-      h("p", { class: "field-hint" }, "Nothing has been changed. Decide for each item below — a missing item may only be misplaced."),
+      h("p", { class: "field-hint" }, "These are the observations saved with this check. A missing item may only be misplaced."),
       section("Missing", missing, (i) => h("button", { class: "btn btn-secondary btn-sm", onclick: () => open(i) }, "Open — mark lost or note it")),
-      section("Different count", counts, (i) => { const b = h("button", { class: "btn btn-secondary btn-sm" }, `Correct to ${fmt.quantity(i.counted)}`); b.addEventListener("click", () => correct(i, b)); return b; }),
+      section("Different count", counts, (i) => { if (!i.can_correct) return h("span", { class: "muted" }, i.reconciled ? "Reconciled" : "Holding changed or original baseline unavailable — start a new check"); const b = h("button", { class: "btn btn-secondary btn-sm" }, `Correct to ${fmt.quantity(i.counted)}`); b.addEventListener("click", () => correct(i, b)); return b; }),
       section("Not checked", unchecked, (i) => h("button", { class: "btn btn-ghost btn-sm", onclick: () => open(i) }, "Open")),
       h("div", { class: "form-actions" }, h("div", { class: "btn-row" }, h("button", { class: "btn btn-ghost", onclick: () => listStep() }, icon("back", { size: 16 }), "All checks")))
     );

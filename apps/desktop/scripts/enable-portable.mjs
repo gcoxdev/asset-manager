@@ -9,11 +9,10 @@
 
 import { access, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { outputDirectory } from "./artifact-paths.mjs";
 import { MARKER } from "./portable-marker.mjs";
 
-const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
-const releaseDir = path.join(process.env.CARGO_TARGET_DIR ? path.resolve(repoRoot, process.env.CARGO_TARGET_DIR) : path.join(repoRoot, "target"), "release");
+const releaseDir = outputDirectory(process.argv.slice(3));
 
 async function requireFile(file) {
   try {

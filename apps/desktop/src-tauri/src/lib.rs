@@ -165,6 +165,7 @@ pub fn configure<R: tauri::Runtime>(builder: tauri::Builder<R>) -> tauri::Builde
             inventory_commands::check_items,
             inventory_commands::mark_item,
             inventory_commands::finish_check,
+            inventory_commands::reconcile_check_count,
             inventory_commands::delete_check,
             inventory_commands::resolve_label,
             inventory_commands::label_data,

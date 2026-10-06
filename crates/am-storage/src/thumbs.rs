@@ -139,7 +139,7 @@ pub fn generate_variants(
         )
         .map_err(|_| ThumbError::Decode)?;
 
-        let path = variant_path(root, &variant_id);
+        let path = variant_path(root, &variant_id)?;
         crate::objects::write_bytes_atomic(&path, &ciphertext)?;
 
         vault.conn().execute(
@@ -178,7 +178,7 @@ pub fn load_variant(
 
     let Some(variant_id) = variant_id else { return Ok(None) };
 
-    let path = variant_path(root, &variant_id);
+    let path = variant_path(root, &variant_id)?;
     let Ok(ciphertext) = std::fs::read(&path) else { return Ok(None) };
 
     let id_bytes = parse_hex16(&variant_id).ok_or(ThumbError::Decode)?;
@@ -210,7 +210,7 @@ pub fn purge_variants(vault: &Vault, root: &Path, object_id: &str) -> Result<(),
     drop(stmt);
 
     for id in ids {
-        let path = variant_path(root, &id);
+        let path = variant_path(root, &id)?;
         match std::fs::remove_file(&path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -221,7 +221,7 @@ pub fn purge_variants(vault: &Vault, root: &Path, object_id: &str) -> Result<(),
     Ok(())
 }
 
-pub fn variant_path(root: &Path, variant_id: &str) -> std::path::PathBuf {
+pub fn variant_path(root: &Path, variant_id: &str) -> std::io::Result<std::path::PathBuf> {
     object_path(&root.join(CACHE_DIR).join("thumbs"), variant_id)
 }
 
@@ -287,7 +287,7 @@ mod tests {
             )
             .unwrap();
 
-        let path = variant_path(&root, &variant_id);
+        let path = variant_path(&root, &variant_id).unwrap();
         let bytes = std::fs::read(&path).unwrap();
 
         assert!(!bytes.starts_with(b"\xFF\xD8\xFF"), "thumbnail stored as plaintext JPEG");
@@ -318,7 +318,7 @@ mod tests {
             )
             .unwrap();
 
-        let ciphertext = std::fs::read(variant_path(&root, &variant_id)).unwrap();
+        let ciphertext = std::fs::read(variant_path(&root, &variant_id).unwrap()).unwrap();
         let id_bytes = parse_hex16(&variant_id).unwrap();
         let vault_id = vault.vault_id();
 
@@ -430,7 +430,7 @@ mod tests {
         purge_variants(&vault, &root, &stored.object_id).unwrap();
 
         for id in &ids {
-            assert!(!variant_path(&root, id).exists(), "variant file should be gone");
+            assert!(!variant_path(&root, id).unwrap().exists(), "variant file should be gone");
         }
         let count: i64 = vault
             .conn()

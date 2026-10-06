@@ -884,7 +884,11 @@ The review lists what is **missing**, what has a **different count**, and what w
 
 Each item marked here gets a «Last seen» date on its page. Deleting a check removes its marks and those dates.
 
-Labels make checks quick: [[labels]].`,
+Labels make checks quick: [[labels]].
+
+A check keeps the items and quantities recorded when it started. A count can be corrected once, while the holding still matches that baseline; later purchases or changes require a new check. Older checks without a saved baseline remain available for reference.
+
+Check history remains when an item is removed from the catalog. Delete the check itself to remove those saved observations.`,
   },
   {
     id: "labels",
@@ -1098,7 +1102,7 @@ Nothing is added until you choose «Import», and then every row is added togeth
 Rules:
 
 - Each row keeps its asset ID, so importing updates rather than duplicating. Rows without an ID are added as new items.
-- A blank cell leaves the stored value alone; a single dash (-) clears it.
+- A blank cell leaves the stored value alone; a single dash (-) clears supported fields. Acquisition dates and current values must be edited or voided in the app; their clear markers are rejected in preview.
 - Amounts are in minor units (cents): 1299.50 is written 129950.
 - A changed value becomes a dated valuation; a changed quantity becomes a correction in the history.
 - An old export is refused if the catalog has changed since, so it cannot overwrite newer edits.

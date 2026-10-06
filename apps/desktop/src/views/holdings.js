@@ -1,3 +1,4 @@
+import { pendingValues, settleValues } from "../bulk-drafts.js";
 // Holdings: the catalog as a searchable, sortable list — plus bulk value
 // entry, because setting prices one dialog at a time does not scale to a few
 // hundred collectibles.
@@ -58,6 +59,7 @@ export async function renderHoldings(root, params, ctx) {
   // Unsaved bulk values survive a redraw — a sort, a filter — rather than
   // vanishing; leaving bulk entry with any asks first.
   const drafts = new Map();
+  const bulkState = { drafts, saved: new Map(), asof: fmt.todayIso(), saving: false };
 
   const search = h("input", { type: "search", class: "search-input", placeholder: "Search names, notes, cert numbers…", value: prefs.query, "data-search": "", "aria-label": "Search holdings" });
   const results = h("div", { class: "results" });
@@ -255,7 +257,7 @@ export async function renderHoldings(root, params, ctx) {
       results.querySelector("button")?.addEventListener("click", () => openAddAsset({ onSaved: (id) => ctx.navigate("asset", { id }) }));
       return;
     }
-    if (!list.length) {
+    if (!list.length && !bulk) {
       mount(results, emptyState({ glyph: "search", title: "No matches", body: searchIds ? "Nothing matches that search with these filters." : "Nothing matches these filters." }));
       return;
     }
@@ -265,11 +267,11 @@ export async function renderHoldings(root, params, ctx) {
       if (unsaved && !(await confirmDialog({ title: "Discard unsaved values?", message: `${unsaved} value${unsaved === 1 ? " has" : "s have"} not been saved.`, confirmLabel: "Discard", danger: true }))) return;
       drafts.clear();
       bulk = false;
-      draw();
+      ctx.refresh();
     };
     const bar = h("div");
     const view = bulk
-      ? bulkTable(settings, drafts, () => { bulk = false; drafts.clear(); ctx.refresh(); }, leaveBulk)
+      ? bulkTable(settings, bulkState, () => { bulk = false; ctx.refresh(); }, leaveBulk, draw)
       : prefs.layout === "grid"
         ? grid(ctx)
         : table(ctx, selecting ? { selected, onToggle: () => mount(bar, selectionBar(list)) } : null);
@@ -523,28 +525,27 @@ function grid(ctx) {
  * one bad cell does not discard the rest.
  */
 /** Bulk value entry. Rows are added with append(assets, offset). */
-function bulkTable(settings, drafts, onDone, onCancel) {
-  const asof = h("input", { type: "date", value: fmt.todayIso(), max: fmt.todayIso(), "aria-label": "Values as of" });
-  // Only rows on screen have inputs; only they can have changes to save.
+function bulkTable(settings, state, onDone, onCancel, redraw) {
+  const { drafts } = state;
+  const asof = h("input", { type: "date", value: state.asof, disabled: state.saving, max: fmt.todayIso(), "aria-label": "Values as of", onchange: (e) => { state.asof = e.target.value; } });
+  // Inputs are just the visible projection of the complete draft set.
   const inputs = new Map();
-  const shown = new Map();
-  const errors = new Map();
   const dirty = h("span", { class: "muted" }, "No changes yet");
   const body = h("tbody");
 
   const countChanges = () => {
-    const n = [...inputs.values()].filter((i) => i.value.trim() && i.value.trim() !== i.dataset.original).length;
+    const n = pendingValues(drafts, state.asof).length;
     dirty.textContent = n ? `${n} change${n === 1 ? "" : "s"}` : "No changes yet";
-    save.disabled = n === 0;
+    save.disabled = n === 0 || state.saving;
   };
 
   const row = (a, index) => {
-    const original = a.current_display ? a.current_display.split(" ")[0] : "";
+    const original = state.saved.get(a.asset_id) ?? (a.current_display ? a.current_display.split(" ")[0] : "");
     const draft = drafts.get(a.asset_id);
-    const input = h("input", { type: "text", inputmode: "decimal", class: "input-money bulk-input", value: draft ? draft.value : original, placeholder: "—", "aria-label": `Value of ${a.name}` });
+    const input = h("input", { type: "text", inputmode: "decimal", class: "input-money bulk-input", disabled: state.saving, value: draft ? draft.value : original, placeholder: "—", "aria-label": `Value of ${a.name}` });
     input.dataset.original = original;
     input.addEventListener("input", () => {
-      drafts.set(a.asset_id, { value: input.value.trim(), original });
+      drafts.set(a.asset_id, { value: input.value.trim(), original, currency: a.current_currency ?? settings.currency });
       countChanges();
     });
     input.addEventListener("keydown", (e) => {
@@ -552,9 +553,7 @@ function bulkTable(settings, drafts, onDone, onCancel) {
       if (e.key === "ArrowUp") { e.preventDefault(); [...inputs.values()][index - 1]?.focus(); }
     });
     inputs.set(a.asset_id, input);
-    shown.set(a.asset_id, a);
-    const err = h("div", { class: "field-error" });
-    errors.set(a.asset_id, err);
+    const err = h("div", { class: "field-error" }, draft?.error ?? "");
     return h("tr", {},
       h("td", { class: "col-photo" }, thumb(a, 36)),
       h("td", {}, h("div", { class: "name-cell" }, h("span", { class: "name" }, a.name), h("span", { class: "sub" }, a.pricing === "market" ? `${subtitle(a)} · follows the market — a typed value switches it to manual` : subtitle(a)))),
@@ -564,37 +563,29 @@ function bulkTable(settings, drafts, onDone, onCancel) {
   };
 
   const save = h("button", { class: "btn btn-primary", disabled: true, onclick: async () => {
-    const entries = [];
-    for (const [id, input] of inputs) {
-      const a = shown.get(id);
-      const v = input.value.trim();
-      if (v && v !== input.dataset.original) {
-        entries.push({ asset_id: id, amount: v, currency: a.current_currency ?? settings.currency, asof: asof.value });
-      }
-    }
-    await busy(save, async () => {
-      const results = await call("set_prices", { entries });
-      let failed = 0;
-      for (const r of results) {
-        const err = errors.get(r.asset_id);
-        err.textContent = r.ok ? "" : describe({ message: r.error });
-        if (!r.ok) failed += 1;
-      }
-      store.invalidate();
-      const saved = results.length - failed;
-      if (failed) {
-        toast(`Saved ${saved}; ${failed} need${failed === 1 ? "s" : ""} fixing.`, { kind: "warning" });
-        for (const r of results) {
-          if (!r.ok) continue;
-          inputs.get(r.asset_id).dataset.original = inputs.get(r.asset_id).value.trim();
-          drafts.delete(r.asset_id);
+    if (state.saving) return;
+    const entries = pendingValues(drafts, state.asof);
+    state.saving = true;
+    asof.disabled = true;
+    for (const input of inputs.values()) input.disabled = true;
+    try {
+      await busy(save, async () => {
+        const results = await call("set_prices", { entries });
+        settleValues(state, entries, results);
+        const failed = results.filter((r) => !r.ok).length;
+        store.invalidate();
+        const saved = results.length - failed;
+        if (failed) {
+          toast(`Saved ${saved}; ${failed} need${failed === 1 ? "s" : ""} fixing.`, { kind: "warning" });
+        } else {
+          toast(`Saved ${saved} value${saved === 1 ? "" : "s"}.`, { kind: "success" });
         }
-        countChanges();
-      } else {
-        toast(`Saved ${saved} value${saved === 1 ? "" : "s"}.`, { kind: "success" });
-        onDone();
-      }
-    }, "Saving…");
+      }, "Saving…");
+    } finally {
+      state.saving = false;
+      if (pendingValues(drafts, state.asof).length) redraw();
+    }
+    if (!pendingValues(drafts, state.asof).length) onDone();
   } }, "Save values");
 
   const el = h("div", { class: "bulk" },

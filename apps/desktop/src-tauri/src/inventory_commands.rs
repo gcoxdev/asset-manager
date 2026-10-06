@@ -80,6 +80,21 @@ pub fn finish_check(session: State<'_, Session>, check_id: String) -> IpcResult<
 }
 
 #[tauri::command]
+pub fn reconcile_check_count(
+    session: State<'_, Session>,
+    check_id: String,
+    asset_id: String,
+) -> IpcResult<()> {
+    session.touch();
+    session
+        .with_vault(|vault| {
+            inventory::reconcile(vault, &check_id, &asset_id, &crate::ipc::today(), &now())
+                .map_err(inv_err)
+        })
+        .map_err(IpcError::from)
+}
+
+#[tauri::command]
 pub fn delete_check(session: State<'_, Session>, check_id: String) -> IpcResult<()> {
     session.touch();
     session

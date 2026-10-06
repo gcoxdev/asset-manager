@@ -7,7 +7,7 @@
 
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 struct Migration {
     version: i64,
@@ -32,6 +32,7 @@ const MIGRATIONS: &[Migration] = &[
     Migration { version: 15, sql: include_str!("../migrations/015_wishlist.sql") },
     Migration { version: 16, sql: include_str!("../migrations/016_inventory.sql") },
     Migration { version: 17, sql: include_str!("../migrations/017_sets_and_splits.sql") },
+    Migration { version: 18, sql: include_str!("../migrations/018_inventory_snapshots.sql") },
 ];
 
 #[derive(Debug, thiserror::Error)]
@@ -81,6 +82,24 @@ mod tests {
         let conn = open_encrypted(path.to_str().unwrap(), &key()).unwrap();
         migrate(&conn).unwrap();
         (dir, conn)
+    }
+
+    #[test]
+    fn legacy_inventory_is_frozen_without_inventing_a_reconciliation_baseline() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON").unwrap();
+        migrate_to(&conn, 17);
+        conn.execute_batch("INSERT INTO assets (asset_id, type_id, name, quantity, created_at, updated_at)
+            VALUES ('a', 'generic', 'Legacy', '10', '2026-01-01', '2026-01-01');
+            INSERT INTO inventory_checks VALUES ('c', 'Legacy check', NULL, '2026-01-01', '2026-01-02');
+            INSERT INTO inventory_marks VALUES ('c', 'a', 'count', '5', '2026-01-01');").unwrap();
+        migrate(&conn).unwrap();
+        conn.execute_batch("DELETE FROM assets WHERE asset_id = 'a'").unwrap();
+        let (quantity, counted, baseline): (String, String, Option<String>) = conn.query_row(
+            "SELECT quantity, counted, baseline FROM inventory_check_items WHERE check_id = 'c'", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((quantity.as_str(), counted.as_str()), ("10", "5"));
+        assert!(baseline.is_none());
     }
 
     #[test]

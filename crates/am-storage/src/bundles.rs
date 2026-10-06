@@ -2,7 +2,6 @@
 //! several items.
 
 use am_core::{Currency, Decimal, Money};
-use rust_decimal::RoundingStrategy;
 use serde::Serialize;
 
 use crate::assets::{self, AssetError, NewAsset, Pricing};
@@ -13,11 +12,14 @@ fn invalid(m: impl Into<String>) -> AssetError {
     AssetError::Other(m.into())
 }
 
-fn share(minor: i64, part: Decimal, whole: Decimal) -> i64 {
-    (Decimal::from(minor) * part / whole)
-        .round_dp_with_strategy(0, RoundingStrategy::MidpointNearestEven)
-        .try_into()
-        .unwrap_or(minor)
+fn share(minor: i64, part: Decimal, whole: Decimal) -> Result<i64, AssetError> {
+    crate::valuations::scale_to_quantity(
+        &Money::new(minor, Currency::new("USD").unwrap()),
+        whole,
+        part,
+    )
+    .map(|m| m.amount_minor)
+    .map_err(|e| invalid(e.to_string()))
 }
 
 /// Make `quantity` of a holding into an item of its own, named `new_name`.
@@ -50,6 +52,16 @@ pub fn split(
     if name.is_empty() {
         return Err(invalid("give the new item a name"));
     }
+    let future: i64 = vault.conn().query_row(
+        "SELECT count(*) FROM asset_events WHERE asset_id = ?1 AND effective_date > ?2",
+        [asset_id, today],
+        |r| r.get(0),
+    )?;
+    if future != 0 {
+        return Err(invalid(
+            "resolve future-dated quantity changes before splitting this holding",
+        ));
+    }
     let cost = events::derive_cost(vault.conn(), asset_id)?;
     let value = original.current_amount_minor.zip(original.current_currency.clone());
 
@@ -67,13 +79,25 @@ pub fn split(
         },
         now,
     )?;
-    let allocated = match (&cost.amount, cost.complete) {
-        (Some((minor, code)), true) => Some(Money::new(
-            share(*minor, quantity, held),
+    let allocated = match &cost.amount {
+        Some((minor, code)) => Some(Money::new(
+            share(*minor, quantity, held)?,
             Currency::new(code).map_err(|e| invalid(e.to_string()))?,
         )),
         _ => None,
     };
+    // Allocate one rounded share; keep its exact complement in dated history.
+    if let Some((minor, code)) = &cost.amount {
+        let remainder = minor
+            .checked_sub(share(*minor, quantity, held)?)
+            .ok_or_else(|| invalid("split cost overflows"))?;
+        unit.execute(
+            "INSERT INTO cost_statements (statement_id, asset_id, effective_date, amount_minor,
+                currency, covers_holding, note, recorded_at) VALUES (?1, ?2, ?3, ?4, ?5, ?7, 'Remainder after split', ?6)",
+            rusqlite::params![random_id(), asset_id, today, remainder, code, now, cost.complete],
+        )?;
+        events::rebuild_cost_in(&unit, asset_id)?;
+    }
     let attrs = original
         .attrs
         .iter()
@@ -103,6 +127,12 @@ pub fn split(
         },
         now,
     )?;
+    if let (Some((minor, code)), false) = (&cost.amount, cost.complete) {
+        unit.execute("INSERT INTO cost_statements (statement_id, asset_id, effective_date, amount_minor,
+            currency, covers_holding, note, recorded_at) VALUES (?1, ?2, ?3, ?4, ?5, 0, 'Partial known cost allocated by split', ?6)",
+            rusqlite::params![random_id(), &new_id, today, share(*minor, quantity, held)?, code, now])?;
+        events::rebuild_cost_in(&unit, &new_id)?;
+    }
     // Show when the units were first acquired, without moving the acquire
     // event (which would count them twice before the split).
     unit.execute(
@@ -117,10 +147,31 @@ pub fn split(
         crate::valuations::record_valuation(
             vault,
             &crate::valuations::NewValuation {
+                asset_id: asset_id.to_string(),
+                quote_id: None,
+                value: Money::new(
+                    minor
+                        .checked_sub(share(*minor, quantity, held)?)
+                        .ok_or_else(|| invalid("split value overflows"))?,
+                    Currency::new(code).map_err(|e| invalid(e.to_string()))?,
+                ),
+                quantity_at_time: held - quantity,
+                basis: crate::valuations::Basis::EstimatedResale,
+                provenance: crate::valuations::Provenance::Manual,
+                inputs: serde_json::json!({"note":"Remainder after split"}),
+                asof: today.to_string(),
+            },
+            now,
+        )
+        .map_err(|e| invalid(e.to_string()))?;
+
+        crate::valuations::record_valuation(
+            vault,
+            &crate::valuations::NewValuation {
                 asset_id: new_id.clone(),
                 quote_id: None,
                 value: Money::new(
-                    share(*minor, quantity, held),
+                    share(*minor, quantity, held)?,
                     Currency::new(code).map_err(|e| invalid(e.to_string()))?,
                 ),
                 quantity_at_time: quantity,
@@ -179,7 +230,7 @@ pub fn create_set(
     if target_count.is_some_and(|t| t <= 0 || t > 100_000) {
         return Err(invalid("the target is a positive number of items"));
     }
-    let id = new_id();
+    let id = random_id();
     vault.conn().execute(
         "INSERT INTO sets (set_id, name, target_count, notes, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
         rusqlite::params![&id, name, target_count, notes.trim(), now],
@@ -400,7 +451,7 @@ pub fn allocate_cost(
     Ok(asset_ids.iter().cloned().zip(shares).collect())
 }
 
-fn new_id() -> String {
+fn random_id() -> String {
     let mut raw = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut raw);
     raw.iter().map(|b| format!("{b:02x}")).collect()
@@ -472,6 +523,73 @@ mod tests {
             NOW,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn splitting_preserves_partial_known_cost_without_claiming_completeness() {
+        let (_d, v) = setup();
+        let id = holding(&v, "Partial cost", 1, Some(10001));
+        events::record(
+            &v,
+            &NewEvent {
+                asset_id: id.clone(),
+                event_type: EventType::Add,
+                effective_date: TODAY.into(),
+                quantity_delta: Decimal::ONE,
+                amount_minor: None,
+                currency: None,
+                note: String::new(),
+            },
+            NOW,
+        )
+        .unwrap();
+        let child = split(&v, &id, Decimal::ONE, "Half", TODAY, NOW).unwrap();
+        let original = assets::get(&v, &id).unwrap();
+        let child = assets::get(&v, &child).unwrap();
+        assert_eq!(
+            original.acquired_amount_minor.unwrap() + child.acquired_amount_minor.unwrap(),
+            10001
+        );
+        assert!(!original.cost_complete && !child.cost_complete);
+    }
+
+    #[test]
+    fn odd_cents_survive_splits_repeated_splits_and_cache_rebuilds() {
+        for minor in [10001, 10003] {
+            let (_d, v) = setup();
+            let original = holding(&v, "Odd cents", 4, Some(minor));
+            value(&v, &original, minor, 4);
+            let historical = crate::valuations::portfolio_total_as_of(
+                &v,
+                "2026-03-01",
+                &Currency::new("USD").unwrap(),
+            )
+            .unwrap()
+            .total;
+            let first = split(&v, &original, Decimal::from(2), "Half", TODAY, NOW).unwrap();
+            let second = split(&v, &original, Decimal::ONE, "Quarter", TODAY, NOW).unwrap();
+            let mut costs = 0;
+            let mut values = 0;
+            for id in [&original, &first, &second] {
+                events::rebuild_cost_in(v.conn(), id).unwrap();
+                crate::valuations::refresh_current_value_in(v.conn(), id, NOW).unwrap();
+                let asset = assets::get(&v, id).unwrap();
+                costs += asset.acquired_amount_minor.unwrap();
+                values += asset.current_amount_minor.unwrap();
+            }
+            assert_eq!(costs, minor);
+            assert_eq!(values, minor);
+            assert_eq!(
+                crate::valuations::portfolio_total_as_of(
+                    &v,
+                    "2026-03-01",
+                    &Currency::new("USD").unwrap()
+                )
+                .unwrap()
+                .total,
+                historical
+            );
+        }
     }
 
     #[test]

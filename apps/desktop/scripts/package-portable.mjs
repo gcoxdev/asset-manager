@@ -16,11 +16,11 @@ import { createHash } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { outputDirectory } from "./artifact-paths.mjs";
 import { MARKER } from "./portable-marker.mjs";
 
 const desktopRoot = fileURLToPath(new URL("..", import.meta.url));
-const repoRoot = path.resolve(desktopRoot, "../..");
-const releaseDir = path.join(process.env.CARGO_TARGET_DIR ? path.resolve(repoRoot, process.env.CARGO_TARGET_DIR) : path.join(repoRoot, "target"), "release");
+const releaseDir = outputDirectory(process.argv.slice(3));
 const bundleDir = path.join(releaseDir, "bundle");
 const outDir = path.join(bundleDir, "portable");
 const { version } = JSON.parse(readFileSync(path.join(desktopRoot, "src-tauri", "tauri.conf.json"), "utf8"));

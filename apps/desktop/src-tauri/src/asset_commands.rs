@@ -692,6 +692,9 @@ pub(crate) fn create_from_form(
         None | Some("") => Decimal::ONE,
         Some(q) => assets::parse_quantity(q).map_err(asset_err).map_err(invalid)?,
     };
+    if let Some(spec) = MarketSpec::from_attrs(&attrs).map_err(storage)? {
+        spec.validate_quantity(quantity).map_err(storage)?;
+    }
     let pricing = match form.pricing.as_deref() {
         Some("market") => Pricing::Market,
         _ => Pricing::Manual,
@@ -786,6 +789,12 @@ pub fn update_asset(
                 let insured = parse_money_opt(&form.insured_value, &insured_currency)
                     .map_err(|e| storage(e.message))?;
 
+                if let Some(spec) = MarketSpec::from_attrs(&attrs).map_err(storage)? {
+                    spec.validate_quantity(
+                        assets::parse_quantity(&current.quantity).map_err(storage)?,
+                    )
+                    .map_err(storage)?;
+                }
                 assets::update(
                     vault,
                     &asset_id,
@@ -1319,33 +1328,63 @@ pub fn import_csv(
         .map_err(IpcError::from)
 }
 
-/// Read a user-chosen text file.
-///
-/// Deliberately narrow rather than granting the filesystem plugin: this reads
-/// one path the user picked in a dialog, with a size bound, and nothing else.
-/// A general fs permission would widen the attack surface for no benefit.
-#[tauri::command]
-pub fn read_text_file(path: String) -> IpcResult<String> {
-    let meta = std::fs::metadata(&path)
-        .map_err(|e| IpcError { kind: "unreadable_file".into(), message: e.to_string() })?;
-    if meta.len() as usize > am_storage::csv::MAX_FILE_BYTES {
-        return Err(IpcError {
-            kind: "too_large".into(),
-            message: "file is too large to import".into(),
-        });
+/// Text import/export requires an open session. Dialog selection is a UI
+/// convention; these commands do not prove that the renderer opened a dialog.
+fn text_path(vault: &Vault, path: &str) -> Result<std::path::PathBuf, SessionError> {
+    let path = std::path::Path::new(path);
+    let canonical = if path.exists() {
+        std::fs::canonicalize(path).map_err(storage)?
+    } else {
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(std::path::Path::new("."));
+        std::fs::canonicalize(parent)
+            .map_err(storage)?
+            .join(path.file_name().ok_or_else(|| storage("invalid file name"))?)
+    };
+    if canonical.starts_with(std::fs::canonicalize(vault.root()).map_err(storage)?) {
+        return Err(storage("text import/export cannot access vault internals"));
     }
-    std::fs::read_to_string(&path)
-        .map_err(|e| IpcError { kind: "unreadable_file".into(), message: e.to_string() })
+    Ok(canonical)
 }
 
-/// Write a user-chosen text file.
-///
-/// The caller has already warned that the contents leave the vault's
-/// protection; this only performs the write.
 #[tauri::command]
-pub fn write_text_file(path: String, contents: String) -> IpcResult<()> {
-    std::fs::write(&path, contents)
-        .map_err(|e| IpcError { kind: "unwritable_file".into(), message: e.to_string() })
+pub fn read_text_file(session: State<'_, Session>, path: String) -> IpcResult<String> {
+    use std::io::Read;
+    session.touch();
+    session
+        .with_vault(|vault| {
+            let path = text_path(vault, &path)?;
+            let file = std::fs::File::open(path).map_err(storage)?;
+            if !file.metadata().map_err(storage)?.is_file() {
+                return Err(storage("select a regular text file"));
+            }
+            let mut contents = String::new();
+            file.take(am_storage::csv::MAX_FILE_BYTES as u64 + 1)
+                .read_to_string(&mut contents)
+                .map_err(storage)?;
+            if contents.len() > am_storage::csv::MAX_FILE_BYTES {
+                return Err(storage("file is too large to import"));
+            }
+            Ok(contents)
+        })
+        .map_err(IpcError::from)
+}
+
+#[tauri::command]
+pub fn write_text_file(
+    session: State<'_, Session>,
+    path: String,
+    contents: String,
+) -> IpcResult<()> {
+    session.touch();
+    session
+        .with_vault(|vault| {
+            let path = text_path(vault, &path)?;
+            std::fs::write(path, contents).map_err(storage)
+        })
+        .map_err(IpcError::from)
 }
 
 #[cfg(test)]
@@ -1354,6 +1393,50 @@ mod tests {
 
     fn attrs(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn overflowing_import_attributes_do_not_poison_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Session::new();
+        let timestamp = "2026-10-06T00:00:00Z";
+        session
+            .create(
+                &dir.path().join("vault"),
+                "correct horse battery staple",
+                &am_crypto::KdfParams { memory_cost_kib: 8192, iterations: 1, parallelism: 1 },
+                timestamp,
+            )
+            .unwrap();
+        let form = AssetForm {
+            type_id: "generic".into(),
+            name: Some("Imported metal".into()),
+            quantity: Some("2".into()),
+            attrs: attrs(&[
+                ("metal", "gold"),
+                ("weight_per_item", "79228162514264337593543950335"),
+            ]),
+            ..Default::default()
+        };
+        assert!(session.with_vault(|v| create_from_form(v, &form, timestamp)).is_err());
+        session
+            .with_vault(|v| {
+                let form = AssetForm {
+                    attrs: attrs(&[("metal", "gold"), ("weight_per_item", "1")]),
+                    ..form
+                };
+                let id = create_from_form(v, &form, timestamp)?;
+                // Existing malformed records must also be safe to display.
+                let mut record = assets::get(v, &id).map_err(storage)?;
+                record
+                    .attrs
+                    .insert("weight_per_item".into(), am_core::Decimal::MAX.to_string());
+                let market = market_of(v, &record).unwrap();
+                assert!(market.fine_troy_oz.is_none());
+                Ok(())
+            })
+            .unwrap();
+        assert!(session.with_vault(|_| Ok(())).is_ok());
     }
 
     #[test]

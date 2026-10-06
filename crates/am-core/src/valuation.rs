@@ -29,6 +29,8 @@ pub enum ValuationError {
     NegativeWeight,
     #[error("contradictory inputs: {0}")]
     Contradictory(String),
+    #[error("valuation exceeds supported numeric range")]
+    Overflow,
     #[error(transparent)]
     Money(#[from] MoneyError),
 }
@@ -58,11 +60,14 @@ impl WeightUnit {
         }
     }
 
-    pub fn convert(self, amount: Decimal, to: WeightUnit) -> Decimal {
+    pub fn convert(self, amount: Decimal, to: WeightUnit) -> Result<Decimal, ValuationError> {
         if self == to {
-            return amount;
+            return Ok(amount);
         }
-        amount * self.grams_per_unit() / to.grams_per_unit()
+        amount
+            .checked_mul(self.grams_per_unit())
+            .and_then(|v| v.checked_div(to.grams_per_unit()))
+            .ok_or(ValuationError::Overflow)
     }
 }
 
@@ -103,13 +108,16 @@ impl MetalHolding {
             return Err(ValuationError::BadPurity(self.purity));
         }
 
-        let total_weight = self.quantity * self.weight_per_item;
+        let total_weight =
+            self.quantity.checked_mul(self.weight_per_item).ok_or(ValuationError::Overflow)?;
         let fine = match self.weight_basis {
             // Purity applied exactly once.
-            WeightBasis::Gross => total_weight * self.purity,
+            WeightBasis::Gross => {
+                total_weight.checked_mul(self.purity).ok_or(ValuationError::Overflow)?
+            }
             WeightBasis::Fine => total_weight,
         };
-        Ok(self.weight_unit.convert(fine, unit))
+        self.weight_unit.convert(fine, unit)
     }
 
     /// Melt value: fine content times the spot price, with no premium.
@@ -120,7 +128,10 @@ impl MetalHolding {
     ) -> Result<Money, ValuationError> {
         let fine_oz = self.fine_weight(WeightUnit::TroyOunce)?;
         // Rounded once, at the end.
-        Ok(Money::from_total_decimal(fine_oz * spot_per_troy_oz, currency)?)
+        Ok(Money::from_total_decimal(
+            fine_oz.checked_mul(spot_per_troy_oz).ok_or(ValuationError::Overflow)?,
+            currency,
+        )?)
     }
 
     /// Market value: melt plus a premium over spot.
@@ -134,7 +145,10 @@ impl MetalHolding {
         currency: Currency,
     ) -> Result<Money, ValuationError> {
         let fine_oz = self.fine_weight(WeightUnit::TroyOunce)?;
-        let total = fine_oz * spot_per_troy_oz * (Decimal::ONE + premium_pct);
+        let total = Decimal::ONE
+            .checked_add(premium_pct)
+            .and_then(|premium| fine_oz.checked_mul(spot_per_troy_oz)?.checked_mul(premium))
+            .ok_or(ValuationError::Overflow)?;
         Ok(Money::from_total_decimal(total, currency)?)
     }
 }
@@ -152,7 +166,10 @@ impl UnitHolding {
             return Err(ValuationError::NegativeQuantity);
         }
         // quantity × unit_quote in full precision, rounded once.
-        Ok(Money::from_total_decimal(self.quantity * self.unit_quote, currency)?)
+        Ok(Money::from_total_decimal(
+            self.quantity.checked_mul(self.unit_quote).ok_or(ValuationError::Overflow)?,
+            currency,
+        )?)
     }
 }
 
@@ -197,10 +214,33 @@ mod tests {
     }
 
     #[test]
+    fn out_of_range_holdings_return_errors_without_panicking() {
+        let metal = MetalHolding {
+            quantity: Decimal::from(2),
+            weight_per_item: Decimal::MAX,
+            weight_unit: WeightUnit::TroyOunce,
+            weight_basis: WeightBasis::Fine,
+            purity: Decimal::ONE,
+        };
+        assert_eq!(metal.fine_weight(WeightUnit::TroyOunce), Err(ValuationError::Overflow));
+        assert_eq!(
+            WeightUnit::TroyOunce.convert(Decimal::MAX, WeightUnit::Gram),
+            Err(ValuationError::Overflow)
+        );
+        let metal =
+            MetalHolding { quantity: Decimal::ONE, weight_per_item: Decimal::ONE, ..metal };
+        assert!(metal.market_value(Decimal::MAX, Decimal::MAX, usd()).is_err());
+        assert_eq!(
+            UnitHolding { quantity: Decimal::from(2), unit_quote: Decimal::MAX }.value(usd()),
+            Err(ValuationError::Overflow)
+        );
+    }
+
+    #[test]
     fn troy_ounce_is_not_an_ounce() {
         // Confusing the two overstates a holding by ~9.7%.
-        let one_troy = WeightUnit::TroyOunce.convert(Decimal::ONE, WeightUnit::Gram);
-        let one_avoir = WeightUnit::Ounce.convert(Decimal::ONE, WeightUnit::Gram);
+        let one_troy = WeightUnit::TroyOunce.convert(Decimal::ONE, WeightUnit::Gram).unwrap();
+        let one_avoir = WeightUnit::Ounce.convert(Decimal::ONE, WeightUnit::Gram).unwrap();
 
         assert_eq!(one_troy, d("31.1034768"));
         assert_eq!(one_avoir, d("28.349523125"));
@@ -210,15 +250,16 @@ mod tests {
     #[test]
     fn weight_conversions_round_trip() {
         for unit in [WeightUnit::Gram, WeightUnit::Pennyweight, WeightUnit::Ounce] {
-            let grams = WeightUnit::TroyOunce.convert(Decimal::ONE, unit);
-            let back = unit.convert(grams, WeightUnit::TroyOunce);
+            let grams = WeightUnit::TroyOunce.convert(Decimal::ONE, unit).unwrap();
+            let back = unit.convert(grams, WeightUnit::TroyOunce).unwrap();
             assert_eq!(back.round_dp(10), Decimal::ONE, "round trip via {unit:?}");
         }
     }
 
     #[test]
     fn twenty_pennyweight_make_a_troy_ounce() {
-        let one_oz = WeightUnit::Pennyweight.convert(Decimal::from(20), WeightUnit::TroyOunce);
+        let one_oz =
+            WeightUnit::Pennyweight.convert(Decimal::from(20), WeightUnit::TroyOunce).unwrap();
         assert_eq!(one_oz.round_dp(10), Decimal::ONE);
     }
 

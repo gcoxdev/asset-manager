@@ -81,6 +81,22 @@ pub fn parse_unit(name: &str) -> Option<WeightUnit> {
 }
 
 impl MarketSpec {
+    /// Validate the combined holding even when manual pricing skips revaluation.
+    pub fn validate_quantity(&self, quantity: Decimal) -> Result<(), PricingError> {
+        if let Self::Metal { weight_per_item, unit, basis, purity, .. } = self {
+            MetalHolding {
+                quantity,
+                weight_per_item: *weight_per_item,
+                weight_unit: *unit,
+                weight_basis: *basis,
+                purity: *purity,
+            }
+            .fine_weight(WeightUnit::TroyOunce)
+            .map_err(|e| bad("weight", e.to_string()))?;
+        }
+        Ok(())
+    }
+
     /// Read a spec from attributes. `Ok(None)` means the asset tracks no
     /// market — an ordinary collectible.
     pub fn from_attrs(attrs: &BTreeMap<String, String>) -> Result<Option<Self>, PricingError> {

@@ -95,3 +95,24 @@ test("bulk value entry saves only what was changed", async ({ page, answers }) =
   const [args] = await callsTo(page, "set_prices");
   expect(args.entries).toEqual([expect.objectContaining({ asset_id: "id-3", amount: "42.50", currency: "USD" })]);
 });
+
+test("bulk drafts and their date survive filters and sorting", async ({ page, answers }) => {
+  answers.set_prices = (args) => args.entries.map((e) => ({ asset_id: e.asset_id, ok: true, error: null }));
+  await openHoldings(page);
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.getByRole("menuitem", { name: "Update many values…" }).click();
+  await page.getByRole("textbox", { name: "Value of Item 3", exact: true }).fill("42.50");
+  await page.getByLabel("Values as of").fill("2026-01-15");
+  await page.locator(".chip", { hasText: "Valuables" }).click();
+  await expect(page.getByRole("textbox", { name: "Value of Item 3", exact: true })).toHaveCount(0);
+  await expect(page.getByLabel("Values as of")).toHaveValue("2026-01-15");
+  await page.getByRole("textbox", { name: "Value of Item 4", exact: true }).fill("61.75");
+  await page.getByLabel("Sort", { exact: true }).selectOption("name");
+  await expect(page.getByLabel("Values as of")).toHaveValue("2026-01-15");
+  await page.getByRole("button", { name: "Save values" }).click();
+  const [args] = await callsTo(page, "set_prices");
+  expect(args.entries).toEqual([
+    { asset_id: "id-3", amount: "42.50", currency: "USD", asof: "2026-01-15" },
+    { asset_id: "id-4", amount: "61.75", currency: "USD", asof: "2026-01-15" },
+  ]);
+});

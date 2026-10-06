@@ -102,6 +102,7 @@ dependencies = [
  "am-crypto",
  "anyhow",
  "image",
+ "libc",
  "rand 0.8.8",
  "rusqlite",
  "rust_decimal",

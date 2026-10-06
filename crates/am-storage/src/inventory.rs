@@ -88,6 +88,8 @@ pub struct CheckItem {
     pub away: Option<String>,
     pub result: Option<String>,
     pub counted: Option<String>,
+    pub reconciled: bool,
+    pub can_correct: bool,
 }
 
 pub fn start(
@@ -101,10 +103,20 @@ pub fn start(
         return Err(invalid("give the check a name"));
     }
     let id = new_id();
+    let unit = crate::atomic::begin(vault.conn())?;
     vault.conn().execute(
         "INSERT INTO inventory_checks (check_id, name, scope_location, started_at) VALUES (?1, ?2, ?3, ?4)",
         rusqlite::params![&id, name, scope_location.map(str::trim).filter(|s| !s.is_empty()), now],
     )?;
+    for item in live_items(vault, &id)? {
+        vault.conn().execute(
+            "INSERT INTO inventory_check_items (check_id, asset_id, name, type_label, storage_location,
+                quantity, quantity_unit, away, baseline) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![id, item.asset_id, item.name, item.type_label, item.storage_location,
+                item.quantity, item.quantity_unit, item.away, baseline(vault, &item.asset_id)?],
+        )?;
+    }
+    unit.commit()?;
     Ok(id)
 }
 
@@ -124,7 +136,7 @@ fn scope(
 
 /// The items a check covers — held, in the catalog, at its location or in
 /// places inside it — with what has been marked so far.
-pub fn items(vault: &Vault, check_id: &str) -> Result<Vec<CheckItem>, InventoryError> {
+fn live_items(vault: &Vault, check_id: &str) -> Result<Vec<CheckItem>, InventoryError> {
     let (location, _) = scope(vault, check_id)?;
     let nested = location.as_ref().map(|l| format!("{l} / "));
     let mut stmt = vault.conn().prepare(
@@ -151,10 +163,104 @@ pub fn items(vault: &Vault, check_id: &str) -> Result<Vec<CheckItem>, InventoryE
                 away: away.filter(|k| k != "returned"),
                 result: r.get(7)?,
                 counted: r.get(8)?,
+                reconciled: false,
+                can_correct: false,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// Include the full quantity history so a later purchase, even backdated or
+/// offset by a removal, invalidates the old observation.
+fn baseline(vault: &Vault, asset_id: &str) -> Result<Option<String>, InventoryError> {
+    use rusqlite::OptionalExtension;
+    Ok(vault.conn().query_row(
+        "SELECT json_array(a.quantity, a.status, a.deleted_at,
+            (SELECT json_group_array(json_array(event_id, event_type, effective_date, quantity_delta)) FROM
+                (SELECT * FROM asset_events WHERE asset_id = a.asset_id ORDER BY rowid)))
+         FROM assets a WHERE asset_id = ?1 AND a.deleted_at IS NULL AND a.status = 'active'",
+        [asset_id], |r| r.get(0)).optional()?)
+}
+
+pub fn items(vault: &Vault, check_id: &str) -> Result<Vec<CheckItem>, InventoryError> {
+    let (_, finished) = scope(vault, check_id)?;
+    let mut stmt = vault.conn().prepare(
+        "SELECT asset_id, name, type_label, storage_location, quantity, quantity_unit, away,
+                result, counted, reconciled_at IS NOT NULL, baseline
+         FROM inventory_check_items WHERE check_id = ?1 ORDER BY storage_location, name COLLATE NOCASE")?;
+    let rows = stmt
+        .query_map([check_id], |r| {
+            Ok((
+                CheckItem {
+                    asset_id: r.get(0)?,
+                    name: r.get(1)?,
+                    type_label: r.get(2)?,
+                    storage_location: r.get(3)?,
+                    quantity: r.get(4)?,
+                    quantity_unit: r.get(5)?,
+                    away: r.get(6)?,
+                    result: r.get(7)?,
+                    counted: r.get(8)?,
+                    reconciled: r.get(9)?,
+                    can_correct: false,
+                },
+                r.get::<_, Option<String>>(10)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    rows.into_iter()
+        .map(|(mut item, expected)| {
+            item.can_correct = item.result.as_deref() == Some("count")
+                && item.counted.as_deref() != Some(item.quantity.as_str())
+                && finished.is_some()
+                && !item.reconciled
+                && expected.is_some()
+                && expected == baseline(vault, &item.asset_id)?;
+            Ok(item)
+        })
+        .collect()
+}
+
+/// Apply an observation once, only while its original holding is unchanged.
+pub fn reconcile(
+    vault: &Vault,
+    check_id: &str,
+    asset_id: &str,
+    today: &str,
+    now: &str,
+) -> Result<(), InventoryError> {
+    let unit = crate::atomic::begin(vault.conn())?;
+    let item = items(vault, check_id)?
+        .into_iter()
+        .find(|i| i.asset_id == asset_id)
+        .ok_or_else(|| invalid("item is not part of that check"))?;
+    if !item.can_correct || item.result.as_deref() != Some("count") {
+        return Err(invalid("this observation is already reconciled or the holding has changed; start a new check"));
+    }
+    let counted = am_core::parse_decimal(item.counted.as_deref().unwrap_or(""))
+        .map_err(|e| invalid(e.to_string()))?;
+    let current = am_core::parse_decimal(&item.quantity).map_err(|e| invalid(e.to_string()))?;
+    let delta =
+        counted.checked_sub(current).ok_or_else(|| invalid("count exceeds supported range"))?;
+    crate::events::record(
+        vault,
+        &crate::events::NewEvent {
+            asset_id: asset_id.into(),
+            event_type: crate::events::EventType::Correct,
+            effective_date: today.into(),
+            quantity_delta: delta,
+            amount_minor: None,
+            currency: None,
+            note: "Inventory check".into(),
+        },
+        now,
+    )
+    .map_err(|e| invalid(e.to_string()))?;
+    vault.conn().execute("UPDATE inventory_check_items SET reconciled_at = ?1 WHERE check_id = ?2 AND asset_id = ?3",
+        [now, check_id, asset_id])?;
+    unit.commit()?;
+    Ok(())
 }
 
 /// Mark an item: present, missing, or present in a different count. Marking
@@ -167,7 +273,11 @@ pub fn mark(
     counted: Option<&str>,
     now: &str,
 ) -> Result<(), InventoryError> {
+    let unit = crate::atomic::begin(vault.conn())?;
     let (_, finished) = scope(vault, check_id)?;
+    if !items(vault, check_id)?.iter().any(|i| i.asset_id == asset_id) {
+        return Err(invalid("item is not part of that check"));
+    }
     if finished.is_some() {
         return Err(invalid("that check is finished"));
     }
@@ -176,6 +286,8 @@ pub fn mark(
             "DELETE FROM inventory_marks WHERE check_id = ?1 AND asset_id = ?2",
             [check_id, asset_id],
         )?;
+        vault.conn().execute("UPDATE inventory_check_items SET result = NULL, counted = NULL WHERE check_id = ?1 AND asset_id = ?2", [check_id, asset_id])?;
+        unit.commit()?;
         return Ok(());
     };
     let counted = match result {
@@ -200,6 +312,9 @@ pub fn mark(
            marked_at = excluded.marked_at",
         rusqlite::params![check_id, asset_id, result, counted, now],
     )?;
+    vault.conn().execute("UPDATE inventory_check_items SET result = ?1, counted = ?2 WHERE check_id = ?3 AND asset_id = ?4",
+        rusqlite::params![result, counted, check_id, asset_id])?;
+    unit.commit()?;
     Ok(())
 }
 
@@ -292,6 +407,68 @@ mod tests {
             NOW,
         )
         .unwrap()
+    }
+
+    #[test]
+    fn checks_keep_their_snapshot_and_reconcile_only_once() {
+        let (_d, v) = setup();
+        let a = asset(&v, "Coins", "Safe");
+        let check = start(&v, "Original check", Some("Safe"), NOW).unwrap();
+        mark(&v, &check, &a, Some("count"), Some("2"), NOW).unwrap();
+        finish(&v, &check, NOW).unwrap();
+        reconcile(&v, &check, &a, &NOW[..10], NOW).unwrap();
+        asset(&v, "New arrival", "Safe");
+        crate::events::record(
+            &v,
+            &crate::events::NewEvent {
+                asset_id: a.clone(),
+                event_type: crate::events::EventType::Add,
+                effective_date: "2026-09-20".into(),
+                quantity_delta: Decimal::ONE,
+                amount_minor: None,
+                currency: None,
+                note: String::new(),
+            },
+            "2026-09-20T00:00:00Z",
+        )
+        .unwrap();
+        assert!(reconcile(&v, &check, &a, "2026-09-20", NOW).is_err());
+        let rows = items(&v, &check).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].quantity, "3");
+        assert_eq!(rows[0].counted.as_deref(), Some("2"));
+        assert!(rows[0].reconciled);
+        v.conn().execute("DELETE FROM assets WHERE asset_id = ?1", [&a]).unwrap();
+        assert_eq!(items(&v, &check).unwrap()[0].counted.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn later_events_invalidate_an_unapplied_count_even_if_quantity_returns_to_baseline() {
+        let (_d, v) = setup();
+        let a = asset(&v, "Coins", "Safe");
+        let check = start(&v, "Old count", None, NOW).unwrap();
+        mark(&v, &check, &a, Some("count"), Some("2"), NOW).unwrap();
+        finish(&v, &check, NOW).unwrap();
+        for (kind, delta) in
+            [(crate::events::EventType::Add, 1), (crate::events::EventType::Remove, -1)]
+        {
+            crate::events::record(
+                &v,
+                &crate::events::NewEvent {
+                    asset_id: a.clone(),
+                    event_type: kind,
+                    effective_date: NOW[..10].into(),
+                    quantity_delta: Decimal::from(delta),
+                    amount_minor: None,
+                    currency: None,
+                    note: String::new(),
+                },
+                NOW,
+            )
+            .unwrap();
+        }
+        assert!(!items(&v, &check).unwrap()[0].can_correct);
+        assert!(reconcile(&v, &check, &a, &NOW[..10], NOW).is_err());
     }
 
     #[test]

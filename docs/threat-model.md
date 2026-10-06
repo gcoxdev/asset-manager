@@ -230,7 +230,7 @@ different catalog with no sign anything was wrong.
 |---|---|
 | Disk → process | The passphrase or recovery key |
 | Process → WebView | A Tauri command or the `asset://` protocol; both reject while locked |
-| WebView → disk | Nothing direct; the WebView has no filesystem access |
+| WebView → disk | Custom text import/export commands accept renderer paths while unlocked; there is no general filesystem plugin permission. Dialog selection is a UI convention, not a backend authorization proof. |
 | Process → network | An explicit user action and a configured API key |
 | Another process → vault | The passphrase; or reading this process's memory while unlocked |
 
@@ -276,9 +276,8 @@ Known, accepted, and unresolved:
 
 ## 8. Reporting a problem
 
-This is pre-release software with no formal security process. If you find a
-vulnerability, open an issue describing the impact without a working exploit,
-or contact the maintainer directly.
+Report vulnerabilities privately using the procedure in [SECURITY.md](../SECURITY.md).
+Do not include vulnerability details or working exploits in public issues.
 
 Do not use this as the only copy of information you cannot afford to lose.
 Keep independent backups.

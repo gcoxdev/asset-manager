@@ -248,10 +248,39 @@ pub fn should_poll_automatically(
         return Ok(false);
     }
 
-    match latest_spot(vault, metal, now)? {
-        None => Ok(true), // never fetched
-        Some(spot) => Ok(spot.age_hours >= status.automatic_interval_hours),
+    let _ = metal; // Eligibility is per HTTP request, independent of quote age.
+    let attempt = crate::settings::get(vault, &format!("last_auto_poll:{provider}"))?;
+    let fetched: Option<String> = vault.conn().query_row(
+        "SELECT max(fetched_at) FROM quotes WHERE source = ?1",
+        [provider],
+        |r| r.get(0),
+    )?;
+    let last = attempt.into_iter().chain(fetched).max();
+    // Compare elapsed seconds, independently of the source quote timestamp.
+    match last {
+        None => Ok(true),
+        Some(last) => Ok(vault.conn().query_row(
+            "SELECT COALESCE(unixepoch(?1) - unixepoch(?2) >= ?3 * 3600, 0)",
+            rusqlite::params![now, last, status.automatic_interval_hours],
+            |r| r.get(0),
+        )?),
     }
+}
+
+/// Reserve before dispatch, including failed requests. The transaction also
+/// protects callers that do not hold the desktop session mutex.
+pub fn reserve_automatic_poll(
+    vault: &Vault,
+    provider: &str,
+    now: &str,
+) -> Result<bool, ValuationError> {
+    let unit = crate::atomic::begin(vault.conn())?;
+    if !should_poll_automatically(vault, Metal::Gold, provider, now)? {
+        return Ok(false);
+    }
+    crate::settings::set(vault, &format!("last_auto_poll:{provider}"), now)?;
+    unit.commit()?;
+    Ok(true)
 }
 
 /// Parse a hand-entered spot price.
@@ -291,6 +320,31 @@ mod tests {
 
     fn d(s: &str) -> Decimal {
         Decimal::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn automatic_interval_counts_attempts_not_source_age() {
+        let (_d, v) = setup();
+        assert!(reserve_automatic_poll(&v, "test", NOW).unwrap());
+        // A failed HTTP request writes no quote, but cannot immediately retry.
+        assert!(!reserve_automatic_poll(&v, "test", NOW).unwrap());
+        assert!(!reserve_automatic_poll(&v, "test", "2026-09-20T17:59:59Z").unwrap());
+        assert!(reserve_automatic_poll(&v, "test", "2026-09-20T18:00:01Z").unwrap());
+        record_spot(
+            &v,
+            SpotReading {
+                metal: Metal::Gold,
+                price_per_troy_oz: d("2000"),
+                currency: &usd(),
+                source: "test",
+                source_asof: "2026-09-17T00:00:00Z",
+                origin: SpotOrigin::Api,
+            },
+            "2026-09-20T18:00:01Z",
+        )
+        .unwrap();
+        assert!(!should_poll_automatically(&v, Metal::Gold, "test", "2026-09-20T18:01:00Z")
+            .unwrap());
     }
 
     #[test]

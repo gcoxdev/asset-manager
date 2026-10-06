@@ -20,7 +20,8 @@
 //! - Values are written as text with leading zeros preserved; a cert number
 //!   like `0012345` must survive a spreadsheet round-trip.
 //! - Blank and zero are distinct: a blank cell *preserves* the stored value,
-//!   and `-` clears it. Silently treating blank as "set to empty" would let a
+//!   and `-` clears supported fields. Historical dates/value clears are rejected.
+//!   Silently treating blank as "set to empty" would let a
 //!   partially-filled spreadsheet wipe data.
 
 use std::collections::HashMap;
@@ -35,6 +36,8 @@ pub const CLEAR_MARKER: &str = "-";
 
 pub const MAX_FILE_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_ROWS: usize = 100_000;
+pub const MAX_COLUMNS: usize = 128;
+pub const MAX_CELLS: usize = 1_600_000;
 pub const MAX_CELL_BYTES: usize = 32 * 1024;
 
 const COLUMNS: &[&str] = &[
@@ -99,6 +102,7 @@ pub(crate) fn parse_delimited(
     input: &str,
     delimiter: char,
 ) -> Result<Vec<Vec<String>>, CsvError> {
+    let mut cells = 0usize;
     let mut rows = Vec::new();
     let mut row = Vec::new();
     let mut field = String::new();
@@ -130,10 +134,24 @@ pub(crate) fn parse_delimited(
                     })
                 }
                 c if c == delimiter => {
+                    cells += 1;
+                    if row.len() >= MAX_COLUMNS || cells > MAX_CELLS {
+                        return Err(CsvError::Malformed {
+                            line,
+                            reason: "too many columns or cells".into(),
+                        });
+                    }
                     row.push(std::mem::take(&mut field));
                 }
                 '\r' => {} // CRLF tolerated
                 '\n' => {
+                    cells += 1;
+                    if row.len() >= MAX_COLUMNS || cells > MAX_CELLS {
+                        return Err(CsvError::Malformed {
+                            line,
+                            reason: "too many columns or cells".into(),
+                        });
+                    }
                     row.push(std::mem::take(&mut field));
                     rows.push(std::mem::take(&mut row));
                     line += 1;
@@ -153,6 +171,12 @@ pub(crate) fn parse_delimited(
         return Err(CsvError::Malformed { line, reason: "unterminated quoted field".into() });
     }
     if !field.is_empty() || !row.is_empty() {
+        if row.len() >= MAX_COLUMNS || cells >= MAX_CELLS || rows.len() >= MAX_ROWS {
+            return Err(CsvError::Malformed {
+                line,
+                reason: "too many rows, columns or cells".into(),
+            });
+        }
         row.push(field);
         rows.push(row);
     }
@@ -298,9 +322,9 @@ pub enum ImportMode {
     Apply,
 }
 
-struct ParsedRow {
+struct ParsedRow<'a> {
     line: usize,
-    values: HashMap<String, String>,
+    values: HashMap<&'a str, String>,
 }
 
 fn parse_metadata(line: &str) -> HashMap<String, String> {
@@ -355,10 +379,19 @@ pub fn import_assets(
     }
 
     let Some(header) = rows.get(index) else { return Ok(ImportPreview::default()) };
-    let header: Vec<String> = header.iter().map(|h| h.trim().to_string()).collect();
+    let header: Vec<&str> = header.iter().map(|h| h.trim()).collect();
+    let mut seen = std::collections::HashSet::new();
+    for col in &header {
+        if !COLUMNS.contains(col) || !seen.insert(*col) {
+            return Err(CsvError::Malformed {
+                line: index + 1,
+                reason: "unsupported or duplicate column".into(),
+            });
+        }
+    }
 
     for required in ["asset_id", "name"] {
-        if !header.iter().any(|h| h == required) {
+        if !header.contains(&required) {
             return Err(CsvError::MissingColumn(required.to_string()));
         }
     }
@@ -371,7 +404,7 @@ pub fn import_assets(
             let mut values = HashMap::new();
             for (i, col) in header.iter().enumerate() {
                 let raw = row.get(i).map(String::as_str).unwrap_or("");
-                values.insert(col.clone(), unescape_formula(raw).to_string());
+                values.insert(*col, unescape_formula(raw).to_string());
             }
             ParsedRow { line: index + 2 + offset, values }
         })
@@ -432,6 +465,17 @@ pub fn import_assets(
             seen.insert(id.to_string(), row.line);
         }
 
+        for column in [
+            "acquired_date",
+            "current_amount_minor",
+            "current_currency",
+            "value_asof",
+            "status",
+        ] {
+            if cell(row, column) == Some(None) {
+                preview.errors.push(format!("row {}: {column} cannot be cleared by CSV; edit or void the historical record in the app", row.line));
+            }
+        }
         // Money must arrive with its currency, matching the schema's CHECK.
         for (amount_col, currency_col) in [
             ("acquired_amount_minor", "acquired_currency"),
@@ -495,11 +539,18 @@ pub fn import_assets(
         }
         for date_col in ["acquired_date", "value_asof"] {
             if let Some(date) = cell(row, date_col).flatten() {
-                if crate::events::normalize_date(date).is_err() {
-                    preview.errors.push(format!(
+                match crate::events::normalize_date(date) {
+                    Err(_) => preview.errors.push(format!(
                         "row {}: {date_col} must be a date (YYYY-MM-DD)",
                         row.line
-                    ));
+                    )),
+                    Ok(day) if date_col == "value_asof" && day.as_str() > today => {
+                        preview.errors.push(format!(
+                            "row {}: a valuation cannot be dated in the future",
+                            row.line
+                        ))
+                    }
+                    Ok(_) => {}
                 }
             }
         }
@@ -792,8 +843,15 @@ fn record_manual_value_in(
     asof: &str,
     now: &str,
 ) -> Result<(), CsvError> {
-    let quantity: String =
-        tx.query_row("SELECT quantity FROM assets WHERE asset_id = ?1", [id], |r| r.get(0))?;
+    let quantity = crate::events::quantity_as_of_in(tx, id, Some(asof))
+        .map_err(|e| CsvError::Invalid { line: 0, reason: e.to_string() })?;
+    if quantity <= am_core::Decimal::ZERO {
+        return Err(CsvError::Invalid {
+            line: 0,
+            reason: "nothing was held on the valuation date".into(),
+        });
+    }
+    let quantity = quantity.normalize().to_string();
     tx.execute(
         "INSERT INTO valuations
            (valuation_id, asset_id, amount_minor, currency, quantity_at_time, basis,
@@ -932,6 +990,86 @@ mod tests {
                 rusqlite::params![id, name, NOW],
             )
             .unwrap();
+    }
+
+    #[test]
+    fn hostile_headers_and_empty_cell_amplification_are_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir.path().join("vault"));
+        let input = format!("asset_id,name,{}\n,Item\n", "x".repeat(MAX_CELL_BYTES));
+        assert!(import_assets(&v, &input, ImportMode::Preview, NOW, &NOW[..10]).is_err());
+        assert!(parse_csv(&",".repeat(MAX_COLUMNS)).is_err());
+        assert!(parse_csv("asset_id,name,name\n,x,y").is_ok());
+        assert!(import_assets(
+            &v,
+            "asset_id,name,name\n,x,y",
+            ImportMode::Preview,
+            NOW,
+            &NOW[..10]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn unsupported_derived_clears_fail_in_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir.path().join("vault"));
+        for column in
+            ["acquired_date", "current_amount_minor", "current_currency", "value_asof"]
+        {
+            let input = format!("asset_id,name,{column}\n,Item,-\n");
+            let preview =
+                import_assets(&v, &input, ImportMode::Preview, NOW, &NOW[..10]).unwrap();
+            assert!(!preview.errors.is_empty(), "{column}");
+        }
+    }
+
+    #[test]
+    fn a_price_before_ownership_rolls_back_the_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir.path().join("vault"));
+        let csv = "asset_id,name,quantity,current_amount_minor,current_currency,value_asof\nx1,Not yet held,1,10000,USD,2026-01-01\n";
+        assert!(import_assets(&v, csv, ImportMode::Apply, NOW, &NOW[..10]).is_err());
+        assert_eq!(count(&v, "SELECT count(*) FROM assets"), 0);
+        assert_eq!(count(&v, "SELECT count(*) FROM valuations"), 0);
+    }
+
+    #[test]
+    fn backdated_csv_value_uses_quantity_on_that_date() {
+        let dir = tempfile::tempdir().unwrap();
+        let v = vault(&dir.path().join("vault"));
+        import_assets(
+            &v,
+            "asset_id,name,quantity,acquired_date\nx1,Coins,10,2026-01-01\n",
+            ImportMode::Apply,
+            NOW,
+            &NOW[..10],
+        )
+        .unwrap();
+        crate::events::record(
+            &v,
+            &crate::events::NewEvent {
+                asset_id: "x1".into(),
+                event_type: crate::events::EventType::Remove,
+                effective_date: "2026-02-01".into(),
+                quantity_delta: am_core::Decimal::from(-5),
+                amount_minor: None,
+                currency: None,
+                note: String::new(),
+            },
+            NOW,
+        )
+        .unwrap();
+        import_assets(&v, "asset_id,name,current_amount_minor,current_currency,value_asof\nx1,,10000,USD,2026-01-15\n", ImportMode::Apply, NOW, &NOW[..10]).unwrap();
+        let code = am_core::Currency::new("USD").unwrap();
+        assert_eq!(
+            crate::valuations::portfolio_total_as_of(&v, "2026-01-15", &code)
+                .unwrap()
+                .total
+                .amount_minor,
+            10000
+        );
+        assert_eq!(crate::assets::get(&v, "x1").unwrap().current_amount_minor, Some(5000));
     }
 
     #[test]
@@ -1303,8 +1441,8 @@ mod tests {
     fn an_imported_price_is_a_valuation_the_portfolio_counts() {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(&dir.path().join("vault"));
-        let csv = "asset_id,name,quantity,current_amount_minor,current_currency,value_asof\n\
-                   c1,Comic,1,45000,USD,2026-09-01\n";
+        let csv = "asset_id,name,quantity,acquired_date,current_amount_minor,current_currency,value_asof\n\
+                   c1,Comic,1,2026-09-01,45000,USD,2026-09-01\n";
         import_assets(&v, csv, ImportMode::Apply, NOW, &NOW[..10]).unwrap();
 
         assert_eq!(count(&v, "SELECT count(*) FROM valuations WHERE asset_id='c1'"), 1);
@@ -1338,6 +1476,20 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let v = vault(&dir.path().join("vault"));
         insert(&v, "m1", "Eagles");
+        crate::events::record(
+            &v,
+            &crate::events::NewEvent {
+                asset_id: "m1".into(),
+                event_type: crate::events::EventType::Acquire,
+                effective_date: NOW[..10].into(),
+                quantity_delta: am_core::Decimal::ONE,
+                amount_minor: None,
+                currency: None,
+                note: String::new(),
+            },
+            NOW,
+        )
+        .unwrap();
         v.conn().execute("UPDATE assets SET pricing='market' WHERE asset_id='m1'", []).unwrap();
 
         let csv = "asset_id,name,current_amount_minor,current_currency\nm1,Eagles,250000,USD\n";

@@ -193,8 +193,8 @@ pub fn refresh_crypto_prices(
     session.touch();
     let timestamp = now();
 
-    let (held, currency) = session
-        .with_vault(|vault| {
+    let (token, (held, currency)) = session
+        .snapshot(|vault| {
             Ok((
                 am_storage::pricing::held_coin_ids(vault).map_err(storage)?,
                 base_currency(vault),
@@ -235,7 +235,7 @@ pub fn refresh_crypto_prices(
         wanted.iter().filter(|id| !returned.contains(id)).cloned().collect();
 
     session
-        .with_vault(|vault| {
+        .with_snapshot(token, |vault| {
             let mut updated = Vec::new();
             for price in &prices {
                 let value = parse_decimal(&price.price)

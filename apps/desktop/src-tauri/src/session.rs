@@ -9,7 +9,10 @@
 //! must go through [`Session::with_vault`], which fails when locked. There is
 //! no way to read the vault around it.
 
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Mutex,
+};
 use std::time::{Duration, Instant};
 
 use am_crypto::KdfParams;
@@ -71,7 +74,14 @@ pub const AUTO_LOCK_IDLE: Duration = Duration::from_secs(15 * 60);
 pub const MIN_AUTO_LOCK: Duration = Duration::from_secs(60);
 pub const MAX_AUTO_LOCK: Duration = Duration::from_secs(4 * 60 * 60);
 
+#[derive(Clone, Copy)]
+pub struct SessionToken {
+    generation: u64,
+    vault_id: [u8; 16],
+}
+
 pub struct Session {
+    generation: AtomicU64,
     vault: Mutex<Option<Vault>>,
     /// Last time a command touched the vault. `None` while locked.
     last_activity: Mutex<Option<Instant>>,
@@ -81,6 +91,7 @@ pub struct Session {
 impl Default for Session {
     fn default() -> Self {
         Self {
+            generation: AtomicU64::new(0),
             vault: Mutex::new(None),
             last_activity: Mutex::new(None),
             idle_limit: Mutex::new(AUTO_LOCK_IDLE),
@@ -175,6 +186,7 @@ impl Session {
             return Err(SessionError::AlreadyOpen);
         }
         let (vault, recovery_key) = Vault::create(root, passphrase, params, now)?;
+        self.generation.fetch_add(1, Ordering::Relaxed);
         *guard = Some(vault);
         *self.last_activity.lock().expect("session mutex poisoned") = Some(Instant::now());
         Ok(recovery_key)
@@ -191,6 +203,7 @@ impl Session {
             return Err(SessionError::AlreadyOpen);
         }
         *guard = Some(Vault::unlock(root, credential, secret)?);
+        self.generation.fetch_add(1, Ordering::Relaxed);
         *self.last_activity.lock().expect("session mutex poisoned") = Some(Instant::now());
         Ok(())
     }
@@ -198,13 +211,10 @@ impl Session {
     /// Lock: drop the vault, which closes the database, releases the process
     /// lock, and zeroizes the data key.
     ///
-    /// In-flight work is not a concern yet because every command here is
-    /// synchronous and holds the mutex for its duration — a command either
-    /// completes before the lock or cannot start after it. When async work
-    /// lands (thumbnailing, price fetches), this must also cancel or drain it
-    /// so late results cannot repopulate the UI.
+    /// Outstanding provider results carry a token invalidated by this transition.
     pub fn lock(&self) {
         let mut guard = self.vault.lock().expect("session mutex poisoned");
+        self.generation.fetch_add(1, Ordering::Relaxed);
         *guard = None;
         *self.last_activity.lock().expect("session mutex poisoned") = None;
     }
@@ -217,6 +227,35 @@ impl Session {
         let guard = self.vault.lock().expect("session mutex poisoned");
         let vault = guard.as_ref().ok_or(SessionError::Locked)?;
         f(vault)
+    }
+
+    /// Capture request inputs and their session identity under the same lock.
+    pub fn snapshot<T>(
+        &self,
+        f: impl FnOnce(&Vault) -> Result<T, SessionError>,
+    ) -> Result<(SessionToken, T), SessionError> {
+        self.with_vault(|vault| {
+            let token = SessionToken {
+                generation: self.generation.load(Ordering::Relaxed),
+                vault_id: vault.vault_id(),
+            };
+            Ok((token, f(vault)?))
+        })
+    }
+
+    pub fn with_snapshot<T>(
+        &self,
+        token: SessionToken,
+        f: impl FnOnce(&Vault) -> Result<T, SessionError>,
+    ) -> Result<T, SessionError> {
+        self.with_vault(|vault| {
+            if self.generation.load(Ordering::Relaxed) != token.generation
+                || vault.vault_id() != token.vault_id
+            {
+                return Err(SessionError::Locked);
+            }
+            f(vault)
+        })
     }
 
     pub fn with_vault_mut<T>(
@@ -239,6 +278,26 @@ mod tests {
 
     const NOW: &str = "2026-09-19T00:00:00Z";
     const PASS: &str = "correct horse battery staple";
+
+    #[test]
+    fn delayed_responses_cannot_write_after_lock_reopen_or_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("a");
+        let s = Session::new();
+        s.create(&root, PASS, &fast_params(), NOW).unwrap();
+        let (first, ()) = s.snapshot(|_| Ok(())).unwrap();
+        s.with_snapshot(first, |_| Ok(())).unwrap();
+        s.lock();
+        s.unlock(&root, Credential::Passphrase, PASS).unwrap();
+        assert!(s.with_snapshot::<()>(first, |_| panic!("late result executed")).is_err());
+        let (second, ()) = s.snapshot(|_| Ok(())).unwrap();
+        s.lock();
+        s.create(&dir.path().join("b"), PASS, &fast_params(), NOW).unwrap();
+        assert!(s
+            .with_snapshot::<()>(second, |_| panic!("cross-vault write executed"))
+            .is_err());
+        assert!(s.with_vault(|_| Ok(())).is_ok());
+    }
 
     #[test]
     fn starts_locked() {
