@@ -43,7 +43,10 @@ Do not claim a platform is supported until it has passed these.
 
 Push a tag `vX.Y.Z`. The release workflow (`.github/workflows/release.yml`)
 builds Linux (`.AppImage`, `.deb`), Windows (`.msi`) and macOS (universal
-`.dmg`), and opens a **draft** release. Nothing is published until someone
+`.dmg`), plus the portable archives — `AssetManager_<version>_amd64_portable.tar.gz`
+(AppImage and marker) and `AssetManager_<version>_x64_portable.zip` (the
+standalone, signed executable and marker), each checked for its contents —
+and opens a **draft** release. Nothing is published until someone
 checks the draft and publishes it by hand.
 
 Every draft carries:

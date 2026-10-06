@@ -9,8 +9,25 @@
 //! rather than depending on the process's working directory.
 
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use tauri::Manager;
+
+use crate::portable::Storage;
+
+/// Decided once, at launch, from how the app was started (see portable.rs).
+/// Unset — in tests — means the standard location.
+static STORAGE: OnceLock<Storage> = OnceLock::new();
+
+/// Record where this run keeps its data. Called once, before the app starts.
+pub fn init_storage(storage: Storage) {
+    let _ = STORAGE.set(storage);
+}
+
+/// Whether this run keeps its data beside the app.
+pub fn is_portable() -> bool {
+    matches!(STORAGE.get(), Some(Storage::Portable(_)))
+}
 
 /// Subdirectory under the platform app-data directory.
 ///
@@ -30,6 +47,14 @@ pub fn vault_root<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<PathBu
         if !dir.is_empty() {
             return Ok(PathBuf::from(dir));
         }
+    }
+
+    match STORAGE.get() {
+        Some(Storage::Portable(root)) => return Ok(root.join(VAULT_DIR)),
+        // Never fall back to the standard location: it would show a
+        // different catalog, or none, with no sign anything was wrong.
+        Some(Storage::Unavailable(message)) => return Err(message.clone()),
+        Some(Storage::Standard) | None => {}
     }
 
     let base = app

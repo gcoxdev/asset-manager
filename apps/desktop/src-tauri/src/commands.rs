@@ -413,6 +413,8 @@ pub fn update_settings(session: State<'_, Session>, settings: Settings) -> IpcRe
 #[derive(Serialize)]
 pub struct VaultInfo {
     pub location: String,
+    /// Kept beside the app (portable mode) rather than in the user profile.
+    pub portable: bool,
     pub created_at: String,
     pub recovery_fingerprint: String,
     pub key_epoch: u64,
@@ -434,6 +436,7 @@ pub fn vault_info(session: State<'_, Session>) -> IpcResult<VaultInfo> {
             };
             Ok(VaultInfo {
                 location: vault.root().display().to_string(),
+                portable: crate::paths::is_portable(),
                 created_at: header.created_at.clone(),
                 recovery_fingerprint: header.recovery_fingerprint.clone(),
                 key_epoch: header.key_epoch,

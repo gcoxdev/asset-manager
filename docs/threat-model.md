@@ -210,6 +210,18 @@ image decoders are used instead, so the CSP need not allow
 `connect-src` adds only `'self'`, for pdf.js's fonts and character maps
 shipped with the app; still no remote origin.
 
+**Portable mode** moves the vault and preferences from the per-user
+application directory to `AssetManagerData` beside an AppImage or standalone
+Windows executable, when an `assetmanager-portable` marker sits beside it (or
+`--portable` / `ASSET_MANAGER_PORTABLE=1` is given). The location is still
+decided in the backend, never by the UI. The vault's protection is unchanged
+— a lost USB stick yields only ciphertext — but the folder is wherever the
+user puts it, so its permissions are tightened to the owner (0700 on Unix), a
+data folder that is a symbolic link is refused, and a copy under Program Files
+is refused. A data folder without its marker stops the app with a message
+instead of falling back to the standard location, which would show a
+different catalog with no sign anything was wrong.
+
 ---
 
 ## 6. Trust boundaries

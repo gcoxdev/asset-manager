@@ -40,9 +40,11 @@ jobs:
           - os: ubuntu-22.04
             target: linux
             dir: target/release/bundle
+            portable: appimage
           - os: windows-latest
             target: msi
             dir: target/release/bundle
+            portable: windows
           - os: macos-latest
             target: dmg-universal
             dir: target/universal-apple-darwin/release/bundle
@@ -131,13 +133,49 @@ jobs:
           done
           node scripts/build.mjs ${{ matrix.target }} $SIGN_ARGS
 
+      # The portable build: the launcher and its marker, archived together.
+      # On Windows this runs after the signed MSI build, which signs the
+      # executable in place, so the archive holds the signed copy.
+      - name: Package portable build
+        if: matrix.portable
+        shell: bash
+        working-directory: apps/desktop
+        run: |
+          node scripts/enable-portable.mjs ${{ matrix.portable }}
+          node scripts/package-portable.mjs ${{ matrix.portable }}
+
+      - name: Check the portable archive (Linux)
+        if: matrix.portable == 'appimage'
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$(find target/release/bundle/portable -name '*_portable.tar.gz' -print -quit)"
+          test -n "$archive"
+          contents="$(tar -tzf "$archive")"
+          echo "$contents"
+          grep -qx 'AssetManager.AppImage' <<<"$contents"
+          grep -qx 'assetmanager-portable' <<<"$contents"
+
+      - name: Check the portable archive (Windows)
+        if: matrix.portable == 'windows'
+        shell: pwsh
+        run: |
+          $archive = Get-ChildItem target\release\bundle\portable -Filter *_portable.zip | Select-Object -First 1
+          if (-not $archive) { throw "No portable Windows archive was produced." }
+          $out = Join-Path $env:RUNNER_TEMP "portable-check"
+          Expand-Archive -Path $archive.FullName -DestinationPath $out
+          if (-not (Test-Path (Join-Path $out "AssetManager.exe"))) { throw "The archive has no AssetManager.exe." }
+          if (-not (Test-Path (Join-Path $out "assetmanager-portable"))) { throw "The archive has no portable marker." }
+          if ($env:HAS_WINDOWS_CERTIFICATE -eq 'true') {
+            $signature = Get-AuthenticodeSignature (Join-Path $out "AssetManager.exe")
+            if ($signature.Status -ne 'Valid') { throw "The portable executable is not validly signed: $($signature.Status)" }
+          }
+
       - name: Collect artifacts
         shell: bash
         run: |
           mkdir dist
-          find "${{ matrix.dir }}" -maxdepth 2 -type f \
-            \( -name 'AssetManager.*' -o -name 'AssetManager.*.sha256' \) \
-            -exec cp {} dist/ \;
+          find "${{ matrix.dir }}" -maxdepth 2 -type f -name 'AssetManager*' -exec cp {} dist/ \;
           ls -l dist
           test -n "$(ls dist | grep -v '\.sha256$')"
 
@@ -201,6 +239,9 @@ jobs:
           cat > notes.md <<EOF
           Draft built from ${GITHUB_SHA} by the release workflow. Check it against
           the clean-machine list in docs/releasing.md before publishing.
+
+          Portable builds (*_portable.tar.gz, *_portable.zip) keep their data
+          in AssetManagerData beside the app — see Help → Portable mode.
 
           Checksums: SHA256SUMS, ${signed}.
           Every file has a build-provenance attestation:

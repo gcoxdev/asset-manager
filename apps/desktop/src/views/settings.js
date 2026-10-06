@@ -624,6 +624,7 @@ function aboutCard(info) {
     h("div", { class: "card-head" }, h("h2", {}, icon("info", { size: 18 }), " This vault")),
     h("dl", { class: "kv kv-wide" },
       h("dt", {}, "Location"), h("dd", {}, h("code", { class: "path" }, info.location)),
+      info.portable ? [h("dt", {}, "Storage"), h("dd", {}, "Portable — kept beside the app in AssetManagerData. Move the app, its assetmanager-portable marker and that folder together.")] : null,
       h("dt", {}, "Created"), h("dd", {}, fmt.date(info.created_at)),
       h("dt", {}, "Assets"), h("dd", {}, String(info.asset_count)),
       h("dt", {}, "Photos"), h("dd", {}, `${info.photo_count} · ${fmt.bytes(info.photo_bytes)} encrypted`),

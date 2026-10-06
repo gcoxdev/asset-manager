@@ -17,6 +17,7 @@ pub mod metals_commands;
 pub mod metals_provider;
 pub mod organize_commands;
 pub mod paths;
+pub mod portable;
 pub mod prefs_commands;
 pub mod protocol;
 pub mod report_commands;
@@ -72,6 +73,16 @@ fn apply_wayland_workarounds() {}
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     apply_wayland_workarounds();
+
+    let storage = portable::detect();
+    match &storage {
+        portable::Storage::Portable(root) => {
+            eprintln!("Asset Manager portable mode: data in {}", root.display());
+        }
+        portable::Storage::Unavailable(message) => eprintln!("Asset Manager: {message}"),
+        portable::Storage::Standard => {}
+    }
+    paths::init_storage(storage);
 
     configure(tauri::Builder::default())
         .plugin(tauri_plugin_dialog::init())

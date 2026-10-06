@@ -144,7 +144,22 @@ npm run build:linux-appimage    # primary target
 npm run build:linux-deb
 npm run build:windows           # must run on Windows
 npm run build:macos             # must run on macOS
+
+npm run build:linux-appimage-portable   # AppImage + marker, as .tar.gz
+npm run build:windows-portable          # standalone .exe + marker, as .zip
 ```
+
+| Platform | Installer | Portable |
+|---|---|---|
+| Linux | AppImage and .deb | AppImage plus marker, `.tar.gz` |
+| Windows | .msi | Standalone executable plus marker, `.zip` |
+| macOS | .dmg | Not supported |
+
+A portable build keeps its vault and preferences in `AssetManagerData` beside
+the app — switched on by the `assetmanager-portable` marker file beside it
+(or `--portable`, or `ASSET_MANAGER_PORTABLE=1`) — so the app and the catalog
+can travel together. Installed copies always use the per-user application
+directory. Help → Portable mode covers moving one.
 
 Native bundles must be built on their own OS. Set `AM_OUTPUT_NAME` to override
 the artifact filename.

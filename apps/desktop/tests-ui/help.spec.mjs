@@ -64,7 +64,7 @@ test("every topic renders, with no markup left showing", async ({ page }) => {
     const article = page.locator(".help-article");
     await expect(article.locator("h1")).toHaveText(title);
     const text = await article.locator(".help-body").innerText();
-    if (/«|»|\[\[|\]\]|\{\{|\}\}|\*\*|^#|^> |^! /m.test(text)) leftovers.push(title);
+    if (/«|»|`|\[\[|\]\]|\{\{|\}\}|\*\*|^#|^> |^! /m.test(text)) leftovers.push(title);
   }
   expect(leftovers).toEqual([]);
 });
@@ -81,5 +81,17 @@ test.describe("on the unlock screen", () => {
     await expect(dialog.locator(".help-article").getByRole("button", { name: "Settings", exact: true })).toHaveCount(0);
     await dialog.getByRole("searchbox", { name: "Search help" }).fill("restore backup");
     await expect(dialog.locator(".help-result").first()).toContainText("Restoring a backup or moving computers");
+  });
+});
+
+test.describe("when a portable copy has lost its marker", () => {
+  test.use({ overrides: { vault_status: { error: { kind: "error", message: "AssetManagerData is beside this copy of Asset Manager, but portable mode is off — the assetmanager-portable marker file is missing." } } } });
+
+  test("the start screen says why, and the help explains portable mode", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Asset Manager could not start" })).toBeVisible();
+    await expect(page.getByText(/assetmanager-portable marker file is missing/)).toBeVisible();
+    await page.getByRole("button", { name: "Help" }).click();
+    await expect(page.getByRole("dialog", { name: "Help" }).locator(".help-article h1")).toHaveText("Portable mode");
   });
 });

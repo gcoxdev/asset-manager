@@ -249,7 +249,7 @@ To value metal you have not catalogued, use the [[melt-calculator]].`,
     body: `Choose «Cryptocurrency» when adding.
 
 1. Pick the «Coin» — Bitcoin, Ethereum, or «Other coin or token…».
-2. For other coins, enter the «Coin ID» from the coin's CoinGecko page address (for example \`solana\`). Symbols are ambiguous — several tokens share one — so the ID is what is priced.
+2. For other coins, enter the «Coin ID» from the coin's CoinGecko page address (for example "solana"). Symbols are ambiguous — several tokens share one — so the ID is what is priced.
 3. Enter the «Quantity» held. It is exact, up to 18 decimal places.
 4. Say where it is «Held in» — «My own wallet», «An exchange», or «Staked or locked» — and optionally which wallet or exchange.
 5. Leave «Value from the coin price» on to follow the market.
@@ -1216,6 +1216,34 @@ The current key stops opening this vault immediately. You are shown the new key 
 A backup opens with the passphrase or recovery key the vault had when it was made — try older passphrases if you have changed it since.
 
 ! There is no password reset. If both the passphrase and the recovery key are lost, the vault cannot be opened by anyone — not support, not the app's author.`,
+  },
+  {
+    id: "portable",
+    section: "safety",
+    title: "Portable mode",
+    summary: "Keep the app and its catalog together in one folder — on a USB stick, say.",
+    keywords: "portable usb stick thumb drive removable carry marker folder appimage standalone exe assetmanagerdata",
+    body: `Normally the vault lives in your user profile. The portable builds keep it beside the app instead, so the app and your catalog can travel together.
+
+## Getting it
+
+Download the portable build — **AssetManager_…_portable.tar.gz** for Linux or **AssetManager_…_portable.zip** for Windows — and unpack it into a folder of your own (or onto a USB stick). It holds the app and a small marker file, **assetmanager-portable**. On first launch the app creates **AssetManagerData** beside them, and keeps the vault and your preferences there.
+
+{{settings|Settings}} → «This vault» shows «Storage» as portable when it is on.
+
+## Moving it
+
+Move the app, the **assetmanager-portable** marker and the whole **AssetManagerData** folder together. If the data folder is there but the marker is missing, the app stops with a message rather than quietly opening a different (or empty) catalog.
+
+## Good to know
+
+- The vault is encrypted wherever it is: a lost USB stick shows nothing without your passphrase or recovery key.
+- Price-feed keys are kept in each computer's own keyring, so enter them again on each computer you use.
+- Backups still go where you choose — keep one off the stick, too. See [[backups]].
+- Portable mode works with the Linux AppImage and the standalone Windows executable. It is not available for installed copies (.deb, .msi, macOS), whose folders may be shared, read-only or replaced by an update — nor for a copy run from Program Files.
+- On Windows the portable app needs Microsoft's WebView2, which Windows 10 and 11 normally include.
+
+! Portable mode does not move a vault you already have. To bring one over, make a backup and restore it in the portable copy — see [[restore]].`,
   },
   {
     id: "security",

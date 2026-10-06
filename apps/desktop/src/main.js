@@ -30,7 +30,7 @@ import { renderAsset } from "./views/asset.js";
 import { renderMarkets } from "./views/markets.js";
 import { renderReports } from "./views/reports.js";
 import { renderSettings, rotateRecovery } from "./views/settings.js";
-import { renderHelp } from "./views/help.js";
+import { renderHelp, openHelpDialog } from "./views/help.js";
 import { loadTheme } from "./lib/theme.js";
 
 const app = document.getElementById("app");
@@ -306,7 +306,14 @@ async function boot() {
     if (status.unlocked) return enterApp();
     showOnboarding(app, { mode: status.exists ? "unlock" : "welcome", ...onboardingHooks });
   } catch (error) {
-    mount(app, h("div", { class: "fatal" }, h("h1", {}, "Asset Manager could not start"), h("p", {}, String(error?.message ?? error))));
+    const message = String(error?.message ?? error);
+    // A portable copy whose marker went missing lands here; the help says
+    // what to move where.
+    const topic = /portable|AssetManagerData/i.test(message) ? "portable" : null;
+    mount(app, h("div", { class: "fatal" },
+      h("h1", {}, "Asset Manager could not start"),
+      h("p", {}, message),
+      h("button", { class: "btn btn-secondary", onclick: () => openHelpDialog(topic) }, icon("info", { size: 16 }), "Help")));
   }
 }
 

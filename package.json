@@ -7,8 +7,10 @@
     "build:binary": "npm --prefix apps/desktop run build:binary --",
     "build:linux": "npm --prefix apps/desktop run build:linux --",
     "build:linux-appimage": "npm --prefix apps/desktop run build:linux-appimage --",
+    "build:linux-appimage-portable": "npm --prefix apps/desktop run build:linux-appimage-portable --",
     "build:linux-deb": "npm --prefix apps/desktop run build:linux-deb --",
     "build:windows": "npm --prefix apps/desktop run build:windows --",
+    "build:windows-portable": "npm --prefix apps/desktop run build:windows-portable --",
     "build:macos": "npm --prefix apps/desktop run build:macos --",
     "build:macos-universal": "npm --prefix apps/desktop run build:macos-universal --"
   }
