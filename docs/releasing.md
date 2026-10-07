@@ -5,10 +5,13 @@ who downloads it can check it is the build that was made.
 
 ## Before tagging
 
-- [ ] `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test --workspace`,
-      `npm --prefix apps/desktop test`, the browser tests
-      (`npm --prefix apps/desktop run test:ui`) and the frontend build pass on
-      the pinned toolchain (`rust-toolchain.toml`) — CI runs exactly these.
+- [ ] Build the frontend with `npm --prefix apps/desktop run build` before
+      running the Rust checks; Tauri needs the built frontend at compile time.
+- [ ] `cargo fmt --all -- --check`,
+      `cargo clippy --workspace --all-targets -- -D warnings`,
+      `cargo test --workspace`, `npm --prefix apps/desktop test`, and the
+      browser tests (`npm --prefix apps/desktop run test:ui`) pass on the
+      pinned toolchain (`rust-toolchain.toml`) — these match the CI checks.
 - [ ] The version in `Cargo.toml` and `apps/desktop/src-tauri/tauri.conf.json`
       is the one being tagged (the release workflow refuses a mismatch).
 - [ ] `cargo audit` and `npm --prefix apps/desktop audit --omit=dev` are
@@ -46,15 +49,13 @@ Push a tag `vX.Y.Z`. The release workflow (`.github/workflows/release.yml`)
 builds Linux (`.AppImage`, `.deb`), Windows (`.msi`) and macOS (universal
 `.dmg`), plus the portable archives — `AssetManager_<version>_amd64_portable.tar.gz`
 (AppImage and marker) and `AssetManager_<version>_x64_portable.zip` (the
-standalone, signed executable and marker), each checked for its contents —
+standalone executable and marker), each checked for its contents —
 and opens a **draft** release. Nothing is published until someone
 checks the draft and publishes it by hand.
 
 Every draft carries:
 
 - **`SHA256SUMS`**: one line per file.
-- **`SHA256SUMS.asc`**: a detached signature by the project's release key,
-  so a mirror cannot substitute both a file and its checksum.
 - **Build-provenance attestations**: a Sigstore-signed statement, in a
   public transparency log, that each file was built by this workflow from
   the tagged commit. These need no key of ours and are always produced.
@@ -63,6 +64,11 @@ Signing turns on with repository secrets (Settings → Secrets and variables
 → Actions). Each is optional; without it that step is skipped and the draft
 says so.
 
+For an unsigned Windows release, leave `WINDOWS_CERTIFICATE` and
+`WINDOWS_CERTIFICATE_PASSWORD` unset. The MSI and portable executable will
+still be built. Checksum signing is separate and optional: `SHA256SUMS.asc`
+is included only when `RELEASE_GPG_KEY` is configured.
+
 | Secrets | What they sign |
 |---|---|
 | `RELEASE_GPG_KEY` (armored private key), `RELEASE_GPG_PASSPHRASE` | `SHA256SUMS` → `SHA256SUMS.asc` |
@@ -70,7 +76,7 @@ says so.
 | `APPLE_CERTIFICATE` (`.p12`, base64), `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY` | Developer ID signature on the app and `.dmg` |
 | `APPLE_ID`, `APPLE_PASSWORD` (app-specific), `APPLE_TEAM_ID` | Notarization of the `.dmg` |
 
-Before the first signed release:
+Before the first release with GPG-signed checksums:
 
 - [ ] Create the release key on an offline machine; keep the primary key
       offline and give the workflow a signing subkey only.
@@ -84,13 +90,13 @@ A local build (`npm run build:<target>`) writes each artifact with a
 ## Checking a download
 
 ```bash
-gpg --verify SHA256SUMS.asc SHA256SUMS          # the key's fingerprint as published
+gpg --verify SHA256SUMS.asc SHA256SUMS          # only if the signature file is provided
 sha256sum --check --ignore-missing SHA256SUMS   # the files you downloaded
 gh attestation verify AssetManager.AppImage --repo gcoxdev/asset-manager
 ```
 
-On Windows, the `.msi`'s Properties → Digital Signatures tab names the
-signer; on macOS, `spctl --assess --type install -v AssetManager.dmg`
+For signed builds on Windows, the `.msi`'s Properties → Digital Signatures
+tab names the signer; on macOS, `spctl --assess --type install -v AssetManager.dmg`
 reports the Developer ID and notarization.
 
 ## What not to claim
