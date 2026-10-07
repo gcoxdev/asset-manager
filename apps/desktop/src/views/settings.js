@@ -263,7 +263,7 @@ function backupCard(settings, centre, ctx) {
       )
     ),
     h("p", { class: "card-text" }, "A backup is a complete, still-encrypted copy of the vault — records, photos, documents and history. It is safe on an external drive or in a synced folder: without your passphrase or recovery key it is unreadable. Verifying one restores it into a scratch folder, decrypts every file, and throws the copy away — the only proof it will open on a new computer."),
-    h("div", { class: "btn-row" }, backupNow, backupElsewhere, verify, restore),
+    h("div", { class: "btn-row backup-actions" }, backupNow, backupElsewhere, verify, restore),
     h("div", { class: "setting" },
       h("div", { class: "setting-text" }, h("strong", {}, "Backup folder"), h("p", {}, centre.folder ? h("code", { class: "path" }, centre.folder, centre.folder_available ? "" : " — not available now") : "Not chosen yet. An external drive or a synced folder, away from this computer, is best.")),
       h("div", { class: "setting-control" }, changeFolder)

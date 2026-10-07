@@ -1053,6 +1053,7 @@ tr.row-error td { background: color-mix(in srgb, var(--bad-bg) 60%, transparent)
 
 .reminder-banner { align-items: center; margin-bottom: 16px; }
 .reminder-banner > div { flex: 1; }
+.backup-actions { margin-bottom: 16px; }
 .backup-history { margin-top: 12px; }
 .path-cell { max-width: 360px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
