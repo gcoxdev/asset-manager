@@ -3,7 +3,7 @@ members = ["crates/am-core", "crates/am-crypto", "crates/am-storage", "apps/desk
 resolver = "2"
 
 [workspace.package]
-version = "0.0.1"
+version = "0.0.3"
 edition = "2021"
 license = "AGPL-3.0"
 
