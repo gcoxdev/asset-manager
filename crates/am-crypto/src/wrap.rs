@@ -1,7 +1,6 @@
 //! Wrapping the vault data key under a key-encryption key.
 //!
-//! Adapted from `qiring-crypto` (AGPL-3.0). A single small AEAD blob, unlike
-//! the chunked format in [`crate::stream`] — a 32-byte key needs no streaming.
+//! Uses a single small AEAD blob; a 32-byte key needs no chunked framing.
 //!
 //! The AAD is where header authentication happens: callers pass the encoded
 //! header metadata, so tampering with KDF parameters or the vault ID makes

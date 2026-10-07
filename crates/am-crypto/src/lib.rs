@@ -1,6 +1,6 @@
 //! Cryptography for Asset Manager vaults.
 //!
-//! Key hierarchy, following QiRing (AGPL-3.0, vendored — see VENDOR.md):
+//! Asset Manager's vault key hierarchy:
 //!
 //! ```text
 //! passphrase ──Argon2id──> KEK ──wraps──┐

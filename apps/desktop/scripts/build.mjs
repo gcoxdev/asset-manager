@@ -51,6 +51,22 @@ if (!target) {
   process.exit(1);
 }
 
+// The root package only forwards scripts; build dependencies belong to the
+// desktop package. Diagnose a missing/incomplete install before invoking Cargo.
+let tauriCli;
+try {
+  tauriCli = createRequire(import.meta.url).resolve("@tauri-apps/cli/tauri.js");
+} catch (error) {
+  if (error.code !== "MODULE_NOT_FOUND") throw error;
+  console.error(
+    "The desktop Tauri CLI is missing or incomplete.\n" +
+    "From the repository root, install the build dependencies with:\n" +
+    "  npm --prefix apps/desktop ci --include=dev --include=optional\n" +
+    "Then retry the build."
+  );
+  process.exit(1);
+}
+
 const env = { ...process.env };
 if (target.noStrip) {
   // Without this, linuxdeploy's strip step can break the AppImage on some
@@ -70,7 +86,7 @@ for (const bundle of bundles) {
 
 const result = spawnSync(
   process.execPath,
-  [createRequire(import.meta.url).resolve("@tauri-apps/cli/tauri.js"), "build", ...buildArgs],
+  [tauriCli, "build", ...buildArgs],
   { stdio: "inherit", env, cwd: fileURLToPath(new URL("..", import.meta.url)) }
 );
 

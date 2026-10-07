@@ -1,8 +1,7 @@
 //! Passphrase-derived key-encryption keys and the vault key hierarchy.
 //!
-//! Adapted from `qiring-crypto` (AGPL-3.0), with two additions this project
-//! needs and QiRing does not: domain-separated subkeys, and a recovery key
-//! encoded for reliable transcription off a printed sheet.
+//! Includes domain-separated subkeys and a recovery key encoded for reliable
+//! transcription off a printed sheet.
 
 use argon2::{Argon2, Params};
 use rand::{rngs::OsRng, RngCore};
@@ -12,8 +11,8 @@ use zeroize::Zeroizing;
 pub const SALT_LEN: usize = 16;
 pub const KEY_LEN: usize = 32;
 
-// Bounds carried over from QiRing: a tampered header must not be able to force
-// absurd work (a denial of service) or trivially weak work (a broken vault).
+// A tampered header must not be able to force absurd work (a denial of service)
+// or trivially weak work (a broken vault).
 pub const MIN_MEMORY_COST_KIB: u32 = 8 * 1024;
 pub const MAX_MEMORY_COST_KIB: u32 = 256 * 1024;
 pub const MIN_ITERATIONS: u32 = 1;
@@ -139,12 +138,11 @@ pub fn derive_subkey(data_key: &[u8; KEY_LEN], purpose: Purpose) -> Zeroizing<[u
     out
 }
 
-/// Generate a recovery key: 160 bits, base32 (Crockford-style alphabet via
-/// data-encoding's RFC4648 without padding), grouped for transcription.
+/// Generate a recovery key: 160 bits, RFC4648 base32 without padding,
+/// grouped for transcription.
 ///
-/// Base32 rather than QiRing's base64: a recovery key is read back off a
-/// printed sheet, where case-insensitivity and the absence of visually similar
-/// glyph pairs matter more than density.
+/// Base32 supports case-insensitive input when reading the key back from a
+/// printed sheet. Grouping makes long keys easier to transcribe.
 pub fn generate_recovery_key() -> String {
     let entropy = random_bytes(20);
     let encoded = data_encoding::BASE32_NOPAD.encode(&entropy);

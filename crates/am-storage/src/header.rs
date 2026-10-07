@@ -11,9 +11,8 @@
 //!
 //! There is **no separate MAC**, and there cannot be — the key to verify one
 //! with would itself derive from salts stored in this very file. Instead,
-//! following QiRing (`qiring-storage`'s `metadata_aad`), the header fields are
-//! folded into the **AAD of the wrapped data key**. Tampering is detected
-//! because the unwrap fails.
+//! the header fields are folded into the **AAD of the wrapped data key**.
+//! Tampering is detected because the unwrap fails.
 //!
 //! Two consequences, accepted deliberately:
 //!

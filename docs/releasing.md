@@ -15,12 +15,13 @@ who downloads it can check it is the build that was made.
       clean, or each finding is assessed and noted in the release notes.
 - [ ] New dependencies since the last release are reviewed: licence
       compatible with AGPL-3.0, maintained, and needed.
-- [ ] Vendored crypto (`crates/am-crypto/VENDOR.md`) is checked against
-      upstream QiRing for security fixes since the recorded commit.
+- [ ] Changes to `am-crypto` and its dependencies are reviewed using this
+      project's [crypto maintenance guidance](../crates/am-crypto/README.md).
 - [ ] A schema migration, if any, is tested from every earlier released
       schema (see `migrate.rs` tests) and documented in
       `docs/vault-format.md`.
-- [ ] Placeholder icons are replaced (threat model §7).
+- [ ] Application icons display correctly in each platform's installer and
+      launcher.
 
 ## Clean-machine checks, per platform
 

@@ -16,7 +16,6 @@ use crate::paths::vault_root;
 use crate::session::{default_params, IpcError, Session, SessionError};
 
 /// Argon2id slows guessing; it cannot compensate for a short passphrase.
-/// QiRing settled on the same floor.
 pub const MIN_PASSPHRASE_CHARS: usize = 12;
 
 const AUTO_LOCK_SETTING: &str = "auto_lock_minutes";

@@ -120,11 +120,21 @@ Requires Rust 1.93.1 (pinned in `rust-toolchain.toml`), Node.js, and the
 platform.
 
 ```bash
-npm --prefix apps/desktop install
+npm --prefix apps/desktop ci --include=dev --include=optional
 cargo test --workspace          # Rust tests, including an end-to-end IPC test
 npm --prefix apps/desktop test  # frontend unit tests and the IPC contract check
 npm run dev                     # run the app
 ```
+
+Run these commands from the repository root. The build dependencies are in
+`apps/desktop`; running `npm install` only at the root does not install them.
+The explicit includes install the development tools and platform-specific
+native packages even when npm is configured to omit them. Install dependencies
+on the machine you are building on instead of copying `node_modules` between
+Linux and Windows.
+
+If a build reports `Cannot find module '@tauri-apps/cli/tauri.js'`, run the
+`npm ci` command above again, then retry the build.
 
 Browser tests drive the built frontend in Chromium under the production CSP,
 against responses recorded from the real commands. They use a system Chromium
@@ -199,9 +209,11 @@ WebKitGTK/Mesa issue, not a configuration problem.
 
 ## License
 
-[AGPL-3.0](LICENSE). Parts of `am-crypto` are adapted from
-[QiRing](https://github.com/gcoxdev/QiRing); see
-[`crates/am-crypto/VENDOR.md`](crates/am-crypto/VENDOR.md).
+[AGPL-3.0](LICENSE).
+
+The vault crypto crate is maintained within this repository; see
+[`crates/am-crypto/README.md`](crates/am-crypto/README.md) for its design and
+maintenance guidance.
 
 ## Security and releases
 

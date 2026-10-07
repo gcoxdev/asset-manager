@@ -1,8 +1,7 @@
 # Threat model
 
-What Asset Manager protects, what it does not, and why. Modelled on
-[QiRing's threat model](https://github.com/gcoxdev/QiRing), which documents
-residual risk rather than claiming completeness.
+What Asset Manager protects, what it does not, and why. This document records
+the application's security boundaries and residual risks.
 
 This document is a commitment. If a claim here is not true of the code, the
 code is the bug — and a claim that cannot be kept should be removed from this
@@ -267,8 +266,6 @@ Known, accepted, and unresolved:
 - **Dependency risk.** WebKitGTK, SQLCipher and the Rust crypto crates are
   trusted. `cargo audit` runs in CI; a vulnerability in a transitive
   dependency is still a vulnerability here.
-- **Icons are placeholders** copied from QiRing and must be replaced before
-  any public release.
 - **No reproducible builds**, so a published binary cannot yet be verified
   against its source by a third party.
 

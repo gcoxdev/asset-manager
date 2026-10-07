@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Install Linux build dependencies
-        # Tauri needs WebKitGTK on Linux; the vault's own crypto is vendored.
+        # Tauri needs WebKitGTK on Linux; SQLCipher and its OpenSSL are bundled.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
