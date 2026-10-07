@@ -87,6 +87,27 @@ Before the first release with GPG-signed checksums:
 A local build (`npm run build:<target>`) writes each artifact with a
 `.sha256` file beside it; the workflow merges these into `SHA256SUMS`.
 
+### Recovering from a failed build
+
+Open the failed job under Actions → Release and expand its failed step.
+The draft is created only after all platform builds succeed.
+
+Windows builds compile OpenSSL for the encrypted database. The workflow
+selects native Strawberry Perl with `OPENSSL_SRC_PERL` and checks its
+required modules before compiling. An error mentioning
+`Locale/Maketext/Simple.pm` means the Perl installation needs checking;
+it does not mean a signing certificate is required. For local Windows
+builds, install Strawberry Perl and set `$env:OPENSSL_SRC_PERL` in PowerShell
+to its `perl.exe` path before building (normally
+`C:/Strawberry/perl/bin/perl.exe`).
+
+After fixing source code or the workflow, commit and push the changes.
+Re-running the old job uses its original commit, so it will not include
+the fix. To start a release from the corrected commit, update the versions
+in `Cargo.toml`, `apps/desktop/package.json`, and the Tauri configuration,
+refresh the lockfiles, and push a matching new version tag after the
+checks pass (for example, `v0.0.2` after a failed `v0.0.1`).
+
 ## Checking a download
 
 ```bash

@@ -78,6 +78,22 @@ jobs:
             libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
             librsvg2-dev libxdo-dev libssl-dev patchelf file
 
+      # SQLCipher builds vendored OpenSSL. Git Bash can select its incomplete
+      # MSYS Perl instead of the native Perl required by OpenSSL's MSVC build.
+      - name: Prepare Windows OpenSSL build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $perl = 'C:/Strawberry/perl/bin/perl.exe'
+          if (-not (Test-Path -LiteralPath $perl)) {
+            throw "Strawberry Perl is missing from the Windows runner: $perl"
+          }
+          & $perl -MIPC::Cmd -MLocale::Maketext::Simple -e 'die "Native Windows Perl required\n" unless $^O eq "MSWin32"; print "OpenSSL Perl prerequisites OK\n";'
+          if ($LASTEXITCODE -ne 0) {
+            throw "Strawberry Perl failed the OpenSSL prerequisite check."
+          }
+          "OPENSSL_SRC_PERL=$perl" >> $env:GITHUB_ENV
+
       - uses: dtolnay/rust-toolchain@1.93.1
         with:
           targets: ${{ matrix.rust-targets }}
