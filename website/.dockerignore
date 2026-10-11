@@ -1,0 +1,12 @@
+*
+!package.json
+!scripts/
+!scripts/build.mjs
+!scripts/pages.mjs
+!scripts/markup.mjs
+!content/
+!content/**
+!public/
+!public/**
+!nginx.conf
+!Dockerfile

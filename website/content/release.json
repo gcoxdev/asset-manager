@@ -1,0 +1,14 @@
+{
+  "version": "0.0.3",
+  "prerelease": true,
+  "repository": "https://github.com/gcoxdev/asset-manager",
+  "assets": {
+    "windows": "AssetManager.msi",
+    "windowsPortable": "AssetManager_0.0.3_x64_portable.zip",
+    "linux": "AssetManager.AppImage",
+    "linuxDeb": "AssetManager.deb",
+    "linuxPortable": "AssetManager_0.0.3_amd64_portable.tar.gz",
+    "macos": "AssetManager.dmg",
+    "checksums": "SHA256SUMS"
+  }
+}

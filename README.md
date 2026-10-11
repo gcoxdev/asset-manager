@@ -198,6 +198,7 @@ WebKitGTK/Mesa issue, not a configuration problem.
 | `crates/am-storage` | Vault header, schema, assets, events, valuations, pricing, CSV, backup/restore |
 | `apps/desktop/src-tauri` | Tauri shell: IPC commands, the `asset://` media handler, price providers |
 | `apps/desktop/src` | Frontend — plain ES modules, no framework; `views/` holds one file per screen |
+| `website/` | Static product website, demo screenshots, downloads and the complete user guide; see its [README](website/README.md) |
 | `docs/vault-format.md` | Normative on-disk format specification |
 | `docs/chart-semantics.md` | What a point on the value chart means |
 | `docs/threat-model.md` | What the encryption does and does not protect |
