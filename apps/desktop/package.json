@@ -30,7 +30,7 @@
     "qrcode": "^1.5.4"
   },
   "devDependencies": {
-    "@playwright/test": "^1.63.0",
+    "@playwright/test": "^1.64.0",
     "@tauri-apps/cli": "^2",
     "vite": "^8"
   },
