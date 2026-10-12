@@ -18,7 +18,7 @@ hkdf = "0.13"
 # and none of the codec surface we are not serving.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 keyring = { version = "3", default-features = false, features = ["linux-native", "apple-native", "windows-native"] }
-rand = "0.8.6"
+rand = "0.10.2"
 # zxing port. default-features off drops the image-writing/encoding side —
 # this only ever decodes.
 rxing = { version = "0.9", default-features = false, features = [
