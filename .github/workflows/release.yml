@@ -94,7 +94,7 @@ jobs:
           }
           "OPENSSL_SRC_PERL=$perl" >> $env:GITHUB_ENV
 
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           targets: ${{ matrix.rust-targets }}
 

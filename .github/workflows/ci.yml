@@ -25,7 +25,7 @@ jobs:
 
       # The toolchain rust-toolchain.toml pins, so CI tests what developers
       # build with rather than whatever stable is today.
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
         with:
           components: clippy, rustfmt
 
@@ -80,7 +80,7 @@ jobs:
       # The pinned toolchain, and cargo-audit built from its own lockfile:
       # installed unlocked, it pulls dependencies that need a newer Rust than
       # the pinned one, and the job fails before auditing anything.
-      - uses: dtolnay/rust-toolchain@1.93.1
+      - uses: dtolnay/rust-toolchain@1.120.0
       - uses: Swatinem/rust-cache@v2
       - name: Rust advisories
         # Fails on a vulnerability; unmaintained or unsound crates are
