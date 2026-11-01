@@ -198,7 +198,7 @@ jobs:
       # A signed statement, recorded in a public transparency log, that these
       # files were built by this workflow from this commit. Needs no key of
       # ours: verify with `gh attestation verify <file> --repo <owner>/<repo>`.
-      - uses: actions/attest-build-provenance@v2
+      - uses: actions/attest-build-provenance@v4
         with:
           subject-path: |
             dist/*
